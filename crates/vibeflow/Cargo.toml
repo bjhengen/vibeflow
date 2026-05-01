@@ -1,0 +1,23 @@
+[package]
+name = "vibeflow"
+description = "GPU-accelerated terminal emulator for Linux that knows when AI tools are waiting on the user (library crate, Stage 2 of v0.1)"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+vibeflow-protocol = { path = "../vibeflow-protocol", version = "0.1" }
+
+[dev-dependencies]
+proptest = "1"
