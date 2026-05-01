@@ -30,3 +30,18 @@ dist/
 
 # Logs
 *.log
+
+# Secrets — public repo, defense in depth
+.env
+.env.*
+.envrc
+*.pem
+*.key
+*.p12
+secrets/
+credentials.json
+*.secret
+
+# Other tool state that may contain personal config
+.aider*
+.direnv/
