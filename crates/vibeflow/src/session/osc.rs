@@ -39,6 +39,120 @@ fn parse_133_body(body: &str) -> Option<PromptMarker> {
     }
 }
 
+use vibeflow_protocol::Frame;
+
+/// Maximum total length of a single OSC sequence (including `ESC ]` and the
+/// terminator). Sequences exceeding this are dropped on the floor.
+#[allow(dead_code)] // used in Task 3 (OSC body overflow detection)
+const MAX_OSC_LEN: usize = 4096;
+
+/// One event emitted by [`OscDispatcher::feed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchEvent {
+    /// A complete OSC 1338 frame was parsed.
+    AiState(Frame),
+    /// An OSC 133 prompt marker was identified.
+    Prompt(PromptMarker),
+    /// Bytes that should be forwarded to the terminal grid (alacritty_terminal in
+    /// future stages). Includes any unknown OSC sequences (their original bytes,
+    /// terminator and all) plus all non-OSC bytes.
+    PassThrough(Vec<u8>),
+}
+
+/// Internal parser state. Tracks whether we're scanning plain bytes, have just
+/// seen an `ESC`, are inside an OSC body buffering toward the terminator, or
+/// have seen an `ESC` *inside* an OSC body (potential start of `ESC \` ST).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // InOsc and InOscEsc used in Task 3 (OSC sequence parsing)
+enum ParseState {
+    Plain,
+    SeenEsc,
+    InOsc,
+    InOscEsc, // ESC inside OSC; if next byte is `\`, terminate as ST
+}
+
+/// Streaming OSC dispatcher.
+///
+/// Feed bytes incrementally with [`OscDispatcher::feed`]; each call returns a
+/// `Vec<DispatchEvent>` ordered by where each event falls in the input. Internal
+/// state is preserved across calls so partial sequences split across reads are
+/// handled correctly.
+#[derive(Debug)]
+pub struct OscDispatcher {
+    state: ParseState,
+    /// Bytes seen so far in the current OSC body (after `ESC ]`, before terminator).
+    #[allow(dead_code)] // used in Task 3 (OSC sequence parsing)
+    osc_body: Vec<u8>,
+    /// Pending pass-through bytes accumulated since the last emitted event.
+    /// Flushed at the end of each `feed` call (or when an OSC starts).
+    pass_buf: Vec<u8>,
+    /// True once the current OSC body has overflowed `MAX_OSC_LEN`. We keep
+    /// scanning for the terminator but discard the body and emit nothing.
+    #[allow(dead_code)] // used in Task 3 (OSC body overflow detection)
+    osc_overflowed: bool,
+}
+
+impl OscDispatcher {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: ParseState::Plain,
+            osc_body: Vec::with_capacity(64),
+            pass_buf: Vec::with_capacity(256),
+            osc_overflowed: false,
+        }
+    }
+
+    /// Feed a chunk of bytes into the dispatcher; returns events in input order.
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<DispatchEvent> {
+        let mut events = Vec::new();
+        for &b in bytes {
+            self.step(b, &mut events);
+        }
+        // Flush any pending pass-through at the end of the chunk.
+        if !self.pass_buf.is_empty() {
+            events.push(DispatchEvent::PassThrough(std::mem::take(
+                &mut self.pass_buf,
+            )));
+        }
+        events
+    }
+
+    /// Process a single byte. State transitions only — no allocation in the
+    /// hot path beyond the single `pass_buf` push per non-OSC byte.
+    fn step(&mut self, b: u8, _events: &mut Vec<DispatchEvent>) {
+        match self.state {
+            ParseState::Plain => {
+                if b == 0x1B {
+                    self.state = ParseState::SeenEsc;
+                } else {
+                    self.pass_buf.push(b);
+                }
+            }
+            ParseState::SeenEsc => {
+                // We deferred the ESC byte. At Stage 2 of this plan, OSC entry
+                // (next byte is `]`) lands in Task 3; for now, any byte after
+                // ESC just resolves back to plain pass-through with the ESC
+                // restored.
+                self.pass_buf.push(0x1B);
+                self.pass_buf.push(b);
+                self.state = ParseState::Plain;
+            }
+            ParseState::InOsc | ParseState::InOscEsc => {
+                // OSC parsing arrives in Task 3; for Stage 2, this branch is
+                // unreachable because we never enter InOsc.
+                unreachable!("OSC parsing not implemented until Task 3");
+            }
+        }
+    }
+}
+
+impl Default for OscDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +213,35 @@ mod tests {
             parse_133_body("D;notanumber"),
             Some(PromptMarker::CommandEnd { exit_code: None })
         );
+    }
+
+    #[test]
+    fn dispatcher_passes_plain_text_through_unchanged() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"hello, world");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::PassThrough(b"hello, world".to_vec())]
+        );
+    }
+
+    #[test]
+    fn dispatcher_passes_empty_input_through_with_no_events() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"");
+        assert_eq!(events, vec![]);
+    }
+
+    #[test]
+    fn dispatcher_passes_through_lone_esc_at_end_of_buffer() {
+        // ESC at the end of a chunk is held internally, not emitted yet — but
+        // at this stage of the plan we don't yet have the "emit ESC if next
+        // byte isn't `]`" path. The simplest behaviour: an ESC that doesn't
+        // form an OSC introducer is held in internal state until the next
+        // feed call resolves it. Test the "no OSC came after" path: an ESC
+        // followed by a non-`]` byte in a SINGLE feed is just passthrough.
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"a\x1bb"); // ESC followed by 'b' (not ']') — passthrough as-is
+        assert_eq!(events, vec![DispatchEvent::PassThrough(b"a\x1bb".to_vec())]);
     }
 }
