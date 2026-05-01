@@ -144,8 +144,22 @@ impl AiStateTracker {
     /// Stale-state and heuristic-silence checks at `now`. Returns `true` if a
     /// timeout caused a state change.
     pub fn tick(&mut self, now: Instant) -> bool {
-        // Stale-state timeout: if we're not in Active and our last state-change
-        // was more than `config.stale_state` ago, reset to Active.
+        // Heuristic-silence (Tier 3): when active and Working, infer Waiting
+        // after `config.heuristic_silence` of observed output silence.
+        if self.heuristic_active && self.state == TabState::Working {
+            if let Some(last_out) = self.last_output_at {
+                if now.saturating_duration_since(last_out) >= self.config.heuristic_silence {
+                    // Note: we bypass `transition_to` here because the heuristic
+                    // is *itself* a debounce-tier signal — it shouldn't be
+                    // suppressed by the 100 ms inter-transition window.
+                    self.state = TabState::Waiting;
+                    self.last_event_at = Some(now);
+                    return true;
+                }
+            }
+        }
+        // Stale-state timeout: reset to Active if non-Active and inactive for
+        // longer than `config.stale_state`.
         if self.state != TabState::Active {
             if let Some(last) = self.last_event_at {
                 if now.saturating_duration_since(last) >= self.config.stale_state {
@@ -160,7 +174,6 @@ impl AiStateTracker {
 
     /// Toggle the Tier 3 heuristic — set true when the foreground process is
     /// in the configured AI-tool list, false otherwise.
-    #[allow(dead_code)] // first lib-level caller is in the App in Stage 3
     pub fn set_heuristic_active(&mut self, active: bool) {
         self.heuristic_active = active;
     }
@@ -422,5 +435,64 @@ mod tests {
         let changed = t.tick(now + Duration::from_secs(31));
         assert!(changed);
         assert_eq!(t.state(), TabState::Active);
+    }
+
+    #[test]
+    fn tracker_heuristic_silence_infers_waiting() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        // Working state set + last output observed.
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        t.on_input(TrackerInput::OutputObserved, now);
+
+        // 5 seconds later — past the 4 s default heuristic_silence — but
+        // BEFORE the debounce window from `now` would naturally have closed
+        // (since 5 s > 100 ms). Heuristic timeout fires.
+        let later = now + Duration::from_secs(5);
+        let changed = t.tick(later);
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    #[test]
+    fn tracker_heuristic_silence_inactive_when_flag_off() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        // heuristic_active stays false (default).
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        t.on_input(TrackerInput::OutputObserved, now);
+
+        let changed = t.tick(now + Duration::from_secs(5));
+        // No timeout fires; state stays Working until something else changes
+        // it (or the stale-state timeout at 30 s).
+        assert!(!changed);
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn tracker_heuristic_silence_does_not_fire_outside_working() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        // Tracker is Active (default). Heuristic only fires from Working.
+        t.on_input(TrackerInput::OutputObserved, now);
+        let changed = t.tick(now + Duration::from_secs(5));
+        assert!(!changed);
+        assert_eq!(t.state(), TabState::Active);
+    }
+
+    #[test]
+    fn tracker_heuristic_silence_resets_on_new_output() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Output observed at now+3s — well within the 4 s silence window.
+        t.on_input(TrackerInput::OutputObserved, now + Duration::from_secs(3));
+        // Tick at now+5s — only 2 s of silence since last output. No fire.
+        let changed = t.tick(now + Duration::from_secs(5));
+        assert!(!changed);
+        assert_eq!(t.state(), TabState::Working);
     }
 }
