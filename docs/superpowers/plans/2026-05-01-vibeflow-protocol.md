@@ -119,6 +119,15 @@ dist/
 *.swp
 *~
 .DS_Store
+
+# Local Claude Code state
+.claude/settings.local.json
+
+# Superpowers brainstorm scratch (mockups, server state)
+.superpowers/
+
+# Logs
+*.log
 ```
 
 **Note:** `Cargo.lock` is *not* ignored — for binaries (and we have one) it should be checked in. For a pure library it would be ignored, but the workspace contains both.

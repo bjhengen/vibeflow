@@ -21,3 +21,12 @@ dist/
 *.swp
 *~
 .DS_Store
+
+# Local Claude Code state
+.claude/settings.local.json
+
+# Superpowers brainstorm scratch (mockups, server state)
+.superpowers/
+
+# Logs
+*.log
