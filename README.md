@@ -6,11 +6,13 @@ A GPU-accelerated terminal emulator for Linux that knows when your AI tool is wa
 
 ## Repository layout
 
-- `crates/vibeflow-protocol/` — the open-standard OSC 1338 protocol library + `vibeflow-emit` CLI. Published to crates.io.
-- `bindings/npm/` — `@vibeflow/protocol`, the TypeScript sibling. Published to npm.
-- `docs/protocol.md` — the canonical OSC 1338 wire-format specification.
-- `docs/superpowers/specs/` — design specs.
-- `docs/superpowers/plans/` — implementation plans.
+- [`crates/vibeflow-protocol/`](crates/vibeflow-protocol/) — Rust reference implementation, published as [`vibeflow-protocol`](https://crates.io/crates/vibeflow-protocol) on crates.io. Includes the `vibeflow-emit` CLI.
+- [`bindings/npm/`](bindings/npm/) — TypeScript reference implementation, published as [`@vibeflow/protocol`](https://www.npmjs.com/package/@vibeflow/protocol) on npm.
+- [`docs/protocol.md`](docs/protocol.md) — the canonical OSC 1338 wire-format specification.
+- [`docs/superpowers/specs/`](docs/superpowers/specs/) — design specs.
+- [`docs/superpowers/plans/`](docs/superpowers/plans/) — implementation plans.
+
+The terminal binary (`crates/vibeflow/`) is not yet built; this repository currently ships only the protocol foundation.
 
 ## License
 
