@@ -127,9 +127,13 @@ impl AiStateTracker {
         match input {
             TrackerInput::AiFrame(frame) => self.transition_to(frame.state.into(), now),
             TrackerInput::Prompt(marker) => {
-                let _ = marker;
-                // Prompt-driven transitions land in Task 9.
-                false
+                let target = match marker {
+                    PromptMarker::PromptStart
+                    | PromptMarker::PromptEnd
+                    | PromptMarker::CommandEnd { .. } => TabState::Idle,
+                    PromptMarker::CommandStart => TabState::Working,
+                };
+                self.transition_to(target, now)
             }
             TrackerInput::OutputObserved => {
                 self.last_output_at = Some(now);
@@ -243,5 +247,68 @@ mod tests {
         let changed = t.on_input(TrackerInput::OutputObserved, Instant::now());
         assert!(!changed);
         assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn tracker_transitions_to_idle_on_prompt_start() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        // First, transition out of the default Active so we can observe the
+        // change to Idle.
+        t.on_input(
+            TrackerInput::AiFrame(Frame::new(State::Working)),
+            Instant::now(),
+        );
+        let changed = t.on_input(
+            TrackerInput::Prompt(PromptMarker::PromptStart),
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Idle);
+    }
+
+    #[test]
+    fn tracker_transitions_to_idle_on_prompt_end() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        t.on_input(
+            TrackerInput::AiFrame(Frame::new(State::Working)),
+            Instant::now(),
+        );
+        let changed = t.on_input(
+            TrackerInput::Prompt(PromptMarker::PromptEnd),
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Idle);
+    }
+
+    #[test]
+    fn tracker_transitions_to_working_on_command_start() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        // Start by going to Idle so the Working transition is observable.
+        t.on_input(
+            TrackerInput::Prompt(PromptMarker::PromptStart),
+            Instant::now(),
+        );
+        let changed = t.on_input(
+            TrackerInput::Prompt(PromptMarker::CommandStart),
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn tracker_transitions_to_idle_on_command_end() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        t.on_input(
+            TrackerInput::Prompt(PromptMarker::CommandStart),
+            Instant::now(),
+        );
+        let changed = t.on_input(
+            TrackerInput::Prompt(PromptMarker::CommandEnd { exit_code: Some(0) }),
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Idle);
     }
 }
