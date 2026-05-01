@@ -18,7 +18,9 @@ workspace = true
 [lib]
 path = "src/lib.rs"
 
-# The vibeflow-emit binary lands in Task 8; its [[bin]] entry is added then.
+[[bin]]
+name = "vibeflow-emit"
+path = "src/bin/vibeflow-emit.rs"
 
 [dev-dependencies]
 proptest = "1"
