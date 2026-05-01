@@ -1,0 +1,26 @@
+[package]
+name = "vibeflow-protocol"
+description = "OSC 1338 protocol — open standard for AI-tool state signalling in terminals"
+categories = ["command-line-interface", "parser-implementations"]
+keywords = ["terminal", "osc", "ai", "vibeflow"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "vibeflow-emit"
+path = "src/bin/vibeflow-emit.rs"
+
+[dev-dependencies]
+proptest = "1"

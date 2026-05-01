@@ -119,6 +119,15 @@ dist/
 *.swp
 *~
 .DS_Store
+
+# Local Claude Code state
+.claude/settings.local.json
+
+# Superpowers brainstorm scratch (mockups, server state)
+.superpowers/
+
+# Logs
+*.log
 ```
 
 **Note:** `Cargo.lock` is *not* ignored — for binaries (and we have one) it should be checked in. For a pure library it would be ignored, but the workspace contains both.
@@ -559,11 +568,13 @@ Insert above `mod tests`:
 /// Returns true for bytes that must be percent-encoded in an OSC 1338 value:
 /// control bytes (0x00–0x1F, 0x7F), `;`, `=`, `%`, and any non-ASCII byte.
 #[inline]
+#[allow(dead_code)] // removed in Task 4 once `Frame::to_bytes` calls `percent_encode`
 fn needs_encoding(b: u8) -> bool {
     b < 0x20 || b == 0x7f || b == b';' || b == b'=' || b == b'%' || b > 0x7f
 }
 
 #[must_use]
+#[allow(dead_code)] // removed in Task 4 once `Frame::to_bytes` calls this
 pub(crate) fn percent_encode(s: &str) -> String {
     let bytes = s.as_bytes();
     // Fast path: nothing to encode.
@@ -584,6 +595,7 @@ pub(crate) fn percent_encode(s: &str) -> String {
     out
 }
 
+#[allow(dead_code)] // removed in Task 5 once `parse` calls this
 pub(crate) fn percent_decode(s: &str) -> Result<String, ParseError> {
     let bytes = s.as_bytes();
     let mut out = Vec::<u8>::with_capacity(bytes.len());
@@ -606,6 +618,7 @@ pub(crate) fn percent_decode(s: &str) -> Result<String, ParseError> {
 }
 
 #[inline]
+#[allow(dead_code)] // removed in Task 4 (transitively used by `percent_encode`)
 fn hex_nibble(n: u8) -> char {
     match n {
         0..=9 => (b'0' + n) as char,
@@ -615,6 +628,7 @@ fn hex_nibble(n: u8) -> char {
 }
 
 #[inline]
+#[allow(dead_code)] // removed in Task 5 (transitively used by `percent_decode`)
 fn hex_value(b: u8) -> Result<u8, ParseError> {
     match b {
         b'0'..=b'9' => Ok(b - b'0'),
@@ -626,6 +640,8 @@ fn hex_value(b: u8) -> Result<u8, ParseError> {
 ```
 
 **Why `pub(crate)`:** the encode/decode helpers are internal; making them `pub(crate)` lets the test module call them but keeps them out of the public API surface.
+
+**Why `#[allow(dead_code)]` (with cleanup notes):** at this point in the plan, no production code in `lib` calls these helpers — only the tests do. `cargo clippy --all-targets -- -D warnings` builds the lib target separately, which sees them as unreachable from anything `pub`/used. The `#[allow]` attributes silence the warning for now; each one notes the task that should remove it as a real caller appears. This keeps each commit individually clippy-clean (matters once the CI workflow lands in Task 16).
 
 - [ ] **Step 3: Run tests — pass**
 
@@ -727,6 +743,19 @@ Then add to the `impl Frame` block:
         s.push(BEL as char);
         s.into_bytes()
     }
+```
+
+**Also in Step 2:** now that `to_bytes` calls `percent_encode` (which transitively uses `needs_encoding` and `hex_nibble`), the `#[allow(dead_code)]` attributes on those three items added in Task 3 are no longer needed. Remove them — delete each `#[allow(dead_code)]` line from `percent_encode`, `needs_encoding`, and `hex_nibble` (keep the lines on `percent_decode` and `hex_value` — those become live in Task 5). After removal, the relevant signatures should look like:
+
+```rust
+#[inline]
+fn needs_encoding(b: u8) -> bool { ... }
+
+#[must_use]
+pub(crate) fn percent_encode(s: &str) -> String { ... }
+
+#[inline]
+fn hex_nibble(n: u8) -> char { ... }
 ```
 
 - [ ] **Step 3: Run tests — pass**
@@ -907,6 +936,17 @@ fn strip_terminator(rest: &[u8]) -> Result<&[u8], ParseError> {
 
 **Why `let Some((key, value)) = part.split_once('=') else { continue };`:** `let-else` is the idiomatic Rust way to early-return from a pattern match without a giant `if let` block. **Why `?` after `parse()`:** `decoded.parse::<State>()` returns `Result<State, ParseError>` because we set `type Err = ParseError` on the `FromStr` impl, so `?` propagates a `ParseError::UnknownState` up.
 
+**Also in Step 2:** now that `parse` calls `percent_decode` (which transitively uses `hex_value`), the `#[allow(dead_code)]` attributes on those two items added in Task 3 are no longer needed. Delete the `#[allow(dead_code)]` line above each. After removal:
+
+```rust
+pub(crate) fn percent_decode(s: &str) -> Result<String, ParseError> { ... }
+
+#[inline]
+fn hex_value(b: u8) -> Result<u8, ParseError> { ... }
+```
+
+This makes the lib clippy-clean with no `#[allow]` attributes left over from Task 3.
+
 - [ ] **Step 3: Run tests — pass**
 
 ```bash
@@ -1023,7 +1063,17 @@ Run `cargo test -p vibeflow-protocol`. Expected: compile error — `emit_to` not
 
 - [ ] **Step 2: Add `emit_to`, `emit`, `emit_state`**
 
-Insert above `mod tests`:
+First, add a `use std::io::Write;` line right below the `//!` doc-comment header at the top of `lib.rs`. Without `Write` in scope, the trait methods `write_all` (in `emit_to`) and `flush` (in `emit`) won't resolve.
+
+```rust
+//! OSC 1338 protocol — vibeflow's open standard for AI-tool state signalling.
+//!
+//! See `docs/protocol.md` in the workspace root for the canonical wire-format spec.
+
+use std::io::Write;
+```
+
+Then insert above `mod tests`:
 
 ```rust
 /// Write the OSC 1338 byte sequence for `frame` to `writer`. Use this when you
@@ -1031,7 +1081,7 @@ Insert above `mod tests`:
 ///
 /// # Errors
 /// Propagates any [`std::io::Error`] from the underlying writer.
-pub fn emit_to<W: std::io::Write>(writer: &mut W, frame: &Frame) -> std::io::Result<()> {
+pub fn emit_to<W: Write>(writer: &mut W, frame: &Frame) -> std::io::Result<()> {
     writer.write_all(&frame.to_bytes())
 }
 
@@ -1219,6 +1269,8 @@ The fuzz crate is excluded from the parent workspace (Task 0 step 2) so stable u
 Write `crates/vibeflow-protocol/fuzz/Cargo.toml`:
 
 ```toml
+[workspace]
+
 [package]
 name = "vibeflow-protocol-fuzz"
 version = "0.0.0"
@@ -1241,6 +1293,8 @@ test = false
 doc = false
 bench = false
 ```
+
+**Why the empty `[workspace]` table:** marks this crate as its own workspace root, so cargo doesn't try to associate it with the parent workspace at `../../..`. The parent workspace already excludes `crates/vibeflow-protocol/fuzz` via its `exclude = […]` list, but cargo's discovery still walks up looking for a workspace, and if it finds the parent's `Cargo.toml`, it errors with "current package believes it's in a workspace when it's not". This empty `[workspace]` short-circuits that walk. (`cargo fuzz init` does the same thing automatically.)
 
 - [ ] **Step 2: Write the fuzz target**
 
