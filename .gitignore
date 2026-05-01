@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+# Cargo.lock is committed at the workspace root (binary convention).
+
+# Editor / OS
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Local Claude Code state
+.claude/settings.local.json
+
+# Superpowers brainstorm scratch (mockups, server state)
+.superpowers/
+
+# Logs
+*.log
