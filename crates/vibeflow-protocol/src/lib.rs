@@ -179,7 +179,6 @@ pub(crate) fn percent_encode(s: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
 pub(crate) fn percent_decode(s: &str) -> Result<String, ParseError> {
     let bytes = s.as_bytes();
     let mut out = Vec::<u8>::with_capacity(bytes.len());
@@ -211,7 +210,6 @@ fn hex_nibble(n: u8) -> char {
 }
 
 #[inline]
-#[allow(dead_code)]
 fn hex_value(b: u8) -> Result<u8, ParseError> {
     match b {
         b'0'..=b'9' => Ok(b - b'0'),
@@ -219,6 +217,75 @@ fn hex_value(b: u8) -> Result<u8, ParseError> {
         b'A'..=b'F' => Ok(b - b'A' + 10),
         _ => Err(ParseError::BadEncoding),
     }
+}
+
+/// Parse a complete OSC 1338 frame from the byte slice.
+///
+/// The caller is responsible for delivering exactly one framed sequence — the
+/// streaming `OscDispatcher` in the vibeflow binary slices bytes between
+/// `ESC ]` and the next `BEL` / `ST` terminator before calling this.
+///
+/// # Errors
+/// See [`ParseError`].
+pub fn parse(bytes: &[u8]) -> Result<Frame, ParseError> {
+    if bytes.len() > MAX_FRAME_LEN {
+        return Err(ParseError::TooLong);
+    }
+
+    // Strip the OSC introducer: `ESC ]`.
+    let rest = bytes
+        .strip_prefix(&[ESC, b']'])
+        .ok_or(ParseError::NotOurOsc)?;
+
+    // Find and strip the terminator (BEL or ST).
+    let body = strip_terminator(rest)?;
+
+    // The body is `1338;k1=v1;k2=v2…` — must be valid UTF-8 (per spec).
+    let body = std::str::from_utf8(body).map_err(|_| ParseError::Malformed("non-UTF-8 body"))?;
+
+    let mut parts = body.split(';');
+    let id = parts.next().ok_or(ParseError::Malformed("empty body"))?;
+    if id != OSC_ID {
+        return Err(ParseError::NotOurOsc);
+    }
+
+    let mut state: Option<State> = None;
+    let mut tool: Option<String> = None;
+    let mut project: Option<String> = None;
+
+    for part in parts {
+        // Split on the *first* `=` only — values may contain `=` if percent-encoded
+        // would have escaped it, but a literal `=` in a malformed frame should
+        // still parse cleanly to "key" + "value-with-equals".
+        let Some((key, value)) = part.split_once('=') else { continue };
+        match key {
+            "state" => {
+                let decoded = percent_decode(value)?;
+                state = Some(decoded.parse()?);
+            }
+            "tool" => tool = Some(percent_decode(value)?),
+            "project" => project = Some(percent_decode(value)?),
+            _ => { /* unknown key — ignore for forward compatibility */ }
+        }
+    }
+
+    let state = state.ok_or(ParseError::MissingState)?;
+    Ok(Frame { state, tool, project })
+}
+
+/// Locate either `BEL` or `ESC \` and return the body slice (everything before it).
+fn strip_terminator(rest: &[u8]) -> Result<&[u8], ParseError> {
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            BEL => return Ok(&rest[..i]),
+            b if b == ESC && rest.get(i + 1).copied() == Some(b'\\') => {
+                return Ok(&rest[..i]);
+            }
+            _ => i += 1,
+        }
+    }
+    Err(ParseError::Malformed("no terminator"))
 }
 
 #[cfg(test)]
@@ -318,5 +385,74 @@ mod tests {
             .with_tool("a;b=c")
             .to_bytes();
         assert_eq!(bytes, b"\x1b]1338;state=active;tool=a%3Bb%3Dc\x07");
+    }
+
+    #[test]
+    fn parse_minimal_bel_terminated() {
+        let f = parse(b"\x1b]1338;state=waiting\x07").unwrap();
+        assert_eq!(f, Frame::new(State::Waiting));
+    }
+
+    #[test]
+    fn parse_minimal_st_terminated() {
+        let f = parse(b"\x1b]1338;state=active\x1b\\").unwrap();
+        assert_eq!(f, Frame::new(State::Active));
+    }
+
+    #[test]
+    fn parse_full_frame_with_all_keys() {
+        let f = parse(b"\x1b]1338;state=working;tool=claude;project=vibeflow\x07").unwrap();
+        assert_eq!(
+            f,
+            Frame::new(State::Working).with_tool("claude").with_project("vibeflow")
+        );
+    }
+
+    #[test]
+    fn parse_decodes_percent_escapes_in_values() {
+        let f = parse(b"\x1b]1338;state=active;tool=a%3Bb%3Dc\x07").unwrap();
+        assert_eq!(f, Frame::new(State::Active).with_tool("a;b=c"));
+    }
+
+    #[test]
+    fn parse_ignores_unknown_keys_for_forward_compat() {
+        let f = parse(b"\x1b]1338;state=waiting;newfield=hello;tool=claude\x07").unwrap();
+        assert_eq!(f, Frame::new(State::Waiting).with_tool("claude"));
+    }
+
+    #[test]
+    fn parse_rejects_wrong_prefix() {
+        assert_eq!(parse(b"hello\x07"), Err(ParseError::NotOurOsc));
+        assert_eq!(parse(b"\x1b]133;state=waiting\x07"), Err(ParseError::NotOurOsc));
+    }
+
+    #[test]
+    fn parse_requires_state_key() {
+        assert_eq!(parse(b"\x1b]1338;tool=claude\x07"), Err(ParseError::MissingState));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_state_value() {
+        match parse(b"\x1b]1338;state=zonking\x07") {
+            Err(ParseError::UnknownState(ref s)) if s == "zonking" => {}
+            other => panic!("expected UnknownState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_missing_terminator() {
+        assert!(matches!(
+            parse(b"\x1b]1338;state=waiting"),
+            Err(ParseError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_oversized_input() {
+        let mut big = Vec::with_capacity(MAX_FRAME_LEN + 100);
+        big.extend_from_slice(b"\x1b]1338;state=waiting;tool=");
+        big.extend(std::iter::repeat(b'x').take(MAX_FRAME_LEN));
+        big.push(BEL);
+        assert_eq!(parse(&big), Err(ParseError::TooLong));
     }
 }
