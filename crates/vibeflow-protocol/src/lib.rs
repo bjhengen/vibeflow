@@ -560,4 +560,33 @@ mod tests {
         emit_to(&mut buf, &f).expect("write should succeed");
         assert_eq!(buf, b"\x1b]1338;state=working;tool=claude\x07");
     }
+
+    /// Sanity check: parse a byte sequence byte-identical to what `@vibeflow/protocol`'s
+    /// `toBytes` produces. If the npm and Rust formats ever diverge, this test fires first.
+    /// The fixture was captured by hand from the npm side and is part of the test contract.
+    #[test]
+    fn parses_npm_emitted_bytes_byte_for_byte() {
+        let bytes = b"\x1b]1338;state=working;tool=codex;project=vibeflow\x07";
+        let f = parse(bytes).unwrap();
+        assert_eq!(
+            f,
+            Frame::new(State::Working)
+                .with_tool("codex")
+                .with_project("vibeflow")
+        );
+    }
+
+    /// Same idea in the other direction: the Rust `to_bytes` output should be byte-identical
+    /// to what an npm caller computing `toBytes` for the same Frame would emit.
+    #[test]
+    fn rust_to_bytes_matches_npm_fixture() {
+        let f = Frame::new(State::Waiting)
+            .with_tool("claude")
+            .with_project("vibeflow");
+        let bytes = f.to_bytes();
+        assert_eq!(
+            bytes,
+            b"\x1b]1338;state=waiting;tool=claude;project=vibeflow\x07"
+        );
+    }
 }
