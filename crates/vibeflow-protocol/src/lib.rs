@@ -115,6 +115,79 @@ impl Frame {
     }
 }
 
+/// Returns true for bytes that must be percent-encoded in an OSC 1338 value:
+/// control bytes (0x00–0x1F, 0x7F), `;`, `=`, `%`, and any non-ASCII byte.
+#[inline]
+#[allow(dead_code)]
+fn needs_encoding(b: u8) -> bool {
+    b < 0x20 || b == 0x7f || b == b';' || b == b'=' || b == b'%' || b > 0x7f
+}
+
+#[must_use]
+#[allow(dead_code)]
+pub(crate) fn percent_encode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    // Fast path: nothing to encode.
+    if !bytes.iter().copied().any(needs_encoding) {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(bytes.len() + 8);
+    for &b in bytes {
+        if needs_encoding(b) {
+            // %XX, uppercase hex (RFC 3986 convention).
+            out.push('%');
+            out.push(hex_nibble(b >> 4));
+            out.push(hex_nibble(b & 0x0f));
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
+#[allow(dead_code)]
+pub(crate) fn percent_decode(s: &str) -> Result<String, ParseError> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::<u8>::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err(ParseError::BadEncoding);
+            }
+            let hi = hex_value(bytes[i + 1])?;
+            let lo = hex_value(bytes[i + 2])?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| ParseError::BadEncoding)
+}
+
+#[inline]
+#[allow(dead_code)]
+fn hex_nibble(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'A' + (n - 10)) as char,
+        _ => unreachable!("hex_nibble: caller masked to 4 bits"),
+    }
+}
+
+#[inline]
+#[allow(dead_code)]
+fn hex_value(b: u8) -> Result<u8, ParseError> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(ParseError::BadEncoding),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +222,42 @@ mod tests {
         assert_eq!(f.state, State::Waiting);
         assert_eq!(f.tool.as_deref(), Some("claude"));
         assert_eq!(f.project.as_deref(), Some("vibeflow"));
+    }
+
+    #[test]
+    fn percent_encode_passes_safe_ascii_through() {
+        assert_eq!(percent_encode("hello-world_42"), "hello-world_42");
+    }
+
+    #[test]
+    fn percent_encode_escapes_specials() {
+        assert_eq!(percent_encode("a;b=c"), "a%3Bb%3Dc");
+        assert_eq!(percent_encode("100%"), "100%25");
+    }
+
+    #[test]
+    fn percent_encode_escapes_non_ascii_as_utf8_bytes() {
+        // "café" → c, a, f, é (0xC3 0xA9 in UTF-8)
+        assert_eq!(percent_encode("café"), "caf%C3%A9");
+    }
+
+    #[test]
+    fn percent_decode_roundtrips_arbitrary_strings() {
+        for s in ["", "plain", "a;b=c", "café", "100%", "tab\there"] {
+            let encoded = percent_encode(s);
+            let decoded = percent_decode(&encoded).expect("round-trip");
+            assert_eq!(decoded, s);
+        }
+    }
+
+    #[test]
+    fn percent_decode_rejects_truncated_escape() {
+        assert_eq!(percent_decode("foo%2"), Err(ParseError::BadEncoding));
+        assert_eq!(percent_decode("foo%"), Err(ParseError::BadEncoding));
+    }
+
+    #[test]
+    fn percent_decode_rejects_non_hex_digits() {
+        assert_eq!(percent_decode("foo%ZZ"), Err(ParseError::BadEncoding));
     }
 }
