@@ -1,19 +1,23 @@
-# Rust build artifacts
+# Rust
 /target
+/crates/*/target
 **/*.rs.bk
-# Cargo.lock is committed at the workspace root (binary convention).
+Cargo.lock.bak
 
-# Editor / OS
-.DS_Store
-*.swp
-.vscode/
+# cargo-fuzz
+/crates/vibeflow-protocol/fuzz/target
+/crates/vibeflow-protocol/fuzz/corpus
+/crates/vibeflow-protocol/fuzz/artifacts
+/crates/vibeflow-protocol/fuzz/coverage
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Editors
 .idea/
-
-# Local Claude Code state
-.claude/settings.local.json
-
-# Superpowers brainstorm scratch (mockups, server state)
-.superpowers/
-
-# Logs
-*.log
+.vscode/
+*.swp
+*~
+.DS_Store

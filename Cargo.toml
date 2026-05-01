@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/vibeflow-protocol"]
+exclude = ["crates/vibeflow-protocol/fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bjhengen/vibeflow"
+homepage = "https://github.com/bjhengen/vibeflow"
+authors = ["Brian Hengen <brian@friendly-robots.com>"]
+rust-version = "1.75"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Default lint groups only. `pedantic`/`nursery` are opt-in per crate later
+# if the user wants — they'd otherwise fire on lots of idiomatic code and
+# block CI for a Rust newcomer in surprising ways.
+all = { level = "warn", priority = -1 }
