@@ -2,6 +2,8 @@
 //!
 //! See `docs/protocol.md` in the workspace root for the canonical wire-format spec.
 
+use std::io::Write;
+
 /// `ESC` byte (start of an OSC sequence).
 pub const ESC: u8 = 0x1B;
 /// `BEL` byte (one of two valid OSC terminators).
@@ -288,6 +290,34 @@ fn strip_terminator(rest: &[u8]) -> Result<&[u8], ParseError> {
     Err(ParseError::Malformed("no terminator"))
 }
 
+/// Write the OSC 1338 byte sequence for `frame` to `writer`. Use this when you
+/// need to write somewhere other than stdout (tests, files, sockets).
+///
+/// # Errors
+/// Propagates any [`std::io::Error`] from the underlying writer.
+pub fn emit_to<W: std::io::Write>(writer: &mut W, frame: &Frame) -> std::io::Result<()> {
+    writer.write_all(&frame.to_bytes())
+}
+
+/// Write `frame` to stdout and flush.
+///
+/// # Errors
+/// Returns the underlying I/O error if stdout cannot be written.
+pub fn emit(frame: &Frame) -> std::io::Result<()> {
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    emit_to(&mut handle, frame)?;
+    handle.flush()
+}
+
+/// Convenience for `emit(&Frame::new(state))`.
+///
+/// # Errors
+/// Returns the underlying I/O error if stdout cannot be written.
+pub fn emit_state(state: State) -> std::io::Result<()> {
+    emit(&Frame::new(state))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +527,14 @@ mod tests {
             let parsed = parse(&bytes).expect("round-trip should always parse");
             prop_assert_eq!(parsed, frame);
         }
+    }
+
+    #[test]
+    fn emit_writes_to_provided_writer() {
+        // emit_to is the seam we test against; emit() and emit_state() wrap it.
+        let mut buf = Vec::<u8>::new();
+        let f = Frame::new(State::Working).with_tool("claude");
+        emit_to(&mut buf, &f).expect("write should succeed");
+        assert_eq!(buf, b"\x1b]1338;state=working;tool=claude\x07");
     }
 }
