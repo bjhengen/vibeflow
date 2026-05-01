@@ -110,7 +110,11 @@ impl Frame {
     /// A new frame with only the required `state` field set.
     #[must_use]
     pub fn new(state: State) -> Self {
-        Self { state, tool: None, project: None }
+        Self {
+            state,
+            tool: None,
+            project: None,
+        }
     }
 
     /// Set the optional `tool` field. Returns `self` for chaining.
@@ -259,7 +263,9 @@ pub fn parse(bytes: &[u8]) -> Result<Frame, ParseError> {
         // Split on the *first* `=` only — values may contain `=` if percent-encoded
         // would have escaped it, but a literal `=` in a malformed frame should
         // still parse cleanly to "key" + "value-with-equals".
-        let Some((key, value)) = part.split_once('=') else { continue };
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
         match key {
             "state" => {
                 let decoded = percent_decode(value)?;
@@ -272,7 +278,11 @@ pub fn parse(bytes: &[u8]) -> Result<Frame, ParseError> {
     }
 
     let state = state.ok_or(ParseError::MissingState)?;
-    Ok(Frame { state, tool, project })
+    Ok(Frame {
+        state,
+        tool,
+        project,
+    })
 }
 
 /// Locate either `BEL` or `ESC \` and return the body slice (everything before it).
@@ -411,9 +421,7 @@ mod tests {
 
     #[test]
     fn to_bytes_percent_encodes_special_characters_in_values() {
-        let bytes = Frame::new(State::Active)
-            .with_tool("a;b=c")
-            .to_bytes();
+        let bytes = Frame::new(State::Active).with_tool("a;b=c").to_bytes();
         assert_eq!(bytes, b"\x1b]1338;state=active;tool=a%3Bb%3Dc\x07");
     }
 
@@ -434,7 +442,9 @@ mod tests {
         let f = parse(b"\x1b]1338;state=working;tool=claude;project=vibeflow\x07").unwrap();
         assert_eq!(
             f,
-            Frame::new(State::Working).with_tool("claude").with_project("vibeflow")
+            Frame::new(State::Working)
+                .with_tool("claude")
+                .with_project("vibeflow")
         );
     }
 
@@ -453,12 +463,18 @@ mod tests {
     #[test]
     fn parse_rejects_wrong_prefix() {
         assert_eq!(parse(b"hello\x07"), Err(ParseError::NotOurOsc));
-        assert_eq!(parse(b"\x1b]133;state=waiting\x07"), Err(ParseError::NotOurOsc));
+        assert_eq!(
+            parse(b"\x1b]133;state=waiting\x07"),
+            Err(ParseError::NotOurOsc)
+        );
     }
 
     #[test]
     fn parse_requires_state_key() {
-        assert_eq!(parse(b"\x1b]1338;tool=claude\x07"), Err(ParseError::MissingState));
+        assert_eq!(
+            parse(b"\x1b]1338;tool=claude\x07"),
+            Err(ParseError::MissingState)
+        );
     }
 
     #[test]
@@ -515,9 +531,16 @@ mod tests {
     }
 
     fn arb_frame() -> impl Strategy<Value = Frame> {
-        (arb_state(), proptest::option::of(arb_value()), proptest::option::of(arb_value())).prop_map(
-            |(state, tool, project)| Frame { state, tool, project },
+        (
+            arb_state(),
+            proptest::option::of(arb_value()),
+            proptest::option::of(arb_value()),
         )
+            .prop_map(|(state, tool, project)| Frame {
+                state,
+                tool,
+                project,
+            })
     }
 
     proptest! {

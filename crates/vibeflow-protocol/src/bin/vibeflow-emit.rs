@@ -27,7 +27,11 @@ fn main() -> ExitCode {
     if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help") {
         let mut out = std::io::stderr();
         print_usage(&mut out);
-        return if args.is_empty() { ExitCode::from(2) } else { ExitCode::SUCCESS };
+        return if args.is_empty() {
+            ExitCode::from(2)
+        } else {
+            ExitCode::SUCCESS
+        };
     }
 
     let state: State = match args[0].parse() {
