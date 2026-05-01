@@ -92,7 +92,6 @@ pub enum TrackerInput {
 #[derive(Debug)]
 pub struct AiStateTracker {
     state: TabState,
-    #[allow(dead_code)] // used in Task 10 for debounce logic
     config: TrackerConfig,
     /// `Instant` of the last input that affected state. `None` until the first
     /// state transition.
@@ -162,6 +161,13 @@ impl AiStateTracker {
     fn transition_to(&mut self, new_state: TabState, now: Instant) -> bool {
         if self.state == new_state {
             return false;
+        }
+        // Debounce: suppress transitions closer together than `config.debounce`.
+        // The first transition (last_event_at == None) is always accepted.
+        if let Some(last) = self.last_event_at {
+            if now.saturating_duration_since(last) < self.config.debounce {
+                return false;
+            }
         }
         self.state = new_state;
         self.last_event_at = Some(now);
@@ -310,5 +316,53 @@ mod tests {
         );
         assert!(changed);
         assert_eq!(t.state(), TabState::Idle);
+    }
+
+    #[test]
+    fn tracker_suppresses_flapping_within_debounce_window() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        // First transition at `now` — accepted.
+        let c1 = t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        assert!(c1);
+        assert_eq!(t.state(), TabState::Working);
+        // Second transition 50 ms later — within the 100 ms debounce window;
+        // suppressed. State must remain Working.
+        let c2 = t.on_input(
+            TrackerInput::AiFrame(Frame::new(State::Waiting)),
+            now + Duration::from_millis(50),
+        );
+        assert!(!c2);
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn tracker_accepts_transitions_past_debounce_window() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        let changed = t.on_input(
+            TrackerInput::AiFrame(Frame::new(State::Waiting)),
+            now + Duration::from_millis(150),
+        );
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    #[test]
+    fn tracker_debounce_is_configurable() {
+        let mut t = AiStateTracker::new(TrackerConfig {
+            debounce: Duration::from_millis(500),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // 200 ms — within the custom 500 ms debounce, so suppressed.
+        let changed = t.on_input(
+            TrackerInput::AiFrame(Frame::new(State::Waiting)),
+            now + Duration::from_millis(200),
+        );
+        assert!(!changed);
+        assert_eq!(t.state(), TabState::Working);
     }
 }
