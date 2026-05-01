@@ -20,3 +20,80 @@ const BEL = "\x07";
 export const MAX_FRAME_LEN = 4096;
 /** The OSC identifier this binding owns. */
 export const OSC_ID = "1338";
+
+const NEEDS_ENCODING = (b: number): boolean =>
+  b < 0x20 ||
+  b === 0x7f ||
+  b === 0x3b /* ; */ ||
+  b === 0x3d /* = */ ||
+  b === 0x25 /* % */ ||
+  b > 0x7f;
+
+/** Internal helper — exported for tests / advanced use. */
+export function percentEncode(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let out = "";
+  for (const b of bytes) {
+    if (NEEDS_ENCODING(b)) {
+      out += "%" + b.toString(16).toUpperCase().padStart(2, "0");
+    } else {
+      out += String.fromCharCode(b);
+    }
+  }
+  return out;
+}
+
+/** Internal helper — exported for tests / advanced use. */
+export function percentDecode(s: string): string {
+  // Operate on UTF-8 bytes, not UTF-16 code units. Two reasons:
+  // (1) `s.charCodeAt(i)` returns 0..65535 — Uint8Array truncates past 255,
+  //     so any non-ASCII char that slipped through unencoded would be mangled.
+  // (2) The Rust reference parser treats unencoded non-ASCII as byte-passthrough;
+  //     this matches that behaviour.
+  const inputBytes = new TextEncoder().encode(s);
+  const out: number[] = [];
+  let i = 0;
+  while (i < inputBytes.length) {
+    if (inputBytes[i] === 0x25 /* % */) {
+      if (i + 2 >= inputBytes.length) {
+        throw new Error("vibeflow-protocol: bad percent encoding");
+      }
+      const hex = String.fromCharCode(inputBytes[i + 1]!, inputBytes[i + 2]!);
+      if (!/^[0-9a-fA-F]{2}$/.test(hex)) {
+        throw new Error("vibeflow-protocol: bad percent encoding");
+      }
+      out.push(parseInt(hex, 16));
+      i += 3;
+    } else {
+      out.push(inputBytes[i]!);
+      i += 1;
+    }
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(out));
+  } catch {
+    throw new Error("vibeflow-protocol: invalid UTF-8 after percent-decode");
+  }
+}
+
+/**
+ * Serialise a frame into its OSC 1338 byte sequence (BEL-terminated).
+ * Returns a string — write it to stdout (or any byte sink) verbatim.
+ */
+export function toBytes(frame: Frame): string {
+  let s = `${ESC}]${OSC_ID};state=${frame.state}`;
+  if (frame.tool != null) s += `;tool=${percentEncode(frame.tool)}`;
+  if (frame.project != null) s += `;project=${percentEncode(frame.project)}`;
+  s += BEL;
+  return s;
+}
+
+/** Write `frame`'s OSC 1338 sequence to `process.stdout`. */
+export function emit(frame: Frame): void {
+  process.stdout.write(toBytes(frame));
+}
+
+/** Convenience for `emit({ state })`. */
+export function emitState(state: State): void {
+  emit({ state });
+}
