@@ -606,6 +606,22 @@ Append to the `mod tests` block:
             ]
         );
     }
+
+    #[test]
+    fn dispatcher_handles_double_esc_followed_by_osc() {
+        // ESC ESC ] is "first ESC was a false start, second ESC is the real
+        // introducer". The first ESC should land in passthrough; the OSC
+        // should still be recognised.
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b\x1b]1338;state=working\x07");
+        assert_eq!(
+            events,
+            vec![
+                DispatchEvent::PassThrough(b"\x1b".to_vec()),
+                DispatchEvent::AiState(Frame::new(State::Working)),
+            ]
+        );
+    }
 ```
 
 Run:
@@ -615,7 +631,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: 4 new tests fail at runtime (panic on `unreachable!` from Task 2's `InOsc` branch when entering OSC body). The first test will hit the panic immediately on the second byte (`]`).
+Expected: 5 new tests fail at runtime (panic on `unreachable!` from Task 2's `InOsc` branch when entering OSC body). The first test will hit the panic immediately on the second byte (`]`).
 
 - [ ] **Step 2: Replace the `step` body to handle OSC entry, buffering, and termination**
 
@@ -640,6 +656,12 @@ Replace the entire `fn step` method on `OscDispatcher` with:
                     self.state = ParseState::InOsc;
                     self.osc_body.clear();
                     self.osc_overflowed = false;
+                } else if b == 0x1B {
+                    // Two ESCs in a row. The first ESC was a false start (this
+                    // byte is ESC, not `]`). Emit the first ESC as plain and
+                    // treat this second ESC as a fresh OSC-introducer candidate.
+                    self.pass_buf.push(0x1B);
+                    // state stays SeenEsc with this ESC pending
                 } else {
                     // Not an OSC — restore ESC + this byte as plain bytes.
                     self.pass_buf.push(0x1B);
@@ -754,7 +776,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 15 passed; 0 failed`. (11 from Task 2 + 4 new.)
+Expected: `test result: ok. 16 passed; 0 failed`. (11 from Task 2 + 5 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -873,7 +895,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 19 passed; 0 failed`. (15 from Task 3 + 4 new.)
+Expected: `test result: ok. 20 passed; 0 failed`. (16 from Task 3 + 4 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -1086,7 +1108,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 24 passed; 0 failed`. (19 from Task 4 + 5 new.)
+Expected: `test result: ok. 25 passed; 0 failed`. (20 from Task 4 + 5 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -1159,7 +1181,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 25 passed; 0 failed`. (24 from Task 5 + 1 new — the proptest counts as a single test name running 256 cases by default.)
+Expected: `test result: ok. 26 passed; 0 failed`. (25 from Task 5 + 1 new — the proptest counts as a single test name running 256 cases by default.)
 
 If proptest finds a panicking input, it shrinks to a minimal counter-example and prints it. That's a real bug in the dispatcher — STOP and report.
 
@@ -1291,7 +1313,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: 3 new tests pass (no implementation needed; this task only introduces value-types). Total `test result: ok. 28 passed`.
+Expected: 3 new tests pass (no implementation needed; this task only introduces value-types). Total `test result: ok. 29 passed`.
 
 - [ ] **Step 2: Verify fmt + clippy**
 
@@ -1519,7 +1541,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 33 passed; 0 failed`. (28 from Task 7 + 5 new.)
+Expected: `test result: ok. 34 passed; 0 failed`. (29 from Task 7 + 5 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -1648,7 +1670,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 37 passed; 0 failed`. (33 from Task 8 + 4 new.)
+Expected: `test result: ok. 38 passed; 0 failed`. (34 from Task 8 + 4 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -1779,7 +1801,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 40 passed; 0 failed`. (37 from Task 9 + 3 new.)
+Expected: `test result: ok. 41 passed; 0 failed`. (38 from Task 9 + 3 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -1912,7 +1934,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 44 passed; 0 failed`. (40 from Task 10 + 4 new.)
+Expected: `test result: ok. 45 passed; 0 failed`. (41 from Task 10 + 4 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -2076,7 +2098,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 48 passed; 0 failed`. (44 from Task 11 + 4 new.)
+Expected: `test result: ok. 49 passed; 0 failed`. (45 from Task 11 + 4 new.)
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -2119,32 +2141,41 @@ use vibeflow::session::tracker::{AiStateTracker, TabState, TrackerConfig, Tracke
 
 /// Helper: feed bytes, route events into the tracker, return a vector of
 /// (post-event tracker state, was-it-a-change-bool) per event.
+///
+/// Each event is timestamped 200 ms after its predecessor in the same feed
+/// call, well past the 100 ms debounce window. In real use, bytes arrive on a
+/// PTY over wall-clock time so this models reality faithfully; the integration
+/// test would otherwise see all events at the same instant and have legitimate
+/// state transitions silently dropped by debounce.
 fn feed_and_track(
     dispatcher: &mut OscDispatcher,
     tracker: &mut AiStateTracker,
     bytes: &[u8],
-    now: Instant,
+    start: Instant,
 ) -> Vec<(TabState, bool)> {
     let events = dispatcher.feed(bytes);
     events
         .into_iter()
-        .map(|ev| match ev {
-            DispatchEvent::AiState(frame) => {
-                let changed = tracker.on_input(TrackerInput::AiFrame(frame), now);
-                (tracker.state(), changed)
-            }
-            DispatchEvent::Prompt(marker) => {
-                let changed = tracker.on_input(TrackerInput::Prompt(marker), now);
-                (tracker.state(), changed)
-            }
-            DispatchEvent::PassThrough(bytes) => {
-                // Real PTY/terminal-grid path (Stage 3+) would forward bytes
-                // here. For Stage 2, observing output through the tracker
-                // is the nearest equivalent.
-                let _ = bytes;
-                let changed =
-                    tracker.on_input(TrackerInput::OutputObserved, now);
-                (tracker.state(), changed)
+        .enumerate()
+        .map(|(i, ev)| {
+            let now = start + Duration::from_millis(200 * i as u64);
+            match ev {
+                DispatchEvent::AiState(frame) => {
+                    let changed = tracker.on_input(TrackerInput::AiFrame(frame), now);
+                    (tracker.state(), changed)
+                }
+                DispatchEvent::Prompt(marker) => {
+                    let changed = tracker.on_input(TrackerInput::Prompt(marker), now);
+                    (tracker.state(), changed)
+                }
+                DispatchEvent::PassThrough(bytes) => {
+                    // Real PTY/terminal-grid path (Stage 3+) would forward bytes
+                    // here. For Stage 2, observing output through the tracker
+                    // is the nearest equivalent.
+                    let _ = bytes;
+                    let changed = tracker.on_input(TrackerInput::OutputObserved, now);
+                    (tracker.state(), changed)
+                }
             }
         })
         .collect()
@@ -2267,7 +2298,7 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow
 ```
 
-Expected: `test result: ok. 48 passed; 0 failed` (unit) plus `test result: ok. 3 passed; 0 failed` (integration).
+Expected: `test result: ok. 49 passed; 0 failed` (unit) plus `test result: ok. 3 passed; 0 failed` (integration).
 
 - [ ] **Step 4: Verify fmt + clippy**
 
