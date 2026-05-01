@@ -369,8 +369,6 @@ reopen_dead_tab = "Ctrl+Shift+R"
 
 None outstanding. All settled during the brainstorm.
 
-(One housekeeping item to handle on first commit: the working directory is currently `~/dev/ai_term/`. Whether to rename to `~/dev/vibeflow/` is purely cosmetic — the repo, crate, and binary are all `vibeflow` regardless. User to decide.)
-
 ## Estimated Effort
 
 Rough sizing for v0.1 from a Rust-newcomer pace. Subject to revision when the implementation plan is written.
