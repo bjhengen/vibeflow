@@ -2,7 +2,7 @@
 
 TypeScript binding for the **OSC 1338 protocol** — an open standard for AI-tool state signalling in terminals.
 
-When an AI tool (Claude Code, Codex, Aider, …) emits an OSC 1338 sequence, a compliant terminal (e.g. [vibeflow](https://github.com/bjhengen/vibeflow)) updates that tab's visual indicator: amber pulse for `waiting`, blue for `working`, gray for `idle`. The protocol is open so anything that emits the bytes — a wrapper script, a Node CLI, a hooked LSP — Just Works.
+When an AI tool (Claude Code, Codex, Aider, …) emits an OSC 1338 sequence, a compliant terminal (e.g. [vibeflow](https://github.com/bjhengen/vibeflow)) updates that tab's visual indicator: amber pulse for `waiting`, blue for `working`. The protocol is open so anything that emits the bytes — a wrapper script, a Node CLI, a hooked LSP — Just Works.
 
 ## Install
 

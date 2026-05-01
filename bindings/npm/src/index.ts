@@ -78,7 +78,13 @@ export function percentDecode(s: string): string {
 
 /**
  * Serialise a frame into its OSC 1338 byte sequence (BEL-terminated).
- * Returns a string — write it to stdout (or any byte sink) verbatim.
+ *
+ * Returns a JavaScript string — that's what Node's `process.stdout.write` and
+ * most other terminal-bound sinks consume. The OSC bytes (ESC=0x1B, BEL=0x07)
+ * are valid single-byte ASCII control characters, and the rest of the payload
+ * is ASCII (percent-encoding handles non-ASCII), so the string round-trips
+ * unchanged through UTF-8 encoding. Pass through `Buffer.from(..., 'binary')`
+ * if you need a `Buffer` for non-default-encoding writes.
  */
 export function toBytes(frame: Frame): string {
   let s = `${ESC}]${OSC_ID};state=${frame.state}`;
@@ -169,7 +175,9 @@ export function parse(input: string): Frame {
     }
   }
 
-  if (!result.state) {
+  // Strict undefined check — not falsy. All current State values are non-empty
+  // strings, but `if (!result.state)` would also fire for any future "" sentinel.
+  if (result.state === undefined) {
     throw new Error("vibeflow-protocol: missing state");
   }
   // Build the result without `tool`/`project` keys when undefined (cleaner deepEqual).
