@@ -142,10 +142,19 @@ impl AiStateTracker {
     }
 
     /// Stale-state and heuristic-silence checks at `now`. Returns `true` if a
-    /// timeout caused a state change. (Stub for Task 8; real logic in Tasks 11–12.)
-    #[allow(dead_code)] // first lib-level caller arrives in Task 11
+    /// timeout caused a state change.
     pub fn tick(&mut self, now: Instant) -> bool {
-        let _ = now;
+        // Stale-state timeout: if we're not in Active and our last state-change
+        // was more than `config.stale_state` ago, reset to Active.
+        if self.state != TabState::Active {
+            if let Some(last) = self.last_event_at {
+                if now.saturating_duration_since(last) >= self.config.stale_state {
+                    self.state = TabState::Active;
+                    self.last_event_at = Some(now);
+                    return true;
+                }
+            }
+        }
         false
     }
 
@@ -364,5 +373,54 @@ mod tests {
         );
         assert!(!changed);
         assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn tracker_stale_state_timeout_resets_to_active() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        assert_eq!(t.state(), TabState::Working);
+
+        // 31 seconds later (past the 30 s default), tick → reset to Active.
+        let later = now + Duration::from_secs(31);
+        let changed = t.tick(later);
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Active);
+    }
+
+    #[test]
+    fn tracker_does_not_reset_within_stale_window() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // 10 seconds later — still well within the 30 s stale window.
+        let changed = t.tick(now + Duration::from_secs(10));
+        assert!(!changed);
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn tracker_stale_state_does_not_fire_when_already_active() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        // Tracker starts Active; an Active->Active "transition" never sets
+        // last_event_at, so tick() can't have a baseline. Should not fire.
+        let changed = t.tick(now + Duration::from_secs(60));
+        assert!(!changed);
+        assert_eq!(t.state(), TabState::Active);
+    }
+
+    #[test]
+    fn tracker_stale_state_after_idle_resets_to_active() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.on_input(TrackerInput::Prompt(PromptMarker::PromptStart), now);
+        assert_eq!(t.state(), TabState::Idle);
+        // 31 seconds later — Idle should also be reset (stale-state spec
+        // doesn't carve out shell-derived states).
+        let changed = t.tick(now + Duration::from_secs(31));
+        assert!(changed);
+        assert_eq!(t.state(), TabState::Active);
     }
 }
