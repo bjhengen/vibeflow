@@ -2,6 +2,17 @@
 //!
 //! See `docs/protocol.md` in the workspace root for the canonical wire-format spec.
 
+/// `ESC` byte (start of an OSC sequence).
+pub const ESC: u8 = 0x1B;
+/// `BEL` byte (one of two valid OSC terminators).
+pub const BEL: u8 = 0x07;
+/// String-terminator (the second valid terminator) is `ESC \` — two bytes.
+pub const ST: [u8; 2] = [ESC, b'\\'];
+/// OSC 1338 sequences over this length are dropped on the floor.
+pub const MAX_FRAME_LEN: usize = 4096;
+/// The OSC identifier we own.
+pub const OSC_ID: &str = "1338";
+
 /// Per-tab AI-tool state, as carried in the `state` parameter of OSC 1338.
 ///
 /// Variants are listed in order of "loudness" of the visual indicator:
@@ -113,18 +124,41 @@ impl Frame {
         self.project = Some(project.into());
         self
     }
+
+    /// Serialise this frame as the bytes of an OSC 1338 sequence terminated by `BEL`.
+    ///
+    /// (BEL terminator chosen over ST because it's simpler and is what xterm/iTerm/most
+    /// terminals emit themselves. Either is acceptable per the spec.)
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut s = String::with_capacity(64);
+        s.push(ESC as char);
+        s.push(']');
+        s.push_str(OSC_ID);
+        s.push(';');
+        s.push_str("state=");
+        s.push_str(self.state.as_str());
+        if let Some(tool) = &self.tool {
+            s.push_str(";tool=");
+            s.push_str(&percent_encode(tool));
+        }
+        if let Some(project) = &self.project {
+            s.push_str(";project=");
+            s.push_str(&percent_encode(project));
+        }
+        s.push(BEL as char);
+        s.into_bytes()
+    }
 }
 
 /// Returns true for bytes that must be percent-encoded in an OSC 1338 value:
 /// control bytes (0x00–0x1F, 0x7F), `;`, `=`, `%`, and any non-ASCII byte.
 #[inline]
-#[allow(dead_code)]
 fn needs_encoding(b: u8) -> bool {
     b < 0x20 || b == 0x7f || b == b';' || b == b'=' || b == b'%' || b > 0x7f
 }
 
 #[must_use]
-#[allow(dead_code)]
 pub(crate) fn percent_encode(s: &str) -> String {
     let bytes = s.as_bytes();
     // Fast path: nothing to encode.
@@ -168,7 +202,6 @@ pub(crate) fn percent_decode(s: &str) -> Result<String, ParseError> {
 }
 
 #[inline]
-#[allow(dead_code)]
 fn hex_nibble(n: u8) -> char {
     match n {
         0..=9 => (b'0' + n) as char,
@@ -259,5 +292,31 @@ mod tests {
     #[test]
     fn percent_decode_rejects_non_hex_digits() {
         assert_eq!(percent_decode("foo%ZZ"), Err(ParseError::BadEncoding));
+    }
+
+    #[test]
+    fn to_bytes_minimal_frame_is_state_only() {
+        let bytes = Frame::new(State::Waiting).to_bytes();
+        assert_eq!(bytes, b"\x1b]1338;state=waiting\x07");
+    }
+
+    #[test]
+    fn to_bytes_with_tool_and_project() {
+        let bytes = Frame::new(State::Working)
+            .with_tool("claude")
+            .with_project("vibeflow")
+            .to_bytes();
+        assert_eq!(
+            bytes,
+            b"\x1b]1338;state=working;tool=claude;project=vibeflow\x07"
+        );
+    }
+
+    #[test]
+    fn to_bytes_percent_encodes_special_characters_in_values() {
+        let bytes = Frame::new(State::Active)
+            .with_tool("a;b=c")
+            .to_bytes();
+        assert_eq!(bytes, b"\x1b]1338;state=active;tool=a%3Bb%3Dc\x07");
     }
 }
