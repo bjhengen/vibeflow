@@ -1063,7 +1063,17 @@ Run `cargo test -p vibeflow-protocol`. Expected: compile error — `emit_to` not
 
 - [ ] **Step 2: Add `emit_to`, `emit`, `emit_state`**
 
-Insert above `mod tests`:
+First, add a `use std::io::Write;` line right below the `//!` doc-comment header at the top of `lib.rs`. Without `Write` in scope, the trait methods `write_all` (in `emit_to`) and `flush` (in `emit`) won't resolve.
+
+```rust
+//! OSC 1338 protocol — vibeflow's open standard for AI-tool state signalling.
+//!
+//! See `docs/protocol.md` in the workspace root for the canonical wire-format spec.
+
+use std::io::Write;
+```
+
+Then insert above `mod tests`:
 
 ```rust
 /// Write the OSC 1338 byte sequence for `frame` to `writer`. Use this when you
@@ -1071,7 +1081,7 @@ Insert above `mod tests`:
 ///
 /// # Errors
 /// Propagates any [`std::io::Error`] from the underlying writer.
-pub fn emit_to<W: std::io::Write>(writer: &mut W, frame: &Frame) -> std::io::Result<()> {
+pub fn emit_to<W: Write>(writer: &mut W, frame: &Frame) -> std::io::Result<()> {
     writer.write_all(&frame.to_bytes())
 }
 
@@ -1259,6 +1269,8 @@ The fuzz crate is excluded from the parent workspace (Task 0 step 2) so stable u
 Write `crates/vibeflow-protocol/fuzz/Cargo.toml`:
 
 ```toml
+[workspace]
+
 [package]
 name = "vibeflow-protocol-fuzz"
 version = "0.0.0"
@@ -1281,6 +1293,8 @@ test = false
 doc = false
 bench = false
 ```
+
+**Why the empty `[workspace]` table:** marks this crate as its own workspace root, so cargo doesn't try to associate it with the parent workspace at `../../..`. The parent workspace already excludes `crates/vibeflow-protocol/fuzz` via its `exclude = […]` list, but cargo's discovery still walks up looking for a workspace, and if it finds the parent's `Cargo.toml`, it errors with "current package believes it's in a workspace when it's not". This empty `[workspace]` short-circuits that walk. (`cargo fuzz init` does the same thing automatically.)
 
 - [ ] **Step 2: Write the fuzz target**
 
