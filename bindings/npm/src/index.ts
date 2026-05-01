@@ -97,3 +97,84 @@ export function emit(frame: Frame): void {
 export function emitState(state: State): void {
   emit({ state });
 }
+
+/**
+ * Parse a complete OSC 1338 frame. Caller is responsible for delivering
+ * exactly one framed sequence (an in-terminal stream parser would chunk
+ * between `ESC ]` and the next `BEL` / `ESC \`).
+ *
+ * Throws on any malformed input.
+ */
+export function parse(input: string): Frame {
+  // Match Rust's byte-based 4 KiB cap: `input.length` is UTF-16 code units,
+  // which under-reports byte count for non-ASCII inputs.
+  if (new TextEncoder().encode(input).length > MAX_FRAME_LEN) {
+    throw new Error("vibeflow-protocol: frame too long");
+  }
+  if (!input.startsWith(`${ESC}]`)) {
+    throw new Error("vibeflow-protocol: not an OSC sequence");
+  }
+  let body = input.slice(2);
+
+  // Find terminator: BEL or ESC \.
+  let bodyEnd = -1;
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === BEL) {
+      bodyEnd = i;
+      break;
+    }
+    if (body[i] === ESC && body[i + 1] === "\\") {
+      bodyEnd = i;
+      break;
+    }
+  }
+  if (bodyEnd < 0) {
+    throw new Error("vibeflow-protocol: no terminator");
+  }
+  body = body.slice(0, bodyEnd);
+
+  const parts = body.split(";");
+  if (parts[0] !== OSC_ID) {
+    throw new Error("vibeflow-protocol: not OSC 1338");
+  }
+
+  const result: Partial<Frame> = {};
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i] ?? "";
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const key = part.slice(0, eq);
+    const value = part.slice(eq + 1);
+    switch (key) {
+      case "state": {
+        const decoded = percentDecode(value);
+        if (
+          decoded !== "active" &&
+          decoded !== "working" &&
+          decoded !== "waiting" &&
+          decoded !== "done"
+        ) {
+          throw new Error(`vibeflow-protocol: unknown state ${JSON.stringify(decoded)}`);
+        }
+        result.state = decoded;
+        break;
+      }
+      case "tool":
+        result.tool = percentDecode(value);
+        break;
+      case "project":
+        result.project = percentDecode(value);
+        break;
+      // unknown keys: forward-compat ignore
+    }
+  }
+
+  if (!result.state) {
+    throw new Error("vibeflow-protocol: missing state");
+  }
+  // Build the result without `tool`/`project` keys when undefined (cleaner deepEqual).
+  const out: Frame = { state: result.state };
+  if (result.tool !== undefined) out.tool = result.tool;
+  if (result.project !== undefined) out.project = result.project;
+  return out;
+}
