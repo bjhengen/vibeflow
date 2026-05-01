@@ -23,7 +23,6 @@ pub enum PromptMarker {
 ///
 /// Returns `None` for unknown subtypes (caller drops the sequence). Garbage or
 /// missing exit codes on `D` resolve to `CommandEnd { exit_code: None }`.
-#[allow(dead_code)] // first caller arrives in Task 4 (OscDispatcher OSC 133 detection)
 fn parse_133_body(body: &str) -> Option<PromptMarker> {
     let mut parts = body.split(';');
     let subtype = parts.next()?;
@@ -220,7 +219,7 @@ impl OscDispatcher {
 /// sequences that fail to parse.
 fn handle_osc(body: &[u8]) -> Option<DispatchEvent> {
     let body_str = std::str::from_utf8(body).ok()?;
-    let (id, _params) = body_str.split_once(';').unwrap_or((body_str, ""));
+    let (id, params) = body_str.split_once(';').unwrap_or((body_str, ""));
     match id {
         "1338" => {
             // Reconstruct the full sequence and hand it to the protocol crate.
@@ -233,6 +232,7 @@ fn handle_osc(body: &[u8]) -> Option<DispatchEvent> {
                 .ok()
                 .map(DispatchEvent::AiState)
         }
+        "133" => parse_133_body(params).map(DispatchEvent::Prompt),
         _ => None,
     }
 }
@@ -399,5 +399,47 @@ mod tests {
                 DispatchEvent::AiState(Frame::new(State::Working)),
             ]
         );
+    }
+
+    #[test]
+    fn dispatcher_recognises_osc_133_prompt_start() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]133;A\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::Prompt(PromptMarker::PromptStart)]
+        );
+    }
+
+    #[test]
+    fn dispatcher_recognises_osc_133_command_start() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]133;C\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::Prompt(PromptMarker::CommandStart)]
+        );
+    }
+
+    #[test]
+    fn dispatcher_recognises_osc_133_command_end_with_exit_code() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]133;D;127\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::Prompt(PromptMarker::CommandEnd {
+                exit_code: Some(127)
+            })]
+        );
+    }
+
+    #[test]
+    fn dispatcher_drops_osc_133_with_unknown_subtype() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]133;Z\x07");
+        // No event; OSC 133 with unknown subtype is recognised-and-dropped.
+        // Task 5 will distinguish this from completely unknown OSCs (which
+        // become PassThrough).
+        assert_eq!(events, vec![]);
     }
 }
