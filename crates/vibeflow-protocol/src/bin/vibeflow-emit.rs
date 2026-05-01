@@ -1,7 +1,10 @@
 //! `vibeflow-emit` — tiny CLI for emitting one OSC 1338 frame to stdout.
 //!
 //! Usage:
-//!     vibeflow-emit <state> [--tool=<name>] [--project=<name>]
+//!
+//! ```text
+//! vibeflow-emit <state> [--tool=<name>] [--project=<name>]
+//! ```
 //!
 //! `<state>` is one of: active, working, waiting, done.
 
