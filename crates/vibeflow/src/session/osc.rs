@@ -198,42 +198,73 @@ impl OscDispatcher {
     fn finish_osc(&mut self, events: &mut Vec<DispatchEvent>) {
         let body = std::mem::take(&mut self.osc_body);
         let overflowed = std::mem::replace(&mut self.osc_overflowed, false);
+        // Track which terminator we saw — needed to reconstruct an unknown OSC.
+        // self.state at this point is either InOsc (BEL termination) or
+        // InOscEsc (ESC \ termination).
+        let used_st = self.state == ParseState::InOscEsc;
         self.state = ParseState::Plain;
 
         if overflowed {
-            // Spec: "over-long sequences are dropped on the floor". No event.
             return;
         }
 
-        if let Some(event) = handle_osc(&body) {
-            events.push(event);
+        match handle_osc(&body) {
+            OscOutcome::Event(ev) => events.push(ev),
+            OscOutcome::Drop => {}
+            OscOutcome::Forward => {
+                // Reconstruct the original sequence and emit as PassThrough.
+                let mut full = Vec::with_capacity(body.len() + 4);
+                full.push(0x1B);
+                full.push(b']');
+                full.extend_from_slice(&body);
+                if used_st {
+                    full.push(0x1B);
+                    full.push(b'\\');
+                } else {
+                    full.push(0x07);
+                }
+                events.push(DispatchEvent::PassThrough(full));
+            }
         }
-        // If `handle_osc` returned None, that's a malformed-or-unknown OSC.
-        // For now (Task 3) we drop. Task 5 reintroduces unknown-OSC
-        // pass-through.
     }
 }
 
-/// Route a complete OSC body (the bytes between `ESC ]` and the terminator) to
-/// the appropriate handler. Returns `None` for unknown OSCs and for OSC 1338
-/// sequences that fail to parse.
-fn handle_osc(body: &[u8]) -> Option<DispatchEvent> {
-    let body_str = std::str::from_utf8(body).ok()?;
+/// What `handle_osc` decided to do with a complete OSC body.
+enum OscOutcome {
+    /// We recognised the OSC and produced this event.
+    Event(DispatchEvent),
+    /// We recognised the OSC ID but the body was malformed for it (e.g. an
+    /// OSC 1338 with an unknown state value). Drop silently — log debug in
+    /// future stages.
+    Drop,
+    /// We don't own this OSC ID. Caller should emit a PassThrough with the
+    /// original bytes (ESC ] body terminator) intact.
+    Forward,
+}
+
+fn handle_osc(body: &[u8]) -> OscOutcome {
+    let Some(body_str) = std::str::from_utf8(body).ok() else {
+        // Non-UTF-8 body. We don't own this OSC; let the terminal try.
+        return OscOutcome::Forward;
+    };
     let (id, params) = body_str.split_once(';').unwrap_or((body_str, ""));
     match id {
         "1338" => {
-            // Reconstruct the full sequence and hand it to the protocol crate.
             let mut full = Vec::with_capacity(body.len() + 3);
             full.push(0x1B);
             full.push(b']');
             full.extend_from_slice(body);
             full.push(0x07);
-            vibeflow_protocol::parse(&full)
-                .ok()
-                .map(DispatchEvent::AiState)
+            match vibeflow_protocol::parse(&full) {
+                Ok(frame) => OscOutcome::Event(DispatchEvent::AiState(frame)),
+                Err(_) => OscOutcome::Drop,
+            }
         }
-        "133" => parse_133_body(params).map(DispatchEvent::Prompt),
-        _ => None,
+        "133" => match parse_133_body(params) {
+            Some(marker) => OscOutcome::Event(DispatchEvent::Prompt(marker)),
+            None => OscOutcome::Drop,
+        },
+        _ => OscOutcome::Forward,
     }
 }
 
@@ -441,5 +472,75 @@ mod tests {
         // Task 5 will distinguish this from completely unknown OSCs (which
         // become PassThrough).
         assert_eq!(events, vec![]);
+    }
+
+    #[test]
+    fn dispatcher_passes_through_unknown_osc_intact() {
+        // OSC 0 is the iTerm/xterm window-title sequence. We don't recognise
+        // it, so the original bytes (ESC ] 0;<title> BEL) must reach the
+        // terminal grid unchanged.
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]0;hello world\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::PassThrough(
+                b"\x1b]0;hello world\x07".to_vec()
+            )]
+        );
+    }
+
+    #[test]
+    fn dispatcher_passes_unknown_osc_with_st_terminator_intact() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]7;file://example\x1b\\");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::PassThrough(
+                b"\x1b]7;file://example\x1b\\".to_vec()
+            )]
+        );
+    }
+
+    #[test]
+    fn dispatcher_drops_oversize_osc() {
+        let mut d = OscDispatcher::new();
+        // Build a single OSC 1338 sequence whose body is well over MAX_OSC_LEN.
+        let mut input = Vec::new();
+        input.extend_from_slice(b"\x1b]1338;state=waiting;tool=");
+        input.extend(std::iter::repeat(b'x').take(5000));
+        input.push(0x07);
+        let events = d.feed(&input);
+        // Oversize → silently dropped; no events.
+        assert_eq!(events, vec![]);
+    }
+
+    #[test]
+    fn dispatcher_handles_osc_split_across_two_feeds() {
+        let mut d = OscDispatcher::new();
+        let first = d.feed(b"hello\x1b]1338;state=");
+        // The "hello" passthrough flushes at end of feed; the OSC body has
+        // started and stays in internal state.
+        assert_eq!(first, vec![DispatchEvent::PassThrough(b"hello".to_vec())]);
+        let second = d.feed(b"working\x07world");
+        assert_eq!(
+            second,
+            vec![
+                DispatchEvent::AiState(Frame::new(State::Working)),
+                DispatchEvent::PassThrough(b"world".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dispatcher_recovers_from_malformed_osc() {
+        // ESC `inside` an OSC body that doesn't form ST → drop the current
+        // OSC and start a fresh OSC parse from the new ESC. The new OSC
+        // (state=waiting) parses cleanly.
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]1338;state=garbage\x1b]1338;state=waiting\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::AiState(Frame::new(State::Waiting))]
+        );
     }
 }
