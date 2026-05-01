@@ -78,6 +78,43 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// A single OSC 1338 frame's contents.
+///
+/// Construct with [`Frame::new`] and chain [`Frame::with_tool`] / [`Frame::with_project`]:
+///
+/// ```
+/// use vibeflow_protocol::{Frame, State};
+/// let f = Frame::new(State::Waiting).with_tool("claude").with_project("vibeflow");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub state: State,
+    pub tool: Option<String>,
+    pub project: Option<String>,
+}
+
+impl Frame {
+    /// A new frame with only the required `state` field set.
+    #[must_use]
+    pub fn new(state: State) -> Self {
+        Self { state, tool: None, project: None }
+    }
+
+    /// Set the optional `tool` field. Returns `self` for chaining.
+    #[must_use]
+    pub fn with_tool(mut self, tool: impl Into<String>) -> Self {
+        self.tool = Some(tool.into());
+        self
+    }
+
+    /// Set the optional `project` field. Returns `self` for chaining.
+    #[must_use]
+    pub fn with_project(mut self, project: impl Into<String>) -> Self {
+        self.project = Some(project.into());
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +131,23 @@ mod tests {
     fn state_unknown_string_is_an_error() {
         let err = "frobnicating".parse::<State>().unwrap_err();
         assert!(matches!(err, ParseError::UnknownState(ref s) if s == "frobnicating"));
+    }
+
+    #[test]
+    fn frame_new_has_state_only() {
+        let f = Frame::new(State::Working);
+        assert_eq!(f.state, State::Working);
+        assert_eq!(f.tool, None);
+        assert_eq!(f.project, None);
+    }
+
+    #[test]
+    fn frame_with_tool_and_project_builds_correctly() {
+        let f = Frame::new(State::Waiting)
+            .with_tool("claude")
+            .with_project("vibeflow");
+        assert_eq!(f.state, State::Waiting);
+        assert_eq!(f.tool.as_deref(), Some("claude"));
+        assert_eq!(f.project.as_deref(), Some("vibeflow"));
     }
 }
