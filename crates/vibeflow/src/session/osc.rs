@@ -543,4 +543,36 @@ mod tests {
             vec![DispatchEvent::AiState(Frame::new(State::Waiting))]
         );
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Feeding arbitrary bytes through the dispatcher in arbitrary chunk
+        /// sizes must never panic and must never produce more bytes of
+        /// PassThrough output than were fed in (the dispatcher has no source
+        /// of expansion: every byte either feeds an OSC body, becomes part of
+        /// a passthrough, or is dropped via overflow).
+        #[test]
+        fn dispatcher_never_panics_on_arbitrary_input(
+            chunks in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..200),
+                0..10,
+            ),
+        ) {
+            let mut d = OscDispatcher::new();
+            let mut total_input: usize = 0;
+            let mut total_passthrough: usize = 0;
+            for chunk in &chunks {
+                total_input += chunk.len();
+                for ev in d.feed(chunk) {
+                    if let DispatchEvent::PassThrough(bytes) = ev {
+                        total_passthrough += bytes.len();
+                    }
+                }
+            }
+            // PassThrough output cannot exceed total bytes fed in. (Equality
+            // when no OSC was recognised; less when OSC bodies were consumed.)
+            prop_assert!(total_passthrough <= total_input);
+        }
+    }
 }
