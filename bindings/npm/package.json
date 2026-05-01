@@ -1,0 +1,38 @@
+{
+  "name": "@vibeflow/protocol",
+  "version": "0.1.0",
+  "description": "OSC 1338 protocol — open standard for AI-tool state signalling in terminals (TypeScript binding)",
+  "license": "MIT OR Apache-2.0",
+  "author": "Brian Hengen <brian@friendly-robots.com>",
+  "homepage": "https://github.com/bjhengen/vibeflow",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bjhengen/vibeflow.git",
+    "directory": "bindings/npm"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test ./dist/test/index.test.js",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": ["terminal", "osc", "ai", "vibeflow"]
+}
