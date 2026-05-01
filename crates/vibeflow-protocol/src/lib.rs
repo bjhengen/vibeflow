@@ -455,4 +455,47 @@ mod tests {
         big.push(BEL);
         assert_eq!(parse(&big), Err(ParseError::TooLong));
     }
+
+    use proptest::prelude::*;
+
+    fn arb_state() -> impl Strategy<Value = State> {
+        prop_oneof![
+            Just(State::Active),
+            Just(State::Working),
+            Just(State::Waiting),
+            Just(State::Done),
+        ]
+    }
+
+    // Any UTF-8 string up to 100 chars (any non-newline scalar — proptest's
+    // regex `.` excludes \n by default, which is fine; we cover `\t` etc.
+    // explicitly in the unit tests).
+    //
+    // Why `string_regex` not a bare `".{0,100}"`: a `&str` literal does NOT
+    // implement `Strategy<Value=String>`. The proptest! macro accepts string
+    // literals after `in` because the macro converts them to a regex strategy
+    // — but in plain function-form code we have to call `string_regex`
+    // explicitly. The `.unwrap()` is fine because the regex is a literal.
+    //
+    // Why 100: worst-case encoding is 4 UTF-8 bytes per char × 3 chars per
+    // percent-encoded byte = 12 chars per char in the wire form, so two such
+    // values plus the rest of the frame fit comfortably under MAX_FRAME_LEN.
+    fn arb_value() -> impl Strategy<Value = String> {
+        proptest::string::string_regex(".{0,100}").unwrap()
+    }
+
+    fn arb_frame() -> impl Strategy<Value = Frame> {
+        (arb_state(), proptest::option::of(arb_value()), proptest::option::of(arb_value())).prop_map(
+            |(state, tool, project)| Frame { state, tool, project },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn frame_to_bytes_then_parse_roundtrips(frame in arb_frame()) {
+            let bytes = frame.to_bytes();
+            let parsed = parse(&bytes).expect("round-trip should always parse");
+            prop_assert_eq!(parsed, frame);
+        }
+    }
 }
