@@ -157,6 +157,22 @@ impl PtySession {
         self.writer.write_all(bytes)?;
         self.writer.flush()
     }
+
+    /// Run the tracker's timeout checks at `now`. Returns a [`SessionEvent`]
+    /// per timeout-driven state change (currently zero or one event).
+    pub fn tick(&mut self, now: Instant) -> Vec<SessionEvent> {
+        if self.tracker.tick(now) {
+            vec![SessionEvent::StateChanged(self.tracker.state())]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Toggle the Tier 3 heuristic-silence inference. The App calls this when
+    /// the foreground process matches the configured AI-tool list.
+    pub fn set_heuristic_active(&mut self, active: bool) {
+        self.tracker.set_heuristic_active(active);
+    }
 }
 
 impl Drop for PtySession {
@@ -267,5 +283,60 @@ mod tests {
         );
         // Tell cat to exit.
         s.send_input(&[0x04]).unwrap();
+    }
+
+    #[test]
+    fn tick_does_not_fire_within_timeout_windows() {
+        let mut s =
+            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        // Default config: stale_state 30s, heuristic_silence 4s — neither
+        // fires within 1s of spawn.
+        let evs = s.tick(Instant::now() + Duration::from_secs(1));
+        assert_eq!(evs, vec![]);
+    }
+
+    #[test]
+    fn tick_fires_stale_state_timeout() {
+        let mut s =
+            PtySession::spawn(&["/bin/sh", "-c", "sleep 60"], TrackerConfig::default()).unwrap();
+        let now = Instant::now();
+        // Simulate state change by feeding an AiFrame manually to set
+        // last_event_at, then tick past the 30 s stale-state window.
+        let frame_bytes =
+            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
+        // Feed bytes directly (not via the PTY) to control timing.
+        for ev in s.dispatcher.feed(&frame_bytes) {
+            if let DispatchEvent::AiState(frame) = ev {
+                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
+            }
+        }
+        assert_eq!(s.state(), TabState::Working);
+
+        let evs = s.tick(now + Duration::from_secs(31));
+        assert_eq!(evs, vec![SessionEvent::StateChanged(TabState::Active)]);
+        assert_eq!(s.state(), TabState::Active);
+    }
+
+    #[test]
+    fn set_heuristic_active_toggles_tier_3() {
+        // Direct test that the toggle reaches the tracker.
+        let mut s =
+            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        s.set_heuristic_active(true);
+        // No assertion on internal tracker state (it's a private field) —
+        // exercise the path via tick after a Working transition + observed
+        // output to ensure heuristic fires when the flag is on.
+        let now = Instant::now();
+        let frame_bytes =
+            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
+        for ev in s.dispatcher.feed(&frame_bytes) {
+            if let DispatchEvent::AiState(frame) = ev {
+                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
+            }
+        }
+        s.tracker.on_input(TrackerInput::OutputObserved, now);
+
+        let evs = s.tick(now + Duration::from_secs(5));
+        assert_eq!(evs, vec![SessionEvent::StateChanged(TabState::Waiting)]);
     }
 }
