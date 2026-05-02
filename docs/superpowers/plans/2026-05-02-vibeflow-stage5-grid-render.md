@@ -368,6 +368,32 @@ mod tests {
         );
         assert_eq!(resolved, Rgb { r: 0xcd, g: 0x00, b: 0x00 });
     }
+
+    #[test]
+    fn resolve_color_dim_red_does_not_panic() {
+        // `NamedColor::DimRed` has discriminant 260, which is past the end of
+        // the 256-entry default palette. The match arms must explicitly map
+        // each Dim* variant before the catch-all `other => default_palette[idx]`.
+        let resolved = resolve_color(
+            Color::Named(NamedColor::DimRed),
+            &empty_colors(),
+            Rgb { r: 0xff, g: 0xff, b: 0xff },
+            Rgb { r: 0x00, g: 0x00, b: 0x00 },
+        );
+        // We map DimRed to the same RGB as normal Red in the default palette.
+        assert_eq!(resolved, Rgb { r: 0xcd, g: 0x00, b: 0x00 });
+    }
+
+    #[test]
+    fn resolve_color_dim_white_does_not_panic() {
+        let resolved = resolve_color(
+            Color::Named(NamedColor::DimWhite),
+            &empty_colors(),
+            Rgb { r: 0xff, g: 0xff, b: 0xff },
+            Rgb { r: 0x00, g: 0x00, b: 0x00 },
+        );
+        assert_eq!(resolved, Rgb { r: 0xe5, g: 0xe5, b: 0xe5 });
+    }
 }
 ```
 
@@ -467,19 +493,33 @@ fn named_color_to_rgb(
     if let Some(rgb) = colors[named] {
         return rgb;
     }
-    // The `Foreground` / `Background` slots are semantic, not part of the
-    // 256-color palette. They use the caller's defaults when unset.
+    // `NamedColor` discriminants are NOT all in the 0..=15 ANSI range — Dim*
+    // variants live at 259..=266 and Foreground/Background/Cursor at 256..=258.
+    // We must explicitly handle each non-ANSI variant before falling through
+    // to the default-palette index, otherwise we'd panic at runtime when an
+    // app uses dim-coloured text (e.g. `ls`'s SGR dim attribute on errors).
     match named {
-        NamedColor::Foreground | NamedColor::DimForeground | NamedColor::BrightForeground => {
-            fg_default
-        }
+        NamedColor::Foreground
+        | NamedColor::DimForeground
+        | NamedColor::BrightForeground => fg_default,
         NamedColor::Background => bg_default,
         // Cursor + selection-bg/fg also live in the special slot range; treat
         // them as transparent fallbacks via the fg/bg defaults for now. Stage 6
         // adds proper handling.
         NamedColor::Cursor => fg_default,
-        // Everything else is in the 0..=15 ANSI range. NamedColor's repr is the
-        // index for those, so we can index the default palette directly.
+        // Dim variants — map to the corresponding normal ANSI index in the
+        // default palette. Stage 7 may darken them further (75% of normal).
+        NamedColor::DimBlack => default_palette()[0],
+        NamedColor::DimRed => default_palette()[1],
+        NamedColor::DimGreen => default_palette()[2],
+        NamedColor::DimYellow => default_palette()[3],
+        NamedColor::DimBlue => default_palette()[4],
+        NamedColor::DimMagenta => default_palette()[5],
+        NamedColor::DimCyan => default_palette()[6],
+        NamedColor::DimWhite => default_palette()[7],
+        // Everything else is in the 0..=15 ANSI range (Black through
+        // BrightWhite). `NamedColor`'s repr is the palette index for those, so
+        // we can index the default palette directly.
         other => default_palette()[other as usize],
     }
 }
@@ -1434,7 +1474,6 @@ Replace the contents of `crates/vibeflow/src/render/grid.rs` with:
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::render::atlas::GlyphAtlas;
 
@@ -1589,7 +1628,8 @@ impl GridPipeline {
                             format: wgpu::VertexFormat::Float32x4,
                         },
                     ],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    // Note: `compilation_options` lives on the outer `VertexState`,
+                    // NOT on individual `VertexBufferLayout` entries (wgpu 0.20.1).
                 }],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
@@ -1615,7 +1655,8 @@ impl GridPipeline {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            // Note: `cache` is wgpu 0.21+. wgpu 0.20.1's RenderPipelineDescriptor
+            // ends at `multiview` — do not add a `cache` field.
         });
 
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1827,7 +1868,7 @@ Find the existing `Renderer::render` definition. The Stage-4 body just clears to
             });
 
             if let Some(term) = term {
-                let instances = build_cell_instances(term, &self.atlas);
+                let instances = build_cell_instances(term);
                 if !instances.is_empty() {
                     self.grid_pipeline.ensure_instance_capacity(
                         &self.device,
@@ -1868,9 +1909,12 @@ Append at the end of `crates/vibeflow/src/render/mod.rs` (after the `Renderer` i
 /// (non-printable / non-ASCII for Stage 5) are emitted with the space-glyph
 /// index — visually they show only the background color, which matches
 /// well-behaved control characters.
+///
+/// Atlas state is not threaded through this function: glyph lookup uses the
+/// free [`crate::render::atlas::glyph_index`] (the atlas's pixel pitch + size
+/// are read in `Renderer::render` directly).
 fn build_cell_instances(
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
-    atlas: &crate::render::atlas::GlyphAtlas,
 ) -> Vec<crate::render::grid::CellInstance> {
     use alacritty_terminal::vte::ansi::Rgb;
 
@@ -1967,12 +2011,11 @@ The cursor is rendered as one extra cell at the cursor position with foreground 
 
 - [ ] **Step 1: Update `build_cell_instances` to append the cursor**
 
-In `crates/vibeflow/src/render/mod.rs`, modify `build_cell_instances` to append a cursor instance after the regular cell loop. Replace the function with:
+In `crates/vibeflow/src/render/mod.rs`, modify `build_cell_instances` to swap fg/bg on the cursor cell. Replace the function body with:
 
 ```rust
 fn build_cell_instances(
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
-    atlas: &crate::render::atlas::GlyphAtlas,
 ) -> Vec<crate::render::grid::CellInstance> {
     use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
@@ -1991,6 +2034,9 @@ fn build_cell_instances(
 
     let mut instances: Vec<crate::render::grid::CellInstance> = Vec::new();
     let cursor_pos = content.cursor;
+    // CursorShape variants in vte 0.13.x: Block, Underline, Beam, HollowBlock,
+    // Hidden. Stage 5 treats every visible shape as a block (HollowBlock and
+    // Beam draw as blocks too); Stage 6+ may render them properly.
     let cursor_visible = cursor_pos.shape != CursorShape::Hidden;
     let cursor_row_col = if cursor_visible {
         Some((cursor_pos.point.line.0, cursor_pos.point.column.0 as u32))
@@ -2020,13 +2066,10 @@ fn build_cell_instances(
         instances.push(crate::render::grid::CellInstance::new(
             col, row as u32, glyph, fg, bg,
         ));
-        let _ = atlas; // touched for future use; suppresses unused-param lint
     }
     instances
 }
 ```
-
-(The `_ = atlas;` line is a no-op kept so the function signature is unchanged from Task 5; clippy may flag it, in which case remove it.)
 
 - [ ] **Step 2: Verify build + fmt + clippy**
 
