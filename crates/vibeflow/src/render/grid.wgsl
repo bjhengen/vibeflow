@@ -11,7 +11,6 @@ struct GridUniform {
     cell_size_px:    vec2<f32>,   // per-cell pitch in physical pixels
     atlas_size_px:   vec2<f32>,   // atlas texture size in pixels
     atlas_cells:     vec2<u32>,   // atlas layout (cols, rows of glyphs)
-    _pad:            vec2<u32>,
 };
 
 @group(0) @binding(0) var<uniform> u: GridUniform;
