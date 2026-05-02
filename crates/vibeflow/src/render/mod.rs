@@ -222,7 +222,7 @@ impl Renderer {
 fn build_cell_instances(
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
 ) -> Vec<crate::render::grid::CellInstance> {
-    use alacritty_terminal::vte::ansi::Rgb;
+    use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
     let content = term.renderable_content();
     let colors = content.colors;
@@ -238,18 +238,36 @@ fn build_cell_instances(
     };
 
     let mut instances: Vec<crate::render::grid::CellInstance> = Vec::new();
+    let cursor_pos = content.cursor;
+    // CursorShape variants in vte 0.13.x: Block, Underline, Beam, HollowBlock, Hidden.
+    // Stage 5 treats every visible shape as a block (HollowBlock and Beam draw as
+    // blocks too); Stage 6+ may render them properly.
+    let cursor_visible = cursor_pos.shape != CursorShape::Hidden;
+    let cursor_row_col = if cursor_visible {
+        Some((cursor_pos.point.line.0, cursor_pos.point.column.0 as u32))
+    } else {
+        None
+    };
+
     for indexed in content.display_iter {
         let row = indexed.point.line.0;
         if row < 0 {
-            continue; // skip scrollback above the viewport — Stage 6+
+            continue;
         }
         let col = indexed.point.column.0 as u32;
         let cell = indexed.cell;
-        let glyph = crate::render::atlas::glyph_index(cell.c).unwrap_or(0); // space
+        let glyph = crate::render::atlas::glyph_index(cell.c).unwrap_or(0);
         let fg_rgb = crate::render::colors::resolve_color(cell.fg, colors, fg_default, bg_default);
         let bg_rgb = crate::render::colors::resolve_color(cell.bg, colors, fg_default, bg_default);
-        let fg = rgb_to_f32(fg_rgb);
-        let bg = rgb_to_f32(bg_rgb);
+
+        // If this is the cursor cell, swap fg and bg to draw a block cursor.
+        let on_cursor = cursor_row_col == Some((row, col));
+        let (fg, bg) = if on_cursor {
+            (rgb_to_f32(bg_rgb), rgb_to_f32(fg_rgb))
+        } else {
+            (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb))
+        };
+
         instances.push(crate::render::grid::CellInstance::new(
             col, row as u32, glyph, fg, bg,
         ));
