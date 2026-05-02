@@ -75,6 +75,18 @@ impl App {
         all
     }
 
+    /// Run [`PtySession::tick`] on every session at `now` and collect any
+    /// timeout-driven [`SessionEvent`]s with their tab index.
+    pub fn tick_all(&mut self, now: std::time::Instant) -> Vec<(usize, SessionEvent)> {
+        let mut all = Vec::new();
+        for (idx, tab) in self.tabs.iter_mut().enumerate() {
+            for ev in tab.tick(now) {
+                all.push((idx, ev));
+            }
+        }
+        all
+    }
+
     /// Index of the currently focused tab. Valid only when `tabs()` is non-empty.
     #[must_use]
     pub fn active(&self) -> usize {
@@ -127,15 +139,16 @@ mod tests {
         assert_eq!(app.tabs().len(), 1);
     }
 
-    #[test]
-    fn _unused_session_event_silences_dead_code() {
-        // Force a use of SessionEvent so its `Died` variant isn't reported as
-        // unread until App::poll_all (Task 8) wires it through.
-        let _ = SessionEvent::Died;
-    }
-
     use std::time::{Duration, Instant};
     use vibeflow_protocol::{Frame as ProtoFrame, State as ProtoState};
+
+    #[test]
+    fn tick_all_returns_empty_when_no_timeouts_have_fired() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        let evs = app.tick_all(Instant::now() + Duration::from_secs(1));
+        assert!(evs.is_empty());
+    }
 
     #[test]
     fn poll_all_collects_state_changes_from_each_session() {
