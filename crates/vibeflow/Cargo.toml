@@ -16,8 +16,13 @@ workspace = true
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "vibeflow"
+path = "src/main.rs"
+
 [dependencies]
 vibeflow-protocol = { path = "../vibeflow-protocol", version = "0.1" }
+portable-pty = "0.8"
 
 [dev-dependencies]
 proptest = "1"
