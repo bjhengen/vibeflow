@@ -3,16 +3,18 @@
 //! Drives polling, ticking, and event routing on the main thread.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use crate::app::App;
 use crate::render::Renderer;
+use crate::session::SessionEvent;
 
 /// User-facing winit application. Implements [`ApplicationHandler`].
 ///
@@ -66,6 +68,34 @@ impl WindowApp {
             .new_tab(&[shell.as_str()])
             .with_context(|| format!("spawn first tab via {shell}"))?;
         Ok(())
+    }
+
+    /// React to a single `SessionEvent`. Stage 4 just logs; Stage 5 will route
+    /// `PassThrough` bytes into the per-tab `alacritty_terminal` grid and call
+    /// `window.request_redraw()` on `StateChanged`.
+    fn handle_session_event(&mut self, idx: usize, ev: SessionEvent) {
+        match ev {
+            SessionEvent::StateChanged(state) => {
+                tracing::info!(tab = idx, state = ?state, "state changed");
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            SessionEvent::PassThrough(bytes) => {
+                // Stage 5 sends these into alacritty_terminal::Term::input.
+                // Stage 4 just records the byte count at trace level so we can
+                // sanity-check throughput from the log without spamming.
+                tracing::trace!(tab = idx, bytes = bytes.len(), "passthrough");
+            }
+            SessionEvent::Died => {
+                tracing::warn!(tab = idx, "session died");
+                // The session stays in `App.tabs` with `is_alive() == false`.
+                // Stage 6 (tab bar) renders the dead-tab banner; closing the
+                // tab here would remove the thing the banner needs to draw.
+                // The window does not auto-exit on the last tab dying in
+                // Stage 4 — the user closes the window with the close button.
+            }
+        }
     }
 }
 
@@ -132,5 +162,22 @@ impl ApplicationHandler for WindowApp {
             // Resize, KeyboardInput, etc. arrive in Tasks 6–7.
             _ => {}
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+
+        // Drain bytes that arrived since last tick.
+        for (idx, ev) in self.app.poll_all(now) {
+            self.handle_session_event(idx, ev);
+        }
+        // Fire any timeout-driven transitions.
+        for (idx, ev) in self.app.tick_all(now) {
+            self.handle_session_event(idx, ev);
+        }
+
+        // Re-arm a 100ms wake-up so trackers tick steadily. Stage 6+ will
+        // compute the exact next deadline from the per-session tracker state.
+        event_loop.set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(100)));
     }
 }
