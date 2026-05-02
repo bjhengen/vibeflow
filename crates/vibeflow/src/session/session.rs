@@ -5,16 +5,13 @@
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
-#[allow(unused_imports)]
-use std::time::Instant; // used in tests
+use std::time::Instant;
 
 use portable_pty::Child;
 
-#[allow(unused_imports)]
-use crate::session::osc::{DispatchEvent, OscDispatcher}; // DispatchEvent used in Tasks 3–5
+use crate::session::osc::{DispatchEvent, OscDispatcher};
 use crate::session::pty::{spawn_pty, PtyHandles};
-#[allow(unused_imports)]
-use crate::session::tracker::{AiStateTracker, TabState, TrackerConfig, TrackerInput}; // TrackerInput used in Task 5
+use crate::session::tracker::{AiStateTracker, TabState, TrackerConfig, TrackerInput};
 
 /// Public event type the `App` observes from a session, beyond just the
 /// underlying [`DispatchEvent`]. `Died` lets the App detect when the child
@@ -32,11 +29,11 @@ pub enum SessionEvent {
 }
 
 /// One terminal tab's per-session machinery.
-#[allow(dead_code)]
 pub struct PtySession {
     /// Drains here when the reader thread sends bytes from the PTY master.
     rx: Receiver<Vec<u8>>,
     /// Used by [`send_input`] to write keystrokes to the PTY master.
+    #[allow(dead_code)]
     writer: Box<dyn Write + Send>,
     /// Child process handle — used for liveness checks and explicit kill.
     child: Box<dyn Child + Send + Sync>,
@@ -104,6 +101,48 @@ impl PtySession {
         self.tracker.state()
     }
 
+    /// Drain every pending byte chunk off the reader channel, run each through
+    /// the dispatcher, route resulting events into the tracker, and return the
+    /// public-facing [`SessionEvent`]s for the App. Non-blocking — returns
+    /// immediately if the channel is empty.
+    pub fn poll(&mut self, now: Instant) -> Vec<SessionEvent> {
+        let mut events = Vec::new();
+        loop {
+            match self.rx.try_recv() {
+                Ok(chunk) => {
+                    for ev in self.dispatcher.feed(&chunk) {
+                        match ev {
+                            DispatchEvent::AiState(frame) => {
+                                if self.tracker.on_input(TrackerInput::AiFrame(frame), now) {
+                                    events.push(SessionEvent::StateChanged(self.tracker.state()));
+                                }
+                            }
+                            DispatchEvent::Prompt(marker) => {
+                                if self.tracker.on_input(TrackerInput::Prompt(marker), now) {
+                                    events.push(SessionEvent::StateChanged(self.tracker.state()));
+                                }
+                            }
+                            DispatchEvent::PassThrough(bytes) => {
+                                self.tracker.on_input(TrackerInput::OutputObserved, now);
+                                events.push(SessionEvent::PassThrough(bytes));
+                            }
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Reader thread is gone — child probably exited.
+                    if self.alive {
+                        self.alive = false;
+                        events.push(SessionEvent::Died);
+                    }
+                    break;
+                }
+            }
+        }
+        events
+    }
+
     /// Whether the child is still running and the reader thread alive.
     #[must_use]
     pub fn is_alive(&self) -> bool {
@@ -154,5 +193,46 @@ mod tests {
             }
         }
         assert!(buf.starts_with(b"hello"), "got: {:?}", buf);
+    }
+
+    use vibeflow_protocol::{Frame as ProtoFrame, State as ProtoState};
+
+    #[test]
+    fn poll_routes_osc_1338_through_dispatcher_and_tracker() {
+        // Spawn a child that prints exactly one OSC 1338 sequence, then exits.
+        // The session's poll() should observe a state change to Working.
+        let bytes = ProtoFrame::new(ProtoState::Working).to_bytes();
+        let bytes_repr = bytes
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut s = PtySession::spawn(
+            &[
+                "python3",
+                "-c",
+                &format!("import sys; sys.stdout.buffer.write(bytes([{bytes_repr}]))"),
+            ],
+            TrackerConfig::default(),
+        )
+        .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut events = Vec::new();
+        let mut state_changed_to_working = false;
+        while Instant::now() < deadline && !state_changed_to_working {
+            for ev in s.poll(Instant::now()) {
+                if matches!(ev, SessionEvent::StateChanged(TabState::Working)) {
+                    state_changed_to_working = true;
+                }
+                events.push(ev);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            state_changed_to_working,
+            "expected StateChanged(Working); got events: {events:?}"
+        );
+        assert_eq!(s.state(), TabState::Working);
     }
 }
