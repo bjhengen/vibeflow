@@ -2,7 +2,7 @@
 //! [`PtySession`] and orchestrates polling and timeout ticks.
 
 use crate::session::tracker::TrackerConfig;
-use crate::session::PtySession;
+use crate::session::{PtySession, SessionEvent};
 
 /// Default per-tracker config used for every new tab. Stage 8 will replace
 /// this with a TOML-loaded config sourced from `~/.config/vibeflow/config.toml`.
@@ -61,6 +61,20 @@ impl App {
         &self.tabs
     }
 
+    /// Drive every session's [`PtySession::poll`] at `now` and collect the
+    /// resulting events with their tab index. Returned vector is in
+    /// `(tab_index, event)` pairs ordered by tab; the caller can iterate and
+    /// react.
+    pub fn poll_all(&mut self, now: std::time::Instant) -> Vec<(usize, SessionEvent)> {
+        let mut all = Vec::new();
+        for (idx, tab) in self.tabs.iter_mut().enumerate() {
+            for ev in tab.poll(now) {
+                all.push((idx, ev));
+            }
+        }
+        all
+    }
+
     /// Index of the currently focused tab. Valid only when `tabs()` is non-empty.
     #[must_use]
     pub fn active(&self) -> usize {
@@ -78,7 +92,6 @@ impl Default for App {
 mod tests {
     use super::*;
     use crate::session::tracker::TabState;
-    use crate::session::SessionEvent;
 
     #[test]
     fn new_app_has_no_tabs() {
@@ -119,5 +132,40 @@ mod tests {
         // Force a use of SessionEvent so its `Died` variant isn't reported as
         // unread until App::poll_all (Task 8) wires it through.
         let _ = SessionEvent::Died;
+    }
+
+    use std::time::{Duration, Instant};
+    use vibeflow_protocol::{Frame as ProtoFrame, State as ProtoState};
+
+    #[test]
+    fn poll_all_collects_state_changes_from_each_session() {
+        let mut app = App::new();
+        // Tab 0: emits a single OSC 1338 working frame, then exits.
+        let bytes = ProtoFrame::new(ProtoState::Working).to_bytes();
+        let bytes_repr = bytes
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        app.new_tab(&[
+            "python3",
+            "-c",
+            &format!("import sys; sys.stdout.buffer.write(bytes([{bytes_repr}]))"),
+        ])
+        .unwrap();
+
+        // Poll for up to 5s, looking for a StateChanged(Working) event from
+        // tab 0.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut found = false;
+        while Instant::now() < deadline && !found {
+            for (idx, ev) in app.poll_all(Instant::now()) {
+                if idx == 0 && matches!(ev, SessionEvent::StateChanged(TabState::Working)) {
+                    found = true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(found, "expected tab 0 to transition to Working");
     }
 }
