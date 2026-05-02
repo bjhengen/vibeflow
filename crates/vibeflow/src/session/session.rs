@@ -34,6 +34,10 @@ pub struct PtySession {
     rx: Receiver<Vec<u8>>,
     /// Used by [`send_input`] to write keystrokes to the PTY master.
     writer: Box<dyn Write + Send>,
+    /// The PTY master. Kept alive on the main thread; the reader thread holds a
+    /// cloned `Box<dyn Read + Send>` whose lifetime is independent of this
+    /// field. `MasterPty::resize` is called through this handle.
+    master: Box<dyn portable_pty::MasterPty + Send>,
     /// Child process handle — used for liveness checks and explicit kill.
     child: Box<dyn Child + Send + Sync>,
     /// Reader thread handle. Owned by the session; joined when `Drop` runs.
@@ -60,21 +64,17 @@ impl PtySession {
             child,
             master,
         } = spawn_pty(argv)?;
-        // The reader-thread closure owns the master so its drop coincides
-        // with the reader thread's exit (when the child closes the PTY).
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let mut reader = reader;
         let reader_thread = thread::Builder::new()
             .name("vibeflow-pty-reader".into())
             .spawn(move || {
-                let _master_alive = master; // keep alive for the read loop
                 let mut buf = [0u8; 4096];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
                             if tx.send(buf[..n].to_vec()).is_err() {
-                                // Receiver was dropped — session is closing.
                                 break;
                             }
                         }
@@ -86,6 +86,7 @@ impl PtySession {
         Ok(Self {
             rx,
             writer,
+            master,
             child,
             reader_thread: Some(reader_thread),
             dispatcher: OscDispatcher::new(),
@@ -166,6 +167,26 @@ impl PtySession {
         } else {
             Vec::new()
         }
+    }
+
+    /// Resize the PTY to `rows` rows × `cols` cols. The kernel sends `SIGWINCH`
+    /// to the foreground process group so well-behaved children re-render.
+    ///
+    /// `pixel_width` / `pixel_height` are reported as 0 — most consumers ignore
+    /// them; pixel dimensions matter only to image protocols (sixel, kitty
+    /// graphics) which v0.1 doesn't implement.
+    ///
+    /// # Errors
+    /// Wraps `portable_pty`'s typed error via `io::Error::other`.
+    pub fn resize(&self, rows: u16, cols: u16) -> std::io::Result<()> {
+        self.master
+            .resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(std::io::Error::other)
     }
 
     /// Toggle the Tier 3 heuristic-silence inference. The App calls this when
@@ -338,5 +359,17 @@ mod tests {
 
         let evs = s.tick(now + Duration::from_secs(5));
         assert_eq!(evs, vec![SessionEvent::StateChanged(TabState::Waiting)]);
+    }
+
+    #[test]
+    fn resize_does_not_error_on_a_live_session() {
+        // We don't assert anything about the child observing the new size — the
+        // ioctl semantics are portable-pty's responsibility. We just verify the
+        // call succeeds end-to-end (no Mutex poisoning, no consumed-master
+        // panic, no Result::Err path).
+        let s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        s.resize(40, 100).unwrap();
+        // Issue a second resize to verify it's not a one-shot.
+        s.resize(24, 80).unwrap();
     }
 }
