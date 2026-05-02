@@ -41,3 +41,35 @@ If the binary fails to start with a wgpu error, investigate GPU drivers
 (`vulkaninfo`, `glxinfo`). Stage 4 hardcodes `Backends::PRIMARY` — there is
 no env-var override yet. If you genuinely need GL, edit `Renderer::new` to
 read `wgpu::util::backend_bits_from_env()` and set `WGPU_BACKEND=gl`.
+
+## Stage 5 — alacritty_terminal grid + cell renderer
+
+Run:
+
+```bash
+cd /home/bhengen/dev/vibeflow
+cargo build --bin vibeflow
+RUST_LOG=vibeflow=info ./target/debug/vibeflow
+```
+
+- [ ] A window opens within ~500 ms. The user's shell prompt is visible inside
+  it, rendered in JetBrains Mono, white-ish on the dark grey background.
+- [ ] The block cursor is visible at the prompt position, with inverted colors.
+- [ ] Type `echo hello world`. Each keystroke appears on screen as you type.
+- [ ] Press Enter. The shell runs the command and prints `hello world` on the
+  next line; the prompt re-appears below it.
+- [ ] Run `ls --color`. Files appear with ANSI 16 colors (blue for directories,
+  green for executables, etc.).
+- [ ] Run a 256-color test: `for i in {0..255}; do printf "\033[48;5;${i}m %3d \033[0m" $i; done; echo`.
+  All 256 background colors render distinctly.
+- [ ] Run a truecolor test: `printf '\033[38;2;255;100;0mhello\033[0m\n'`.
+  The text renders in orange (255, 100, 0).
+- [ ] Resize the window. The prompt re-flows to the new width; the shell sees
+  the new size (verify with `tput cols`).
+- [ ] Run `vim` or `nano`. The full-screen UI renders. Cursor moves with arrow
+  keys (Stage 8 actually wires arrows; for Stage 5, hjkl in vim normal mode
+  works because they're letters).
+- [ ] Run `clear`. Screen clears to the dark grey background, prompt at top.
+- [ ] Press Ctrl+D at an empty prompt. Stderr shows `session died`. The
+  rendered grid freezes at the last known state (no banner yet — that's
+  Stage 6). Click the close button to exit.
