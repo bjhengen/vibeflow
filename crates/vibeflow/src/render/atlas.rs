@@ -15,6 +15,9 @@ const ATLAS_GLYPHS: u32 = ATLAS_LAST - ATLAS_FIRST + 1;
 pub const ATLAS_COLS: u32 = 16;
 pub const ATLAS_ROWS: u32 = 6; // 16 * 6 = 96 >= 95 glyphs
 
+/// Atlas grid layout (cols, rows). Used by the grid shader's UV math.
+pub const ATLAS_LAYOUT: (u32, u32) = (ATLAS_COLS, ATLAS_ROWS);
+
 /// Map a `char` to its glyph index in the atlas. Returns `None` for any
 /// character outside the pre-rendered range. Stage 7 swaps this for a dynamic
 /// lookup that handles arbitrary Unicode.

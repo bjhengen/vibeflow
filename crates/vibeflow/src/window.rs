@@ -225,10 +225,11 @@ impl ApplicationHandler for WindowApp {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                let term = self.app.active_term();
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
                 };
-                match renderer.render() {
+                match renderer.render(term) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         // Surface needs to be re-created with current config.

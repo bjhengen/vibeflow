@@ -257,7 +257,3 @@ impl GridPipeline {
         pass.draw(0..6, 0..(instances.len() as u32));
     }
 }
-
-// Suppress until Renderer wires GridPipeline in Task 5/6.
-#[allow(dead_code)]
-const _UNUSED_BUT_REFERENCED_IN_NEXT_TASK: () = ();
