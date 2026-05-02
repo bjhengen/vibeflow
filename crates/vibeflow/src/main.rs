@@ -14,6 +14,10 @@ use vibeflow::session::SessionEvent;
 /// Default child command for the demo. Emits "starting…", a Working frame,
 /// sleep 2s, a Waiting frame, sleep 2s, "done", then exits. Total runtime
 /// ~5 seconds. Overridable via the `VIBEFLOW_DEMO_CMD` env var.
+///
+/// Octal escapes (`\033` = ESC, `\007` = BEL) are used instead of hex (`\x1b`,
+/// `\x07`) because Ubuntu's `/bin/sh` is `dash`, whose `printf` interprets only
+/// the octal form. The bytes produced are byte-for-byte identical.
 const DEFAULT_DEMO: &str = "\
     printf 'starting...\\n'; \
     printf '\\033]1338;state=working;tool=demo\\007'; \

@@ -43,13 +43,21 @@ impl App {
     }
 
     /// Close (and drop) the tab at `idx`. The session's `Drop` kills the child
-    /// and joins the reader thread.
+    /// and joins the reader thread. Focus is preserved on whichever tab the user
+    /// was looking at: if a tab to the left of `active` is closed, `active`
+    /// shifts down to follow the still-focused element; if `active` is closed
+    /// or `active` is now past the end, it clamps to the last remaining tab.
     pub fn close_tab(&mut self, idx: usize) {
         if idx >= self.tabs.len() {
             return;
         }
         let _dropped = self.tabs.remove(idx);
-        if self.active >= self.tabs.len() && !self.tabs.is_empty() {
+        if idx < self.active {
+            // Closed a tab to the left of the focused one: every tab from
+            // `idx+1..` shifted down by one, so the focused index moves with it.
+            self.active -= 1;
+        } else if self.active >= self.tabs.len() && !self.tabs.is_empty() {
+            // Closed the last tab while it was focused (or beyond): clamp.
             self.active = self.tabs.len() - 1;
         }
     }
@@ -153,6 +161,22 @@ mod tests {
         app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
         app.close_tab(99); // out of range
         assert_eq!(app.tabs().len(), 1);
+    }
+
+    #[test]
+    fn close_tab_left_of_active_shifts_active_down() {
+        // tabs [0, 1, 2, 3]; focused on 2. Closing tab 0 should leave the same
+        // session focused — at its new index 1.
+        let mut app = App::new();
+        for _ in 0..4 {
+            app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        }
+        // After spawning 4 tabs, `active` is 3 (every new_tab focuses itself).
+        // Move focus to index 2 manually for the test scenario.
+        app.active = 2;
+        app.close_tab(0);
+        assert_eq!(app.tabs().len(), 3);
+        assert_eq!(app.active(), 1, "focus should shift down with the element");
     }
 
     use std::time::{Duration, Instant};
