@@ -210,9 +210,26 @@ impl ApplicationHandler for WindowApp {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(renderer) = self.renderer.as_ref() {
-                    if let Err(e) = renderer.render() {
-                        tracing::warn!(error = ?e, "render error");
+                let Some(renderer) = self.renderer.as_mut() else {
+                    return;
+                };
+                match renderer.render() {
+                    Ok(()) => {}
+                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                        // Surface needs to be re-created with current config.
+                        // The existing render config (size, format) is reused.
+                        renderer.reconfigure();
+                    }
+                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                        tracing::error!("GPU out of memory; exiting");
+                        event_loop.exit();
+                    }
+                    Err(wgpu::SurfaceError::Timeout) => {
+                        // Frame took longer than the deadline. Skip this frame
+                        // and request another. Common during driver hiccups.
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
                     }
                 }
             }
