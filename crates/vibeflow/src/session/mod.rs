@@ -6,4 +6,4 @@ pub mod pty;
 pub mod session;
 pub mod tracker;
 
-// pub use session::{PtySession, SessionEvent};  // Re-export added in Task 2
+pub use session::{PtySession, SessionEvent};
