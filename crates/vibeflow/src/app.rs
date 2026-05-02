@@ -119,9 +119,9 @@ impl App {
     /// best-effort. (We bias to applying the resize as broadly as possible
     /// because a single tab's resize failure shouldn't block the others — but
     /// we still surface the error so the caller can log it.)
-    pub fn resize_all(&self, rows: u16, cols: u16) -> std::io::Result<()> {
+    pub fn resize_all(&mut self, rows: u16, cols: u16) -> std::io::Result<()> {
         let mut first_error: Option<std::io::Error> = None;
-        for tab in &self.tabs {
+        for tab in &mut self.tabs {
             if let Err(e) = tab.resize(rows, cols) {
                 if first_error.is_none() {
                     first_error = Some(e);
@@ -132,6 +132,15 @@ impl App {
             None => Ok(()),
             Some(e) => Err(e),
         }
+    }
+
+    /// Read-only access to the active tab's [`alacritty_terminal::term::Term`]
+    /// for rendering. Returns `None` if there are no tabs.
+    #[must_use]
+    pub fn active_term(
+        &self,
+    ) -> Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>> {
+        self.tabs.get(self.active).map(|t| t.term())
     }
 
     /// Index of the currently focused tab. Valid only when `tabs()` is non-empty.
@@ -252,18 +261,25 @@ mod tests {
         app.send_input(b"hi\n").unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut got = false;
-        while Instant::now() < deadline && !got {
-            for (_, ev) in app.poll_all(Instant::now()) {
-                if let SessionEvent::PassThrough(bytes) = ev {
-                    if bytes.windows(2).any(|w| w == b"hi") {
-                        got = true;
-                    }
+        let mut saw_hi = false;
+        while Instant::now() < deadline && !saw_hi {
+            // Drain any TermUpdated/StateChanged events; their side effect
+            // is updating the per-session Term, which we read below.
+            let _events = app.poll_all(Instant::now());
+            if let Some(term) = app.active_term() {
+                let row0: String = term
+                    .renderable_content()
+                    .display_iter
+                    .filter(|i| i.point.line.0 == 0)
+                    .map(|i| i.cell.c)
+                    .collect();
+                if row0.contains("hi") {
+                    saw_hi = true;
                 }
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(got, "expected `hi` to round-trip through cat");
+        assert!(saw_hi, "expected `hi` in active tab's grid");
         // Tell cat to exit so the test doesn't hang on shutdown.
         let _ = app.send_input(&[0x04]);
     }

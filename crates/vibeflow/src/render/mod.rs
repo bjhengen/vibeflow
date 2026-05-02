@@ -2,6 +2,10 @@
 //! wgpu surface on a [`winit::window::Window`] and clears it to a solid color.
 //! Stage 5 layers the cell grid on top; Stage 6 adds the tab bar.
 
+pub mod atlas;
+pub mod colors;
+pub mod grid;
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -28,6 +32,10 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
+    /// Pre-rendered ASCII glyph atlas. Stage 7 replaces with cosmic-text.
+    atlas: crate::render::atlas::GlyphAtlas,
+    /// Cell-grid render pipeline. One instanced draw per frame.
+    grid_pipeline: crate::render::grid::GridPipeline,
 }
 
 impl Renderer {
@@ -102,12 +110,17 @@ impl Renderer {
         };
         surface.configure(&device, &surface_config);
 
+        let atlas = crate::render::atlas::GlyphAtlas::new(&device, &queue)?;
+        let grid_pipeline = crate::render::grid::GridPipeline::new(&device, format, &atlas)?;
+
         Ok(Self {
             _window: window,
             surface,
             device,
             queue,
             surface_config,
+            atlas,
+            grid_pipeline,
         })
     }
 
@@ -124,10 +137,12 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
     }
 
-    /// Submit a single-frame render of the clear color. Stage 5 replaces the
-    /// body of this method with the cell-grid render; the public signature
-    /// stays the same.
-    pub fn render(&self) -> std::result::Result<(), wgpu::SurfaceError> {
+    /// Submit a single-frame render. If `term` is `Some`, draws every visible
+    /// cell of the grid; if `None`, just clears to the dark theme color.
+    pub fn render(
+        &mut self,
+        term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
+    ) -> std::result::Result<(), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -137,9 +152,10 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("vibeflow-frame-encoder"),
             });
+
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("vibeflow-clear-pass"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("vibeflow-frame-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -152,7 +168,28 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+
+            if let Some(term) = term {
+                let instances = build_cell_instances(term);
+                if !instances.is_empty() {
+                    self.grid_pipeline
+                        .ensure_instance_capacity(&self.device, instances.len() as u64);
+                    let (atlas_w, atlas_h) = self.atlas.pixel_size();
+                    let (cell_w, cell_h) = self.atlas.cell_pitch();
+                    let surface_size = (self.surface_config.width, self.surface_config.height);
+                    self.grid_pipeline.draw(
+                        &mut pass,
+                        &self.queue,
+                        &instances,
+                        surface_size,
+                        (atlas_w, atlas_h),
+                        (cell_w, cell_h),
+                        crate::render::atlas::ATLAS_LAYOUT,
+                    );
+                }
+            }
         }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
@@ -171,4 +208,78 @@ impl Renderer {
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
+}
+
+/// Walk the active grid and emit one [`crate::render::grid::CellInstance`]
+/// per visible cell. Cells whose character is outside the atlas range
+/// (non-printable / non-ASCII for Stage 5) are emitted with the space-glyph
+/// index — visually they show only the background color, which matches
+/// well-behaved control characters.
+///
+/// Atlas state is not threaded through this function: glyph lookup uses the
+/// free [`crate::render::atlas::glyph_index`] (the atlas's pixel pitch + size
+/// are read in `Renderer::render` directly).
+fn build_cell_instances(
+    term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
+) -> Vec<crate::render::grid::CellInstance> {
+    use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+
+    let content = term.renderable_content();
+    let colors = content.colors;
+    let fg_default = Rgb {
+        r: 0xe5,
+        g: 0xe5,
+        b: 0xe5,
+    };
+    let bg_default = Rgb {
+        r: 0x0e,
+        g: 0x0e,
+        b: 0x12,
+    };
+
+    let mut instances: Vec<crate::render::grid::CellInstance> = Vec::new();
+    let cursor_pos = content.cursor;
+    // CursorShape variants in vte 0.13.x: Block, Underline, Beam, HollowBlock, Hidden.
+    // Stage 5 treats every visible shape as a block (HollowBlock and Beam draw as
+    // blocks too); Stage 6+ may render them properly.
+    let cursor_visible = cursor_pos.shape != CursorShape::Hidden;
+    let cursor_row_col = if cursor_visible {
+        Some((cursor_pos.point.line.0, cursor_pos.point.column.0 as u32))
+    } else {
+        None
+    };
+
+    for indexed in content.display_iter {
+        let row = indexed.point.line.0;
+        if row < 0 {
+            continue;
+        }
+        let col = indexed.point.column.0 as u32;
+        let cell = indexed.cell;
+        let glyph = crate::render::atlas::glyph_index(cell.c).unwrap_or(0);
+        let fg_rgb = crate::render::colors::resolve_color(cell.fg, colors, fg_default, bg_default);
+        let bg_rgb = crate::render::colors::resolve_color(cell.bg, colors, fg_default, bg_default);
+
+        // If this is the cursor cell, swap fg and bg to draw a block cursor.
+        let on_cursor = cursor_row_col == Some((row, col));
+        let (fg, bg) = if on_cursor {
+            (rgb_to_f32(bg_rgb), rgb_to_f32(fg_rgb))
+        } else {
+            (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb))
+        };
+
+        instances.push(crate::render::grid::CellInstance::new(
+            col, row as u32, glyph, fg, bg,
+        ));
+    }
+    instances
+}
+
+fn rgb_to_f32(rgb: alacritty_terminal::vte::ansi::Rgb) -> [f32; 4] {
+    [
+        rgb.r as f32 / 255.0,
+        rgb.g as f32 / 255.0,
+        rgb.b as f32 / 255.0,
+        1.0,
+    ]
 }
