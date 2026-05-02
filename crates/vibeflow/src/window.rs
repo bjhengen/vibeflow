@@ -195,6 +195,19 @@ impl ApplicationHandler for WindowApp {
         if let Err(e) = self.spawn_first_tab() {
             tracing::error!(error = ?e, "failed to spawn first tab");
             event_loop.exit();
+            return;
+        }
+
+        // Resize the freshly-spawned PTY to match the actual window size.
+        // `spawn_pty` defaults to 80×24, which is wrong if the user opened a
+        // larger window. Some compositors don't fire `WindowEvent::Resized`
+        // on initial show, so we don't rely on that to correct the size.
+        if let Some(renderer) = self.renderer.as_ref() {
+            let (width, height) = renderer.surface_size();
+            let (rows, cols) = pixels_to_grid(width, height, CELL_WIDTH_PX, CELL_HEIGHT_PX);
+            if let Err(e) = self.app.resize_all(rows, cols) {
+                tracing::warn!(error = %e, rows, cols, "initial PTY resize failed");
+            }
         }
     }
 

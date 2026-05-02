@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use vibeflow::window::WindowApp;
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 
 fn main() -> Result<()> {
     // tracing-subscriber: respect RUST_LOG when set, otherwise default to
@@ -20,9 +20,9 @@ fn main() -> Result<()> {
         .init();
 
     let event_loop = EventLoop::new().context("create winit EventLoop")?;
-    // `Wait` is the cheapest mode — the loop blocks until an event arrives.
-    // Task 5 swaps this for `WaitUntil(deadline)` so tracker timeouts fire.
-    event_loop.set_control_flow(ControlFlow::Wait);
+    // The control flow is set per-iteration in `WindowApp::about_to_wait`
+    // (a 100 ms `WaitUntil` so tracker timeouts fire). The initial value
+    // doesn't matter — the first `about_to_wait` overrides it.
 
     let mut app = WindowApp::new();
     event_loop
