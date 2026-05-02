@@ -2,6 +2,10 @@
 //! wgpu surface on a [`winit::window::Window`] and clears it to a solid color.
 //! Stage 5 layers the cell grid on top; Stage 6 adds the tab bar.
 
+pub mod atlas;
+pub mod colors;
+pub mod grid;
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};

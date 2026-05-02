@@ -29,6 +29,9 @@ pollster = "0.3"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+alacritty_terminal = "0.24"
+fontdue = "0.9"
+bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 proptest = "1"
