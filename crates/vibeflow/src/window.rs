@@ -138,11 +138,13 @@ impl WindowApp {
                     window.request_redraw();
                 }
             }
-            SessionEvent::PassThrough(bytes) => {
-                // Stage 5 sends these into alacritty_terminal::Term::input.
-                // Stage 4 just records the byte count at trace level so we can
-                // sanity-check throughput from the log without spamming.
-                tracing::trace!(tab = idx, bytes = bytes.len(), "passthrough");
+            SessionEvent::TermUpdated => {
+                // Bytes were fed into the per-session Term in PtySession::poll.
+                // Request a redraw so the renderer reads the new grid contents.
+                tracing::trace!(tab = idx, "term updated");
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
             SessionEvent::Died => {
                 tracing::warn!(tab = idx, "session died");
