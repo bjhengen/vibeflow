@@ -87,6 +87,22 @@ impl App {
         all
     }
 
+    /// Write keystroke bytes to the active tab's PTY child.
+    ///
+    /// # Errors
+    /// Returns the tab's `io::Error` if the write fails. If there are no tabs,
+    /// returns `ErrorKind::NotFound` — the caller should ensure at least one
+    /// tab exists before calling.
+    pub fn send_input(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no active tab",
+            ));
+        };
+        tab.send_input(bytes)
+    }
+
     /// Index of the currently focused tab. Valid only when `tabs()` is non-empty.
     #[must_use]
     pub fn active(&self) -> usize {
@@ -180,5 +196,28 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(found, "expected tab 0 to transition to Working");
+    }
+
+    #[test]
+    fn send_input_writes_to_active_tab() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/cat"]).unwrap();
+        app.send_input(b"hi\n").unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = false;
+        while Instant::now() < deadline && !got {
+            for (_, ev) in app.poll_all(Instant::now()) {
+                if let SessionEvent::PassThrough(bytes) = ev {
+                    if bytes.windows(2).any(|w| w == b"hi") {
+                        got = true;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(got, "expected `hi` to round-trip through cat");
+        // Tell cat to exit so the test doesn't hang on shutdown.
+        let _ = app.send_input(&[0x04]);
     }
 }
