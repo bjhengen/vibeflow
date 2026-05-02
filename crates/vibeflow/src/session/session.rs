@@ -242,37 +242,43 @@ mod tests {
 
     #[test]
     fn poll_routes_osc_1338_through_dispatcher_and_tracker() {
-        use crate::session::tracker::TabState;
+        use vibeflow_protocol::{Frame as ProtoFrame, State as ProtoState};
 
-        // Spawn a child that outputs OSC-1338 with a state change.
-        // After poll, the tracker should have state Waiting.
+        // Spawn a child that prints exactly one OSC 1338 sequence, then exits.
+        // The session's poll() should observe a state change to Working.
+        let bytes = ProtoFrame::new(ProtoState::Working).to_bytes();
+        let bytes_repr = bytes
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let mut s = PtySession::spawn(
             &[
                 "python3",
                 "-c",
-                "
-import sys
-# Emit an OSC-1338 frame indicating the tool is waiting for input.
-osc_frame = b'\\x1b]1338;state=waiting\\x07'
-sys.stdout.buffer.write(osc_frame)
-sys.stdout.flush()
-",
+                &format!("import sys; sys.stdout.buffer.write(bytes([{bytes_repr}]))"),
             ],
             TrackerConfig::default(),
         )
         .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut saw_waiting = false;
-        while Instant::now() < deadline && !saw_waiting {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut events = Vec::new();
+        let mut state_changed_to_working = false;
+        while Instant::now() < deadline && !state_changed_to_working {
             for ev in s.poll(Instant::now()) {
-                if matches!(ev, SessionEvent::StateChanged(TabState::Waiting)) {
-                    saw_waiting = true;
+                if matches!(ev, SessionEvent::StateChanged(TabState::Working)) {
+                    state_changed_to_working = true;
                 }
+                events.push(ev);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(saw_waiting, "expected Waiting state from OSC-1338");
+        assert!(
+            state_changed_to_working,
+            "expected StateChanged(Working); got events: {events:?}"
+        );
+        assert_eq!(s.state(), TabState::Working);
     }
 
     #[test]
@@ -312,12 +318,25 @@ sys.stdout.flush()
 
     #[test]
     fn set_heuristic_active_toggles_tier_3() {
+        // Direct test that the toggle reaches the tracker.
         let mut s =
-            PtySession::spawn(&["/bin/sh", "-c", "sleep 10"], TrackerConfig::default()).unwrap();
-        // Just verify the call doesn't panic — tracker's internal logic is
-        // tested in tracker tests.
+            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
         s.set_heuristic_active(true);
-        s.set_heuristic_active(false);
+        // No assertion on internal tracker state (it's a private field) —
+        // exercise the path via tick after a Working transition + observed
+        // output to ensure heuristic fires when the flag is on.
+        let now = Instant::now();
+        let frame_bytes =
+            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
+        for ev in s.dispatcher.feed(&frame_bytes) {
+            if let DispatchEvent::AiState(frame) = ev {
+                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
+            }
+        }
+        s.tracker.on_input(TrackerInput::OutputObserved, now);
+
+        let evs = s.tick(now + Duration::from_secs(5));
+        assert_eq!(evs, vec![SessionEvent::StateChanged(TabState::Waiting)]);
     }
 
     #[test]
@@ -345,11 +364,27 @@ sys.stdout.flush()
     }
 
     #[test]
-    fn send_input_writes_to_pty_master() {
+    fn send_input_round_trips_bytes_through_pty() {
+        // Spawn `cat`, send some bytes to its stdin via send_input, verify
+        // the same bytes come back through the reader channel (since cat
+        // echoes its input to stdout). Send EOT (0x04) to make cat exit.
         let mut s = PtySession::spawn(&["/bin/cat"], TrackerConfig::default()).unwrap();
-        // Just verify the call doesn't error — the PTY driver will echo it back.
         s.send_input(b"hello\n").unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buf = Vec::new();
+        while Instant::now() < deadline && !buf.windows(5).any(|w| w == b"hello") {
+            match s.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(chunk) => buf.extend_from_slice(&chunk),
+                Err(_) => continue,
+            }
+        }
+        assert!(
+            buf.windows(5).any(|w| w == b"hello"),
+            "expected `hello` in echoed buffer; got: {buf:?}"
+        );
+        // Tell cat to exit.
+        s.send_input(&[0x04]).unwrap();
     }
 
     #[test]
@@ -423,5 +458,56 @@ sys.stdout.flush()
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(saw_term_updated, "expected at least one TermUpdated event");
+    }
+
+    #[test]
+    fn session_spawns_and_reports_state() {
+        // `sleep 5` exits cleanly; the session is alive immediately after spawn
+        // and reports the default Active state.
+        let s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        assert!(s.is_alive());
+        assert_eq!(s.state(), TabState::Active);
+        // Drop `s` here — the Drop impl kills the child and joins the reader.
+        drop(s);
+    }
+
+    #[test]
+    fn session_reader_thread_pumps_bytes_to_channel() {
+        // Spawn a child that prints predictable bytes, then read from the
+        // session's channel directly to verify the reader thread is alive.
+        let s = PtySession::spawn(&["/bin/sh", "-c", "printf hello"], TrackerConfig::default())
+            .unwrap();
+        // Drain the channel for up to 2s and accumulate bytes.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut buf = Vec::new();
+        while Instant::now() < deadline && buf.len() < 5 {
+            match s.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(chunk) => buf.extend_from_slice(&chunk),
+                Err(_) => continue,
+            }
+        }
+        assert!(buf.starts_with(b"hello"), "got: {:?}", buf);
+    }
+
+    #[test]
+    fn tick_fires_stale_state_timeout() {
+        let mut s =
+            PtySession::spawn(&["/bin/sh", "-c", "sleep 60"], TrackerConfig::default()).unwrap();
+        let now = Instant::now();
+        // Simulate state change by feeding an AiFrame manually to set
+        // last_event_at, then tick past the 30 s stale-state window.
+        let frame_bytes =
+            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
+        // Feed bytes directly (not via the PTY) to control timing.
+        for ev in s.dispatcher.feed(&frame_bytes) {
+            if let DispatchEvent::AiState(frame) = ev {
+                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
+            }
+        }
+        assert_eq!(s.state(), TabState::Working);
+
+        let evs = s.tick(now + Duration::from_secs(31));
+        assert_eq!(evs, vec![SessionEvent::StateChanged(TabState::Active)]);
+        assert_eq!(s.state(), TabState::Active);
     }
 }
