@@ -111,6 +111,29 @@ impl App {
         tab.send_input(bytes)
     }
 
+    /// Resize every tab's PTY to `rows × cols`. Called from `WindowApp` on
+    /// every `WindowEvent::Resized` after the renderer surface is reconfigured.
+    ///
+    /// # Errors
+    /// Returns the first per-tab `io::Error`; subsequent tabs are still resized
+    /// best-effort. (We bias to applying the resize as broadly as possible
+    /// because a single tab's resize failure shouldn't block the others — but
+    /// we still surface the error so the caller can log it.)
+    pub fn resize_all(&self, rows: u16, cols: u16) -> std::io::Result<()> {
+        let mut first_error: Option<std::io::Error> = None;
+        for tab in &self.tabs {
+            if let Err(e) = tab.resize(rows, cols) {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+        match first_error {
+            None => Ok(()),
+            Some(e) => Err(e),
+        }
+    }
+
     /// Index of the currently focused tab. Valid only when `tabs()` is non-empty.
     #[must_use]
     pub fn active(&self) -> usize {
@@ -243,5 +266,15 @@ mod tests {
         assert!(got, "expected `hi` to round-trip through cat");
         // Tell cat to exit so the test doesn't hang on shutdown.
         let _ = app.send_input(&[0x04]);
+    }
+
+    #[test]
+    fn resize_all_fans_out_to_every_session() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        // Expect Ok and no panic. Real per-tab observation lives in the
+        // PtySession-level test in session::session.
+        app.resize_all(40, 100).unwrap();
     }
 }

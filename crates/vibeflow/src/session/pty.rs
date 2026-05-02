@@ -7,11 +7,15 @@ use std::io::{Read, Write};
 
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
-/// Handles returned from [`spawn_pty`]. The fields are owned by separate
-/// threads in `PtySession`: the reader is moved into the reader thread,
-/// the writer stays on the main thread, the child is owned by `PtySession`
-/// for liveness checks and explicit kill, and the master must be kept alive
-/// alongside the reader (its drop closes the PTY).
+/// Handles returned from [`spawn_pty`]. After Stage 4, ownership in
+/// `PtySession` is: the reader is moved into the reader thread, the writer
+/// stays on the main thread for [`crate::session::PtySession::send_input`],
+/// the child is owned by `PtySession` for liveness checks and explicit kill,
+/// and the master is owned by `PtySession` on the main thread so
+/// [`crate::session::PtySession::resize`] can call `MasterPty::resize`. The
+/// reader thread does not need to keep the master alive — `try_clone_reader`
+/// returns an independent file descriptor (`dup`-equivalent on Unix) whose
+/// EOF is signalled when the child closes its slave end.
 pub struct PtyHandles {
     /// Read half of the PTY master. Move to a reader thread.
     pub reader: Box<dyn Read + Send>,
@@ -19,16 +23,18 @@ pub struct PtyHandles {
     pub writer: Box<dyn Write + Send>,
     /// The child process. Drop or kill to terminate.
     pub child: Box<dyn Child + Send + Sync>,
-    /// The master PTY. Keep alive as long as `reader` is in use — once the
-    /// box is dropped, the PTY closes and reads return EOF. Callers should
-    /// move it into the same scope as the reader (typically the reader thread).
+    /// The master PTY. Owned by the main thread (in `PtySession`) so that
+    /// `MasterPty::resize` can be invoked when the window resizes.
     pub master: Box<dyn MasterPty + Send>,
 }
 
 /// Spawn a child process on a pseudoterminal.
 ///
 /// `argv` is the command + arguments — `argv[0]` is the program path. PTY size
-/// defaults to 80x24; resizing is added in Stage 6 (window event handler).
+/// defaults to 80×24; the caller should call
+/// [`crate::session::PtySession::resize`] (or [`crate::app::App::resize_all`])
+/// once the actual window dimensions are known. Stage 4 wires this from the
+/// `WindowEvent::Resized` handler and from `WindowApp::resumed`.
 ///
 /// # Errors
 /// Returns an `io::Error` if the PTY cannot be opened or the child cannot be
