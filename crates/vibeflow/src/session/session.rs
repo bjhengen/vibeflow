@@ -33,7 +33,6 @@ pub struct PtySession {
     /// Drains here when the reader thread sends bytes from the PTY master.
     rx: Receiver<Vec<u8>>,
     /// Used by [`send_input`] to write keystrokes to the PTY master.
-    #[allow(dead_code)]
     writer: Box<dyn Write + Send>,
     /// Child process handle — used for liveness checks and explicit kill.
     child: Box<dyn Child + Send + Sync>,
@@ -148,6 +147,16 @@ impl PtySession {
     pub fn is_alive(&self) -> bool {
         self.alive
     }
+
+    /// Write keystroke bytes to the PTY master. The child sees these as input
+    /// on its stdin.
+    ///
+    /// # Errors
+    /// Propagates any underlying `io::Error` from the writer.
+    pub fn send_input(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.writer.write_all(bytes)?;
+        self.writer.flush()
+    }
 }
 
 impl Drop for PtySession {
@@ -234,5 +243,29 @@ mod tests {
             "expected StateChanged(Working); got events: {events:?}"
         );
         assert_eq!(s.state(), TabState::Working);
+    }
+
+    #[test]
+    fn send_input_round_trips_bytes_through_pty() {
+        // Spawn `cat`, send some bytes to its stdin via send_input, verify
+        // the same bytes come back through the reader channel (since cat
+        // echoes its input to stdout). Send EOT (0x04) to make cat exit.
+        let mut s = PtySession::spawn(&["/bin/cat"], TrackerConfig::default()).unwrap();
+        s.send_input(b"hello\n").unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buf = Vec::new();
+        while Instant::now() < deadline && !buf.windows(5).any(|w| w == b"hello") {
+            match s.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(chunk) => buf.extend_from_slice(&chunk),
+                Err(_) => continue,
+            }
+        }
+        assert!(
+            buf.windows(5).any(|w| w == b"hello"),
+            "expected `hello` in echoed buffer; got: {buf:?}"
+        );
+        // Tell cat to exit.
+        s.send_input(&[0x04]).unwrap();
     }
 }
