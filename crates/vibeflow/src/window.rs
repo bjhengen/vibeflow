@@ -16,6 +16,25 @@ use crate::app::App;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
+/// Stage-4 placeholder cell size. Stage 7 (font atlas) replaces this with
+/// values derived from cosmic-text font metrics for the configured font.
+const CELL_WIDTH_PX: u32 = 8;
+const CELL_HEIGHT_PX: u32 = 16;
+
+/// Compute terminal grid dimensions (rows, cols) from a window's physical
+/// pixel size and per-cell pixel size. Floor-divides; clamps to at least 1×1
+/// so degenerate (0, 0) surfaces still produce a usable grid for the child.
+fn pixels_to_grid(width_px: u32, height_px: u32, cell_w: u32, cell_h: u32) -> (u16, u16) {
+    let cols = (width_px / cell_w).max(1);
+    let rows = (height_px / cell_h).max(1);
+    // PTY size fields are u16. Realistic terminal sizes are well under
+    // u16::MAX (~65k cells), but we still saturate-cast defensively.
+    (
+        rows.min(u16::MAX as u32) as u16,
+        cols.min(u16::MAX as u32) as u16,
+    )
+}
+
 /// User-facing winit application. Implements [`ApplicationHandler`].
 ///
 /// Lifecycle:
@@ -159,7 +178,24 @@ impl ApplicationHandler for WindowApp {
                     }
                 }
             }
-            // Resize, KeyboardInput, etc. arrive in Tasks 6–7.
+            WindowEvent::Resized(new_size) => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(new_size.width, new_size.height);
+                }
+                let (rows, cols) = pixels_to_grid(
+                    new_size.width,
+                    new_size.height,
+                    CELL_WIDTH_PX,
+                    CELL_HEIGHT_PX,
+                );
+                if let Err(e) = self.app.resize_all(rows, cols) {
+                    tracing::warn!(error = %e, rows, cols, "PTY resize failed");
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            // KeyboardInput, etc. arrive in Task 7.
             _ => {}
         }
     }
@@ -179,5 +215,29 @@ impl ApplicationHandler for WindowApp {
         // Re-arm a 100ms wake-up so trackers tick steadily. Stage 6+ will
         // compute the exact next deadline from the per-session tracker state.
         event_loop.set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(100)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixels_to_grid_uses_floor_division() {
+        // 960 / 8 = 120, 600 / 16 = 37 (with 8 px remainder ignored).
+        assert_eq!(pixels_to_grid(960, 600, 8, 16), (37, 120));
+    }
+
+    #[test]
+    fn pixels_to_grid_clamps_to_minimum_one_cell() {
+        // A degenerate 0×0 surface should still produce 1×1 — terminal
+        // children expect at least one row and one column.
+        assert_eq!(pixels_to_grid(0, 0, 8, 16), (1, 1));
+    }
+
+    #[test]
+    fn pixels_to_grid_handles_unusual_cell_sizes() {
+        // Square cells, 100×100 surface.
+        assert_eq!(pixels_to_grid(100, 100, 10, 10), (10, 10));
     }
 }
