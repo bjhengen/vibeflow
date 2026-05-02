@@ -1,8 +1,9 @@
-//! Per-tab session machinery: OSC dispatching, AI-state tracking.
-//!
-//! Stage 2 ships [`osc::OscDispatcher`] and [`tracker::AiStateTracker`]. Stage 3
-//! adds a `pty` submodule that drives a real PTY child process and feeds its
-//! output bytes through `OscDispatcher::feed`.
+//! Per-tab session machinery: PTY plumbing, OSC dispatching, AI-state tracking.
 
 pub mod osc;
+pub mod pty;
+#[allow(clippy::module_inception)]
+pub mod session;
 pub mod tracker;
+
+pub use session::{PtySession, SessionEvent};
