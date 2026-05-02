@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::keyboard::ModifiersState;
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::app::App;
@@ -35,6 +35,48 @@ fn pixels_to_grid(width_px: u32, height_px: u32, cell_w: u32, cell_h: u32) -> (u
     )
 }
 
+/// Translate a winit key press into the bytes the PTY child expects on stdin.
+/// Returns `None` for releases, modifier-only events, and any key not in
+/// Stage 4's minimal subset (Stage 8 fills in arrows, F-keys, full Alt/Meta
+/// handling, etc.).
+///
+/// Takes decomposed parameters rather than a `&KeyEvent` because winit 0.30's
+/// `KeyEvent` has a `pub(crate)` `platform_specific` field that prevents
+/// external struct-literal construction in tests.
+fn key_to_bytes(
+    logical_key: &Key,
+    state: ElementState,
+    modifiers: ModifiersState,
+) -> Option<Vec<u8>> {
+    if state != ElementState::Pressed {
+        return None;
+    }
+    match logical_key {
+        Key::Character(s) => {
+            if modifiers.contains(ModifiersState::CONTROL) {
+                // Ctrl+letter → 0x01..=0x1A. Only handle a..=z; leave numbers
+                // and punctuation to Stage 8.
+                let lower = s.to_ascii_lowercase();
+                let mut chars = lower.chars();
+                if let (Some(c), None) = (chars.next(), chars.next()) {
+                    if c.is_ascii_lowercase() {
+                        return Some(vec![(c as u8) - b'`']); // 'a' (0x61) - 0x60 = 0x01
+                    }
+                }
+                None
+            } else {
+                Some(s.as_bytes().to_vec())
+            }
+        }
+        Key::Named(NamedKey::Enter) => Some(vec![b'\r']),
+        Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
+        Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
+        Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
+        // Anything else → Stage 8.
+        _ => None,
+    }
+}
+
 /// User-facing winit application. Implements [`ApplicationHandler`].
 ///
 /// Lifecycle:
@@ -58,10 +100,6 @@ pub struct WindowApp {
     /// delivers modifier state via a separate event rather than as a field on
     /// `KeyEvent`, so we cache it here and pass it into the `key_to_bytes`
     /// helper alongside each key press.
-    ///
-    /// Unused until Task 7 wires keyboard handling; the `#[allow(dead_code)]`
-    /// is removed in Task 7.
-    #[allow(dead_code)]
     current_modifiers: ModifiersState,
 }
 
@@ -195,7 +233,18 @@ impl ApplicationHandler for WindowApp {
                     window.request_redraw();
                 }
             }
-            // KeyboardInput, etc. arrive in Task 7.
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.current_modifiers = modifiers.state();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(bytes) =
+                    key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
+                {
+                    if let Err(e) = self.app.send_input(&bytes) {
+                        tracing::warn!(error = %e, "send_input failed");
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -239,5 +288,105 @@ mod tests {
     fn pixels_to_grid_handles_unusual_cell_sizes() {
         // Square cells, 100×100 surface.
         assert_eq!(pixels_to_grid(100, 100, 10, 10), (10, 10));
+    }
+
+    use winit::event::ElementState;
+    use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
+
+    #[test]
+    fn key_to_bytes_printable_ascii() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("a")),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"a".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_printable_unicode() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("é")),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some("é".as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_enter_returns_carriage_return() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(vec![b'\r'])
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_backspace_returns_del() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Backspace),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(vec![0x7f])
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_ctrl_c_returns_etx() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("c")),
+                ElementState::Pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(vec![0x03])
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_ctrl_d_returns_eot() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("d")),
+                ElementState::Pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(vec![0x04])
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_ignores_release_events() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("a")),
+                ElementState::Released,
+                ModifiersState::empty()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_ignores_unhandled_named_keys() {
+        // F5 is not in Stage 4's subset; Stage 8 will handle it.
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::F5),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            None
+        );
     }
 }
