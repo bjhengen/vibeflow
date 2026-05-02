@@ -449,14 +449,16 @@ impl Renderer {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .context("no compatible GPU adapter found (try VIBEFLOW_BACKEND=gl)")?;
+        .context("no compatible GPU adapter found — check your GPU drivers")?;
 
+        // `DeviceDescriptor` in wgpu 0.20 has only three fields. Later wgpu
+        // versions add `memory_hints`; if you've upgraded wgpu, you'll need
+        // to add it back.
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("vibeflow-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::downlevel_defaults(),
-                memory_hints: wgpu::MemoryHints::default(),
             },
             None,
         ))
@@ -596,6 +598,7 @@ use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 use crate::app::App;
@@ -620,6 +623,15 @@ pub struct WindowApp {
     renderer: Option<Renderer>,
     /// The application core. Holds every tab.
     app: App,
+    /// Latest modifier state from `WindowEvent::ModifiersChanged`. winit 0.30
+    /// delivers modifier state via a separate event rather than as a field on
+    /// `KeyEvent`, so we cache it here and pass it into the `key_to_bytes`
+    /// helper alongside each key press.
+    ///
+    /// Unused until Task 7 wires keyboard handling; the `#[allow(dead_code)]`
+    /// is removed in Task 7.
+    #[allow(dead_code)]
+    current_modifiers: ModifiersState,
 }
 
 impl WindowApp {
@@ -631,6 +643,7 @@ impl WindowApp {
             window: None,
             renderer: None,
             app: App::new(),
+            current_modifiers: ModifiersState::empty(),
         }
     }
 
@@ -795,12 +808,12 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 
 Expected behavior:
 - A window opens, ~960×600, titled "vibeflow", showing a dark grey background (`#0e0e12`).
-- `[INFO  vibeflow::window] spawning first tab` appears in stderr.
-- Pressing the close button (or window manager `x`) exits the binary cleanly. Stderr shows `[INFO  vibeflow::window] close requested; exiting`.
+- Stderr shows an `INFO` line containing `spawning first tab` with `shell=…` (the exact format depends on `tracing-subscriber`'s defaults — there's a timestamp, the `INFO` level, the message, and structured fields). Example: `2026-05-02T16:05:42Z  INFO spawning first tab shell=/bin/bash`.
+- Pressing the close button (or window manager `x`) exits the binary cleanly. Stderr shows an `INFO` line containing `close requested; exiting`.
 - Keystrokes do nothing visible yet (Task 7 wires them).
 - Resize does nothing visible yet (Task 6 wires it).
 
-If the window doesn't open: check `$DISPLAY` / `$WAYLAND_DISPLAY` — winit needs one. If wgpu init fails, the binary exits with `failed to initialise renderer` in stderr; try `WGPU_BACKEND=gl` (winit reads this env var to pick the GL backend) on minimal GPU drivers.
+If the window doesn't open: check `$DISPLAY` / `$WAYLAND_DISPLAY` — winit needs one. If wgpu init fails, the binary exits with `failed to initialise renderer` in stderr; investigate your GPU drivers (`vulkaninfo`, `glxinfo`). Stage 4 hardcodes `Backends::PRIMARY`; if you genuinely need GL, modify `Renderer::new` to use `wgpu::util::backend_bits_from_env().unwrap_or(Backends::PRIMARY)` and set `WGPU_BACKEND=gl`.
 
 - [ ] **Step 4: Verify fmt + clippy**
 
@@ -861,12 +874,6 @@ Inside `impl ApplicationHandler for WindowApp`, after the `window_event` method,
         // compute the exact next deadline from the per-session tracker state.
         event_loop
             .set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(100)));
-
-        // No tabs left → exit cleanly.
-        if self.app.tabs().is_empty() {
-            tracing::info!("all tabs closed; exiting");
-            event_loop.exit();
-        }
     }
 ```
 
@@ -892,10 +899,11 @@ Outside the trait impl (i.e. in `impl WindowApp`), add the helper method that ha
             }
             SessionEvent::Died => {
                 tracing::warn!(tab = idx, "session died");
-                // Stage 6 (tab bar) renders the dead-tab banner. For now we
-                // just close the tab so `about_to_wait` will exit if it was
-                // the last one.
-                self.app.close_tab(idx);
+                // The session stays in `App.tabs` with `is_alive() == false`.
+                // Stage 6 (tab bar) renders the dead-tab banner; closing the
+                // tab here would remove the thing the banner needs to draw.
+                // The window does not auto-exit on the last tab dying in
+                // Stage 4 — the user closes the window with the close button.
             }
         }
     }
@@ -1057,83 +1065,115 @@ git commit -m "feat(window): propagate WindowEvent::Resized to wgpu surface and 
 **Files:**
 - Modify: `crates/vibeflow/src/window.rs`
 
-Stage 4 ships a minimal keystroke-to-bytes encoder: printable Unicode characters, Enter (`\r`), Backspace (`0x7f`), Ctrl+C (`0x03`), Ctrl+D (`0x04`). Anything else falls through to `None` (ignored). Stage 8 layers in arrows, function keys, full modifier support.
+Stage 4 ships a minimal keystroke-to-bytes encoder: printable Unicode characters, Enter (`\r`), Backspace (`0x7f`), Tab (`\t`), Escape (`0x1b`), Ctrl+C (`0x03`), Ctrl+D (`0x04`), and Ctrl+letter for the rest of the lowercase alphabet (which becomes `0x01..=0x1A`). Anything else falls through to `None` (ignored). Stage 8 layers in arrows, function keys, full modifier support.
 
-The encoding logic is a pure function — `key_to_bytes(&KeyEvent) -> Option<Vec<u8>>` — so it's TDD-friendly.
+**winit 0.30 API note:** modifier state is delivered via a separate `WindowEvent::ModifiersChanged(Modifiers)` event — it is *not* a field on `KeyEvent`. We cache the latest modifier state on `WindowApp.current_modifiers` (added in Task 3) and pass it into the encoder alongside each key. The encoder takes decomposed parameters (`&Key`, `ElementState`, `ModifiersState`) instead of `&KeyEvent` because `KeyEvent` cannot be constructed from outside winit (it has a `pub(crate)` `platform_specific` field with a non-public type) — decomposing the parameters makes the encoder trivially testable without faking a `KeyEvent`.
+
+The encoding logic is a pure function — `key_to_bytes(&Key, ElementState, ModifiersState) -> Option<Vec<u8>>` — so it's TDD-friendly.
 
 - [ ] **Step 1: Write the failing unit tests for `key_to_bytes`**
 
 Append to the existing `mod tests` block in `crates/vibeflow/src/window.rs`:
 
 ```rust
-    use winit::event::{ElementState, KeyEvent};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
-
-    fn key_press(logical: Key, modifiers: ModifiersState) -> KeyEvent {
-        // winit::event::KeyEvent has a `repeat` field and platform-specific
-        // bits. We construct only the minimum the encoder reads.
-        KeyEvent {
-            physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            ),
-            logical_key: logical,
-            text: None,
-            location: winit::keyboard::KeyLocation::Standard,
-            state: ElementState::Pressed,
-            repeat: false,
-            platform_specific: Default::default(),
-            modifiers,
-        }
-    }
 
     #[test]
     fn key_to_bytes_printable_ascii() {
-        let ev = key_press(Key::Character(SmolStr::new("a")), ModifiersState::empty());
-        assert_eq!(key_to_bytes(&ev), Some(b"a".to_vec()));
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("a")),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"a".to_vec())
+        );
     }
 
     #[test]
     fn key_to_bytes_printable_unicode() {
-        let ev = key_press(Key::Character(SmolStr::new("é")), ModifiersState::empty());
-        assert_eq!(key_to_bytes(&ev), Some("é".as_bytes().to_vec()));
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("é")),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some("é".as_bytes().to_vec())
+        );
     }
 
     #[test]
     fn key_to_bytes_enter_returns_carriage_return() {
-        let ev = key_press(Key::Named(NamedKey::Enter), ModifiersState::empty());
-        assert_eq!(key_to_bytes(&ev), Some(vec![b'\r']));
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Enter),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(vec![b'\r'])
+        );
     }
 
     #[test]
     fn key_to_bytes_backspace_returns_del() {
-        let ev = key_press(Key::Named(NamedKey::Backspace), ModifiersState::empty());
-        assert_eq!(key_to_bytes(&ev), Some(vec![0x7f]));
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Backspace),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(vec![0x7f])
+        );
     }
 
     #[test]
     fn key_to_bytes_ctrl_c_returns_etx() {
-        let ev = key_press(Key::Character(SmolStr::new("c")), ModifiersState::CONTROL);
-        assert_eq!(key_to_bytes(&ev), Some(vec![0x03]));
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("c")),
+                ElementState::Pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(vec![0x03])
+        );
     }
 
     #[test]
     fn key_to_bytes_ctrl_d_returns_eot() {
-        let ev = key_press(Key::Character(SmolStr::new("d")), ModifiersState::CONTROL);
-        assert_eq!(key_to_bytes(&ev), Some(vec![0x04]));
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("d")),
+                ElementState::Pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(vec![0x04])
+        );
     }
 
     #[test]
     fn key_to_bytes_ignores_release_events() {
-        let mut ev = key_press(Key::Character(SmolStr::new("a")), ModifiersState::empty());
-        ev.state = ElementState::Released;
-        assert_eq!(key_to_bytes(&ev), None);
+        assert_eq!(
+            key_to_bytes(
+                &Key::Character(SmolStr::new("a")),
+                ElementState::Released,
+                ModifiersState::empty()
+            ),
+            None
+        );
     }
 
     #[test]
     fn key_to_bytes_ignores_unhandled_named_keys() {
         // F5 is not in Stage 4's subset; Stage 8 will handle it.
-        let ev = key_press(Key::Named(NamedKey::F5), ModifiersState::empty());
-        assert_eq!(key_to_bytes(&ev), None);
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::F5),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            None
+        );
     }
 ```
 
@@ -1146,29 +1186,37 @@ cargo test -p vibeflow --lib window
 
 Expected: compile error — `key_to_bytes` not defined.
 
-- [ ] **Step 2: Implement `key_to_bytes` and wire `WindowEvent::KeyboardInput`**
+- [ ] **Step 2: Implement `key_to_bytes`, wire `KeyboardInput` and `ModifiersChanged`, drop the dead_code allow**
 
-In `crates/vibeflow/src/window.rs`, add the following imports near the existing `use` lines:
+In `crates/vibeflow/src/window.rs`, add the following imports near the existing `use` lines (note: `ModifiersState` is already imported from Task 3; only the new symbols are added here):
 
 ```rust
-use winit::event::{ElementState, KeyEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::event::ElementState;
+use winit::keyboard::{Key, NamedKey};
 ```
 
 Above the `pub struct WindowApp` declaration (next to `pixels_to_grid` from Task 6), add:
 
 ```rust
-/// Translate a winit key-press event into the bytes the PTY child expects on
-/// stdin. Returns `None` for releases, modifier-only events, and any key not
-/// in Stage 4's minimal subset (Stage 8 fills in arrows, F-keys, full Alt/Meta
+/// Translate a winit key press into the bytes the PTY child expects on stdin.
+/// Returns `None` for releases, modifier-only events, and any key not in
+/// Stage 4's minimal subset (Stage 8 fills in arrows, F-keys, full Alt/Meta
 /// handling, etc.).
-fn key_to_bytes(event: &KeyEvent) -> Option<Vec<u8>> {
-    if event.state != ElementState::Pressed {
+///
+/// Takes decomposed parameters rather than a `&KeyEvent` because winit 0.30's
+/// `KeyEvent` has a `pub(crate)` `platform_specific` field that prevents
+/// external struct-literal construction in tests.
+fn key_to_bytes(
+    logical_key: &Key,
+    state: ElementState,
+    modifiers: ModifiersState,
+) -> Option<Vec<u8>> {
+    if state != ElementState::Pressed {
         return None;
     }
-    match &event.logical_key {
+    match logical_key {
         Key::Character(s) => {
-            if event.modifiers.contains(ModifiersState::CONTROL) {
+            if modifiers.contains(ModifiersState::CONTROL) {
                 // Ctrl+letter → 0x01..=0x1A. Only handle a..=z; leave numbers
                 // and punctuation to Stage 8.
                 let lower = s.to_ascii_lowercase();
@@ -1193,17 +1241,24 @@ fn key_to_bytes(event: &KeyEvent) -> Option<Vec<u8>> {
 }
 ```
 
-In the `window_event` match arm in `impl ApplicationHandler for WindowApp`, add a `KeyboardInput` arm above the catch-all:
+In the `window_event` match arm in `impl ApplicationHandler for WindowApp`, add **two** arms above the catch-all:
 
 ```rust
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.current_modifiers = modifiers.state();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(bytes) = key_to_bytes(&event) {
+                if let Some(bytes) =
+                    key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
+                {
                     if let Err(e) = self.app.send_input(&bytes) {
                         tracing::warn!(error = %e, "send_input failed");
                     }
                 }
             }
 ```
+
+Finally, remove the `#[allow(dead_code)]` attribute on the `current_modifiers` field of `WindowApp` (added in Task 3) — it's now used by the `ModifiersChanged` handler and the `KeyboardInput` handler.
 
 - [ ] **Step 3: Run the unit tests**
 
@@ -1349,8 +1404,9 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] A window opens within ~500 ms. Title bar reads "vibeflow". Initial size
   is roughly 960×600 logical pixels.
 - [ ] The window's content area is a uniform dark grey (#0e0e12). No flicker.
-- [ ] Stderr shows `[INFO] spawning first tab` with a `shell=` field reflecting
-  your `$SHELL` (or `/bin/sh` if unset).
+- [ ] Stderr shows an `INFO` line with `spawning first tab` and a `shell=`
+  field reflecting your `$SHELL` (or `/bin/sh` if unset). The exact format
+  is `tracing-subscriber`'s default: timestamp, level, message, fields.
 - [ ] Type `echo hi` then press Enter. Stderr shows passthrough log lines
   (visible at trace level: `RUST_LOG=vibeflow=trace`). You won't see the
   output in the window yet — that's Stage 5.
@@ -1358,16 +1414,20 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] Resize the window by dragging the edge. No crash; no surface errors in
   stderr; the dark grey fills the new size cleanly.
 - [ ] Resize down to a tiny window (~10 px on a side). No crash; no PTY errors.
-- [ ] Press Ctrl+D at an empty prompt. Stderr shows `session died` and then
-  `all tabs closed; exiting`. The window closes; the binary exits 0.
-- [ ] Re-run; press the window-manager close button. Stderr shows
-  `close requested; exiting`. Exit 0.
+- [ ] Press Ctrl+D at an empty prompt. Stderr shows `session died`. The
+  window stays open (Stage 6 will draw a dead-tab banner; Stage 4 just leaves
+  the now-dead session in `App.tabs`). Click the window-manager close button
+  to exit; stderr shows `close requested; exiting`, exit 0.
+- [ ] Re-run; press the window-manager close button without doing anything else.
+  Stderr shows `close requested; exiting`. Exit 0.
 - [ ] Re-run on Wayland (if available) — the display server is selected
   automatically by winit. All checks above still pass.
 - [ ] Re-run on X11 (set `WINIT_UNIX_BACKEND=x11`). All checks above still pass.
 
-If the binary fails to start with a wgpu error, try `WGPU_BACKEND=gl`. If it
-still fails, capture stderr and file a bug.
+If the binary fails to start with a wgpu error, investigate GPU drivers
+(`vulkaninfo`, `glxinfo`). Stage 4 hardcodes `Backends::PRIMARY` — there is
+no env-var override yet. If you genuinely need GL, edit `Renderer::new` to
+read `wgpu::util::backend_bits_from_env()` and set `WGPU_BACKEND=gl`.
 ```
 
 - [ ] **Step 3: Walk the checklist**
@@ -1450,7 +1510,7 @@ Mapping Stage 4 spec requirements → tasks:
 | Data flow B — User keystroke → focused PTY child stdin | Task 7 (KeyboardInput → key_to_bytes → App::send_input) |
 | Error handling — GPU init fatal with actionable message | Task 2 (Renderer::new wraps each failure with context) + Task 3 (resumed exits on Renderer error) |
 | Error handling — Surface lost → reconfigure | Task 8 (SurfaceError::Lost / Outdated → reconfigure) |
-| Error handling — Child exits → mark dead, freeze grid | Task 5 (Died → close_tab; banner UI is Stage 6) |
+| Error handling — Child exits → mark dead, freeze grid | Task 5 (Died → log + leave session in App.tabs with `is_alive() == false`; banner UI is Stage 6) |
 | Window resize → propagate to PTY | Task 6 (pixels_to_grid + WindowEvent::Resized → resize_all) |
 | Logging via tracing crate, RUST_LOG=vibeflow=debug | Task 4 (tracing-subscriber init) |
 | Default theme dark (#0e0e12 background) | Task 2 (CLEAR_COLOR constant) |
@@ -1477,7 +1537,7 @@ Mapping Stage 4 spec requirements → tasks:
   - `key_to_bytes(event: &KeyEvent) -> Option<Vec<u8>>` — used identically in Task 7's tests and the KeyboardInput handler.
   - `PtySession::resize(&self, rows: u16, cols: u16) -> io::Result<()>` and `App::resize_all(&self, rows: u16, cols: u16) -> io::Result<()>` agree on signature; both take `&self`.
 - **Clippy / fmt discipline:** every code-changing task ends with verify-fmt+clippy.
-- **Threading-model discipline:** `master` moves to the main thread (`PtySession` field) per Task 1. The reader thread no longer captures it. The mpsc channel is still the only cross-thread communication path. `Renderer` stays on the main thread (its wgpu types are not `Send`). Matches the spec's threading model exactly.
+- **Threading-model discipline:** `master` moves to the main thread (`PtySession` field) per Task 1. The reader thread no longer captures it. The mpsc channel is still the only cross-thread communication path. `Renderer` stays on the main thread by convention (its wgpu types are `Send + Sync`, but the surface must be created on the same thread as the window — a platform constraint, not a Rust constraint). Matches the spec's threading model exactly.
 - **Forward-declared item handling:** `Renderer` may need temporary `#[allow(dead_code)]` between Tasks 2 and 3; the annotation is removed in Task 3 once `WindowApp` constructs one. No suppressions linger past the task that introduces their first user.
 - **GUI testability:** Tasks 1, 6, 7 use TDD for pure logic. Tasks 2, 3, 4, 5, 8 are inherently imperative and verified by `cargo build` + the manual smoke checklist (Task 9). The plan is honest about this trade-off in the "A note on testing this stage" preamble.
 - **Pedagogical clarity (user is learning Rust):** the plan includes explicit "Why" explanations for non-obvious choices: `Arc<Window>` for surface borrow lifetime (Task 2), `pollster::block_on` for sync-in-practice async wgpu init (Task 2), `as_mut()` vs `as_ref()` for surface reconfigure (Task 8), `&self` vs `&mut self` for resize (Task 1), the lazy `resumed` lifecycle (Task 3), and the 100ms fixed wake-up vs computed deadline trade-off (Task 5). Preserve verbatim during execution.
