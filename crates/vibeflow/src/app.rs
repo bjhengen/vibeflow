@@ -19,7 +19,7 @@ pub struct App {
 }
 
 impl App {
-    /// Create an empty `App` with no tabs. Call [`new_tab`] to spawn the first.
+    /// Create an empty `App` with no tabs. Call [`Self::new_tab`] to spawn the first.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -29,7 +29,7 @@ impl App {
         }
     }
 
-    /// Spawn a new tab. Returns the index of the new tab in [`tabs`]. The new
+    /// Spawn a new tab. Returns the index of the new tab in [`Self::tabs`]. The new
     /// tab becomes the active tab.
     ///
     /// # Errors
