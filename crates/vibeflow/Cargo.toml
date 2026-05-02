@@ -23,6 +23,12 @@ path = "src/main.rs"
 [dependencies]
 vibeflow-protocol = { path = "../vibeflow-protocol", version = "0.1" }
 portable-pty = "0.8"
+winit = "0.30"
+wgpu = "0.20"
+pollster = "0.3"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 proptest = "1"
