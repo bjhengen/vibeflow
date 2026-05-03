@@ -7,8 +7,8 @@
 **Architecture:** Three new render submodules + a label API on `PtySession` + mouse-event handling in `WindowApp`:
 
 - `session/session.rs` (modify) — `PtySession` gains a `label: TabLabel { title: String, subtitle: String }` field with `label()`/`set_label()` accessors. `TabLabel::default_for(shell, state)` builds the default ("bash"/"idle") used at spawn. Stage 9's TOML config loader will call `set_label` with template-derived strings.
-- `app.rs` (modify) — `App::set_active(idx)` sets the focused tab. `App::tabs_mut()` exposes mutable iteration for the (rare) cases where the renderer / WindowApp needs to set labels in bulk.
-- `window.rs` (modify) — sync cell-metrics from `Renderer::atlas.cell_pitch()` (replacing the placeholder `CELL_WIDTH_PX = 8` / `CELL_HEIGHT_PX = 16`). Add `last_cursor_pos: Option<(f64, f64)>` field; handle `WindowEvent::CursorMoved` and `WindowEvent::MouseInput`. On click, hit-test against the tab-bar layout and dispatch to `App::new_tab` / `close_tab` / `set_active`. About_to_wait picks `ControlFlow::WaitUntil(now + 16ms)` while any tab is `Waiting` (60 Hz pulse) and `100ms` otherwise.
+- `app.rs` (modify) — `App::set_active(idx)` sets the focused tab.
+- `window.rs` (modify) — sync cell-metrics from `Renderer::atlas.cell_pitch()` (replacing the placeholder `CELL_WIDTH_PX = 8` / `CELL_HEIGHT_PX = 16`). Add `cursor_pos: Option<(u32, u32)>` field; handle `WindowEvent::CursorMoved` and `WindowEvent::MouseInput`. On click, hit-test against the tab-bar layout and dispatch to `App::new_tab` / `close_tab` / `set_active`. About_to_wait picks `ControlFlow::WaitUntil(now + 16ms)` while any tab is `Waiting` (60 Hz pulse) and `100ms` otherwise.
 - `render/text.rs` (new) — `TextPipeline`: pixel-position textured-quad pipeline that reuses the existing `GlyphAtlas`. Per-instance `(pos_px, glyph_index, fg, bg)`. Used by both the tab title/subtitle text and the dead-tab banner text. ~200 LOC.
 - `render/text.wgsl` (new) — vertex/fragment shaders for `TextPipeline`. Mostly mirrors `grid.wgsl` but takes pixel-space positions instead of cell coordinates. ~50 LOC.
 - `render/tabs.rs` (new) — `TabBarLayout` (pure logic, TDD'd: computes per-tab rectangles, the `+` button rect, and per-tab `×` rects from window dimensions and tab list). `TabBarPipeline` (renders solid-color rectangles for tab backgrounds, indicator stripes, separators, and the `×`/`+` button bodies). `TabBarRenderer` glue that builds instance lists from `App` state + tracker states. Pulse-alpha computation lives here. ~350 LOC.
@@ -56,8 +56,8 @@
 | `crates/vibeflow/src/render/tabs.wgsl` (new) | Solid-color rectangle pipeline. ~30 LOC. |
 | `crates/vibeflow/src/session/session.rs` (modify) | Add `label: TabLabel` field, `label()` accessor, `set_label(label)` setter, `default_label_for(shell)` helper. |
 | `crates/vibeflow/src/session/mod.rs` (modify) | `pub use session::TabLabel;`. |
-| `crates/vibeflow/src/app.rs` (modify) | Add `set_active(idx)` and `tabs_mut()`. |
-| `crates/vibeflow/src/window.rs` (modify) | Sync cell metrics from `atlas.cell_pitch()`; `last_cursor_pos` field; `WindowEvent::CursorMoved` + `MouseInput` handlers; mouse hit-test → `App::new_tab` / `close_tab` / `set_active`; pulse-aware `ControlFlow::WaitUntil`. |
+| `crates/vibeflow/src/app.rs` (modify) | Add `set_active(idx)`. |
+| `crates/vibeflow/src/window.rs` (modify) | Sync cell metrics from `atlas.cell_pitch()`; `cursor_pos: Option<(u32, u32)>` field; `WindowEvent::CursorMoved` + `MouseInput` handlers; mouse hit-test → `App::new_tab` / `close_tab` / `set_active`; pulse-aware `ControlFlow::WaitUntil`. |
 | `docs/TESTING.md` (extend) | Append Stage 6 manual smoke checklist. |
 
 ---
@@ -1491,7 +1491,7 @@ Append to `crates/vibeflow/src/render/tabs.rs` (after `TabBarPipeline`):
 use std::time::Instant;
 
 use crate::app::App;
-use crate::render::atlas::{glyph_index, GlyphAtlas, ATLAS_LAYOUT};
+use crate::render::atlas::{glyph_index, GlyphAtlas};
 use crate::render::text::GlyphInstance;
 use crate::session::tracker::TabState;
 
@@ -1557,7 +1557,10 @@ impl TabBarRenderer {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
         let active_idx = app.active();
-        let pulse = pulse_alpha((self.epoch.elapsed().as_secs_f32()).fract() * 1000.0 / 1000.0); // smoothed value of t
+        // Continuous monotonic time — pulse_alpha cycles every 1.4 s naturally.
+        // (Do NOT use `t.fract()` here — that resets phase every integer second
+        // and produces a visible jump.)
+        let pulse = pulse_alpha(self.epoch.elapsed().as_secs_f32());
 
         // Tab backgrounds first (so stripes draw on top).
         for tab in &layout.tabs {
@@ -1667,7 +1670,12 @@ impl TabBarRenderer {
                 tab.body.x + tab.body.w - tab.close_button.w - 4,
             );
 
-            // `×` glyph centered in the close button.
+            // `×` glyph centered in the close button. The TextPipeline's
+            // fragment shader forces alpha=1, so we want bg to match the tab
+            // body — the close-button-rect overlay is drawn underneath in the
+            // RectInstance pass, but the × glyph's bg rectangle would override
+            // it. Using `bg` here makes the close button visually defined by
+            // the × glyph alone.
             let close_glyph_x =
                 tab.close_button.x as f32 + (tab.close_button.w as f32 - cell_w_f) / 2.0;
             let close_glyph_y =
@@ -1677,11 +1685,13 @@ impl TabBarRenderer {
                 close_glyph_y,
                 x_glyph_idx(),
                 fg,
-                [0.0, 0.0, 0.0, 0.0], // transparent bg so the stripe-color button shows through
+                bg,
             ));
         }
 
-        // `+` glyph centered in the new-tab button.
+        // `+` glyph centered in the new-tab button. Use BG_INACTIVE so the
+        // glyph's bg rectangle blends into the tab-bar strip; the visible mark
+        // is just the `+` character itself.
         let nb = layout.new_tab_button;
         let plus_glyph_x = nb.x as f32 + (nb.w as f32 - cell_w_f) / 2.0;
         let plus_glyph_y = nb.y as f32 + (nb.h as f32 - cell_h_f) / 2.0;
@@ -1690,7 +1700,7 @@ impl TabBarRenderer {
             plus_glyph_y,
             plus_glyph_idx(),
             FG_ACTIVE,
-            [0.0, 0.0, 0.0, 0.0],
+            BG_INACTIVE,
         ));
 
         glyphs
@@ -1732,7 +1742,6 @@ fn push_text_glyphs(
         out.push(GlyphInstance::new(x, y, glyph, fg, bg));
         x += cell_w;
     }
-    let _ = ATLAS_LAYOUT; // silence unused-import lint
 }
 ```
 
@@ -2272,7 +2281,7 @@ git commit -m "feat(window,app): mouse-driven tab create/close/switch"
 **Files:**
 - Modify: `crates/vibeflow/src/render/mod.rs`
 
-When `PtySession::is_alive()` is `false`, the renderer should overlay a banner across the cell-grid area with text like "session died — press Ctrl+Shift+R to retry". For Stage 6, the keyboard shortcut isn't wired (Stage 8 does that), but the banner still informs the user.
+When `PtySession::is_alive()` is `false`, the renderer should overlay a banner across the cell-grid area with text like "session died -- press Ctrl+Shift+R to retry". For Stage 6, the keyboard shortcut isn't wired (Stage 8 does that), but the banner still informs the user.
 
 The banner is rendered as a single `RectInstance` (semi-transparent dark background) followed by `GlyphInstance`s for the text, using the existing `TabBarPipeline` and `TextPipeline`.
 
@@ -2284,7 +2293,7 @@ In `crates/vibeflow/src/render/mod.rs`, find the `render` method's body — spec
             // ---- Dead-tab banner (overlay on the cell grid area) ----
             if let Some(active_session) = app.tabs().get(app.active()) {
                 if !active_session.is_alive() {
-                    let banner_text = "session died — press Ctrl+Shift+R to retry";
+                    let banner_text = "session died -- press Ctrl+Shift+R to retry";
                     let banner_h = (cell_h as f32) * 2.0;
                     let banner_y = layout.bar_height_px as f32 + 16.0;
                     let banner_w = surface_size.0 as f32;
@@ -2319,7 +2328,7 @@ In `crates/vibeflow/src/render/mod.rs`, find the `render` method's body — spec
                             text_y,
                             glyph,
                             [0xff as f32 / 255.0, 0xbd as f32 / 255.0, 0x2e as f32 / 255.0, 1.0], // amber
-                            [0.0, 0.0, 0.0, 0.0], // transparent so the dark rect shows through
+                            [0.0, 0.0, 0.0, 1.0], // opaque black, matches banner rect underneath
                         ));
                         x += cell_w as f32;
                     }
@@ -2395,7 +2404,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] Emit a working frame: `printf '\033]1338;state=working\007'`. The stripe
   changes to steady blue (no pulse).
 - [ ] In a second tab, run `exit` (or close the shell). Session dies; an
-  amber banner appears over the cell grid area: "session died — press
+  amber banner appears over the cell grid area: "session died -- press
   Ctrl+Shift+R to retry". (The keyboard shortcut isn't wired yet — that's
   Stage 8. But the visual banner works.)
 - [ ] Click the `×` button on the second tab. The tab is removed; the bar
