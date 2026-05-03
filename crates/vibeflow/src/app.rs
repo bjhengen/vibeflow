@@ -56,7 +56,12 @@ impl App {
             // Closed a tab to the left of the focused one: every tab from
             // `idx+1..` shifted down by one, so the focused index moves with it.
             self.active -= 1;
-        } else if self.active >= self.tabs.len() && !self.tabs.is_empty() {
+        } else if self.tabs.is_empty() {
+            // Closed the only remaining tab — sentinel value. `app.tabs().get(0)`
+            // returns None on an empty Vec, so this is harmless until Stage 8's
+            // "no tabs → quit" logic lands.
+            self.active = 0;
+        } else if self.active >= self.tabs.len() {
             // Closed the last tab while it was focused (or beyond): clamp.
             self.active = self.tabs.len() - 1;
         }
@@ -318,6 +323,17 @@ mod tests {
         let mut app = App::new();
         app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
         app.set_active(99);
+        assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn close_tab_last_tab_leaves_empty_app_with_active_sentinel() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "true"]).unwrap();
+        app.close_tab(0);
+        assert!(app.tabs().is_empty());
+        // `active` is a sentinel value on an empty App; `tabs().get(0)`
+        // returns None so callers never mis-index.
         assert_eq!(app.active(), 0);
     }
 }

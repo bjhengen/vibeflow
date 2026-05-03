@@ -174,22 +174,24 @@ impl Renderer {
         let surface_size = (self.surface_config.width, self.surface_config.height);
         let layout = TabBarLayout::compute(surface_size.0, cell_h, app.tabs().len());
 
-        // Check if banner will be needed and pre-allocate capacity before entering render-pass scope.
-        let banner_glyph_count = if let Some(active_session) = app.tabs().get(app.active()) {
-            if !active_session.is_alive() {
-                let banner_text = "session died -- press Ctrl+Shift+R to retry";
-                let count = banner_text.chars().count();
+        // Banner shown when the active tab's session has died. Defined once and
+        // reused below so the pre-allocation count and the actual draw can't
+        // diverge. Stage 8 will wire the Ctrl+Shift+R retry shortcut.
+        const BANNER_TEXT: &str = "session died -- press Ctrl+Shift+R to retry";
+        let banner_glyph_count = app
+            .tabs()
+            .get(app.active())
+            .filter(|s| !s.is_alive())
+            .map(|_| {
+                let count = BANNER_TEXT.chars().count();
+                // Pre-allocate capacity before entering the render-pass scope —
+                // can't take `&mut self` on the pipelines once `pass` borrows self.
                 self.tab_bar_pipeline
                     .ensure_instance_capacity(&self.device, 1);
                 self.text_pipeline
                     .ensure_instance_capacity(&self.device, count as u64);
-                Some(count)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+                count
+            });
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -274,63 +276,60 @@ impl Renderer {
             }
 
             // ---- Dead-tab banner (overlay on the cell grid area) ----
-            if let Some(_glyph_count) = banner_glyph_count {
-                if let Some(active_session) = app.tabs().get(app.active()) {
-                    if !active_session.is_alive() {
-                        let banner_text = "session died -- press Ctrl+Shift+R to retry";
-                        let banner_h = (cell_h as f32) * 2.0;
-                        let banner_y = layout.bar_height_px as f32 + 16.0;
-                        let banner_w = surface_size.0 as f32;
+            // Capacity was pre-allocated above; `glyph_count` proves the active
+            // session has died, so we can build and draw without re-checking.
+            if let Some(glyph_count) = banner_glyph_count {
+                let banner_h = (cell_h as f32) * 2.0;
+                let banner_y = layout.bar_height_px as f32 + 16.0;
+                let banner_w = surface_size.0 as f32;
 
-                        // Semi-transparent dark background.
-                        let banner_rect = crate::render::tabs::RectInstance::new(
-                            0.0,
-                            banner_y,
-                            banner_w,
-                            banner_h,
-                            [0.0, 0.0, 0.0, 0.85],
-                        );
-                        self.tab_bar_pipeline.draw(
-                            &mut pass,
-                            &self.queue,
-                            std::slice::from_ref(&banner_rect),
-                            surface_size,
-                        );
+                // Semi-transparent dark background.
+                let banner_rect = crate::render::tabs::RectInstance::new(
+                    0.0,
+                    banner_y,
+                    banner_w,
+                    banner_h,
+                    [0.0, 0.0, 0.0, 0.85],
+                );
+                self.tab_bar_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    std::slice::from_ref(&banner_rect),
+                    surface_size,
+                );
 
-                        // Centered text on top.
-                        let text_w = (banner_text.chars().count() as f32) * (cell_w as f32);
-                        let text_x = (banner_w - text_w) / 2.0;
-                        let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
-                        let mut banner_glyphs: Vec<crate::render::text::GlyphInstance> = Vec::new();
-                        let mut x = text_x;
-                        for c in banner_text.chars() {
-                            let glyph = crate::render::atlas::glyph_index(c).unwrap_or(0);
-                            banner_glyphs.push(crate::render::text::GlyphInstance::new(
-                                x,
-                                text_y,
-                                glyph,
-                                [
-                                    0xff as f32 / 255.0,
-                                    0xbd as f32 / 255.0,
-                                    0x2e as f32 / 255.0,
-                                    1.0,
-                                ], // amber
-                                [0.0, 0.0, 0.0, 1.0], // opaque black, matches banner rect underneath
-                            ));
-                            x += cell_w as f32;
-                        }
-                        let (atlas_w, atlas_h) = self.atlas.pixel_size();
-                        self.text_pipeline.draw(
-                            &mut pass,
-                            &self.queue,
-                            &banner_glyphs,
-                            surface_size,
-                            (atlas_w, atlas_h),
-                            (cell_w, cell_h),
-                            crate::render::atlas::ATLAS_LAYOUT,
-                        );
-                    }
+                // Centered text on top.
+                let text_w = (glyph_count as f32) * (cell_w as f32);
+                let text_x = (banner_w - text_w) / 2.0;
+                let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
+                let mut banner_glyphs = Vec::with_capacity(glyph_count);
+                let mut x = text_x;
+                for c in BANNER_TEXT.chars() {
+                    let glyph = crate::render::atlas::glyph_index(c).unwrap_or(0);
+                    banner_glyphs.push(crate::render::text::GlyphInstance::new(
+                        x,
+                        text_y,
+                        glyph,
+                        [
+                            0xff as f32 / 255.0,
+                            0xbd as f32 / 255.0,
+                            0x2e as f32 / 255.0,
+                            1.0,
+                        ], // amber
+                        [0.0, 0.0, 0.0, 1.0], // opaque black, matches banner rect underneath
+                    ));
+                    x += cell_w as f32;
                 }
+                let (atlas_w, atlas_h) = self.atlas.pixel_size();
+                self.text_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    &banner_glyphs,
+                    surface_size,
+                    (atlas_w, atlas_h),
+                    (cell_w, cell_h),
+                    crate::render::atlas::ATLAS_LAYOUT,
+                );
             }
         }
 

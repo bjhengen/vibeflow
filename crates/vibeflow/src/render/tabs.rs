@@ -6,6 +6,16 @@
 //!    [`crate::app::App`] state + tracker states, including the Notice
 //!    indicator pulse animation on `Waiting` tabs.
 
+use std::time::Instant;
+
+use anyhow::Result;
+use bytemuck::{Pod, Zeroable};
+
+use crate::app::App;
+use crate::render::atlas::{glyph_index, GlyphAtlas};
+use crate::render::text::GlyphInstance;
+use crate::session::tracker::TabState;
+
 /// Stage-6 default tab-bar height in pixels, expressed as (line_height × 2 + padding).
 /// Computed at runtime from the atlas's cell pitch.
 #[must_use]
@@ -260,9 +270,6 @@ mod tests {
     }
 }
 
-use anyhow::Result;
-use bytemuck::{Pod, Zeroable};
-
 /// Per-instance data for [`TabBarPipeline`]. 32 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -453,13 +460,6 @@ impl TabBarPipeline {
         pass.draw(0..6, 0..(rects.len() as u32));
     }
 }
-
-use std::time::Instant;
-
-use crate::app::App;
-use crate::render::atlas::{glyph_index, GlyphAtlas};
-use crate::render::text::GlyphInstance;
-use crate::session::tracker::TabState;
 
 /// Notice-indicator colors. The amber/blue/gray come from the design spec's
 /// `[theme.indicator]` defaults; they'll be configurable in Stage 9.

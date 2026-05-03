@@ -9,8 +9,8 @@ use bytemuck::{Pod, Zeroable};
 use crate::render::atlas::GlyphAtlas;
 
 /// Per-instance data for `TextPipeline`. Layout matches `VsIn` in `text.wgsl`.
-/// 48 bytes total. Glyph index is stored as `f32` for ergonomics (vec4<f32>
-/// is one attribute slot); the shader casts back to u32.
+/// 48 bytes total. Glyph index is stored as `f32` for ergonomics (`vec4<f32>`
+/// is one attribute slot); the shader casts back to `u32`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct GlyphInstance {
