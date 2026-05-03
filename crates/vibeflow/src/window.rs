@@ -278,20 +278,36 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::session::tracker::TabState;
+
         let now = Instant::now();
 
-        // Drain bytes that arrived since last tick.
         for (idx, ev) in self.app.poll_all(now) {
             self.handle_session_event(idx, ev);
         }
-        // Fire any timeout-driven transitions.
         for (idx, ev) in self.app.tick_all(now) {
             self.handle_session_event(idx, ev);
         }
 
-        // Re-arm a 100ms wake-up so trackers tick steadily. Stage 6+ will
-        // compute the exact next deadline from the per-session tracker state.
-        event_loop.set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(100)));
+        // Pulse animation: while ANY tab is in Waiting, run at 60 Hz so the
+        // amber stripe pulse looks smooth. Otherwise fall back to the 10 Hz
+        // tracker-tick cadence.
+        let any_waiting = self
+            .app
+            .tabs()
+            .iter()
+            .any(|tab| tab.state() == TabState::Waiting);
+        let next_deadline = if any_waiting {
+            // Also request a redraw each tick so the new pulse alpha hits the GPU.
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            now + Duration::from_millis(16)
+        } else {
+            now + Duration::from_millis(100)
+        };
+
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
     }
 }
 
