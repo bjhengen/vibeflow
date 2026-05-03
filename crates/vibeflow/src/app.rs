@@ -56,7 +56,12 @@ impl App {
             // Closed a tab to the left of the focused one: every tab from
             // `idx+1..` shifted down by one, so the focused index moves with it.
             self.active -= 1;
-        } else if self.active >= self.tabs.len() && !self.tabs.is_empty() {
+        } else if self.tabs.is_empty() {
+            // Closed the only remaining tab — sentinel value. `app.tabs().get(0)`
+            // returns None on an empty Vec, so this is harmless until Stage 8's
+            // "no tabs → quit" logic lands.
+            self.active = 0;
+        } else if self.active >= self.tabs.len() {
             // Closed the last tab while it was focused (or beyond): clamp.
             self.active = self.tabs.len() - 1;
         }
@@ -147,6 +152,13 @@ impl App {
     #[must_use]
     pub fn active(&self) -> usize {
         self.active
+    }
+
+    /// Set the focused tab. No-op if `idx` is out of range.
+    pub fn set_active(&mut self, idx: usize) {
+        if idx < self.tabs.len() {
+            self.active = idx;
+        }
     }
 }
 
@@ -292,5 +304,36 @@ mod tests {
         // Expect Ok and no panic. Real per-tab observation lives in the
         // PtySession-level test in session::session.
         app.resize_all(40, 100).unwrap();
+    }
+
+    #[test]
+    fn set_active_focuses_the_specified_tab() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        // After three new_tab calls, active = 2 (most-recently-spawned).
+        assert_eq!(app.active(), 2);
+        app.set_active(0);
+        assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn set_active_with_out_of_range_idx_is_a_no_op() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.set_active(99);
+        assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn close_tab_last_tab_leaves_empty_app_with_active_sentinel() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "true"]).unwrap();
+        app.close_tab(0);
+        assert!(app.tabs().is_empty());
+        // `active` is a sentinel value on an empty App; `tabs().get(0)`
+        // returns None so callers never mis-index.
+        assert_eq!(app.active(), 0);
     }
 }

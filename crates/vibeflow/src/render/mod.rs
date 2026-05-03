@@ -5,6 +5,8 @@
 pub mod atlas;
 pub mod colors;
 pub mod grid;
+pub mod tabs;
+pub mod text;
 
 use std::sync::Arc;
 
@@ -36,6 +38,12 @@ pub struct Renderer {
     atlas: crate::render::atlas::GlyphAtlas,
     /// Cell-grid render pipeline. One instanced draw per frame.
     grid_pipeline: crate::render::grid::GridPipeline,
+    /// Pixel-position text pipeline (tab titles, subtitles, dead-tab banner, button glyphs).
+    text_pipeline: crate::render::text::TextPipeline,
+    /// Solid-color rectangle pipeline (tab backgrounds, indicator stripes, button bodies).
+    tab_bar_pipeline: crate::render::tabs::TabBarPipeline,
+    /// Per-frame TabBarRenderer (owns the pulse-animation epoch).
+    tab_bar: crate::render::tabs::TabBarRenderer,
 }
 
 impl Renderer {
@@ -112,6 +120,9 @@ impl Renderer {
 
         let atlas = crate::render::atlas::GlyphAtlas::new(&device, &queue)?;
         let grid_pipeline = crate::render::grid::GridPipeline::new(&device, format, &atlas)?;
+        let text_pipeline = crate::render::text::TextPipeline::new(&device, format, &atlas)?;
+        let tab_bar_pipeline = crate::render::tabs::TabBarPipeline::new(&device, format)?;
+        let tab_bar = crate::render::tabs::TabBarRenderer::new();
 
         Ok(Self {
             _window: window,
@@ -121,6 +132,9 @@ impl Renderer {
             surface_config,
             atlas,
             grid_pipeline,
+            text_pipeline,
+            tab_bar_pipeline,
+            tab_bar,
         })
     }
 
@@ -142,7 +156,10 @@ impl Renderer {
     pub fn render(
         &mut self,
         term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
+        app: &crate::app::App,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
+        use crate::render::tabs::TabBarLayout;
+
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -151,6 +168,29 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("vibeflow-frame-encoder"),
+            });
+
+        let (cell_w, cell_h) = self.atlas.cell_pitch();
+        let surface_size = (self.surface_config.width, self.surface_config.height);
+        let layout = TabBarLayout::compute(surface_size.0, cell_h, app.tabs().len());
+
+        // Banner shown when the active tab's session has died. Defined once and
+        // reused below so the pre-allocation count and the actual draw can't
+        // diverge. Stage 8 will wire the Ctrl+Shift+R retry shortcut.
+        const BANNER_TEXT: &str = "session died -- press Ctrl+Shift+R to retry";
+        let banner_glyph_count = app
+            .tabs()
+            .get(app.active())
+            .filter(|s| !s.is_alive())
+            .map(|_| {
+                let count = BANNER_TEXT.chars().count();
+                // Pre-allocate capacity before entering the render-pass scope —
+                // can't take `&mut self` on the pipelines once `pass` borrows self.
+                self.tab_bar_pipeline
+                    .ensure_instance_capacity(&self.device, 1);
+                self.text_pipeline
+                    .ensure_instance_capacity(&self.device, count as u64);
+                count
             });
 
         {
@@ -169,14 +209,19 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
+            // ---- Cell grid pass (excluded from tab bar region via scissor) ----
             if let Some(term) = term {
                 let instances = build_cell_instances(term);
                 if !instances.is_empty() {
                     self.grid_pipeline
                         .ensure_instance_capacity(&self.device, instances.len() as u64);
                     let (atlas_w, atlas_h) = self.atlas.pixel_size();
-                    let (cell_w, cell_h) = self.atlas.cell_pitch();
-                    let surface_size = (self.surface_config.width, self.surface_config.height);
+                    pass.set_scissor_rect(
+                        0,
+                        layout.bar_height_px,
+                        surface_size.0,
+                        surface_size.1.saturating_sub(layout.bar_height_px),
+                    );
                     self.grid_pipeline.draw(
                         &mut pass,
                         &self.queue,
@@ -185,8 +230,94 @@ impl Renderer {
                         (atlas_w, atlas_h),
                         (cell_w, cell_h),
                         crate::render::atlas::ATLAS_LAYOUT,
+                        layout.bar_height_px,
                     );
+                    // Reset scissor for the next pass.
+                    pass.set_scissor_rect(0, 0, surface_size.0, surface_size.1);
                 }
+            }
+
+            // ---- Tab bar pass ----
+            let rects = self.tab_bar.build_rects(app, &layout);
+            if !rects.is_empty() {
+                self.tab_bar_pipeline
+                    .ensure_instance_capacity(&self.device, rects.len() as u64);
+                self.tab_bar_pipeline
+                    .draw(&mut pass, &self.queue, &rects, surface_size);
+            }
+
+            // ---- Tab bar text pass ----
+            let glyphs = self.tab_bar.build_glyphs(app, &layout, &self.atlas);
+            if !glyphs.is_empty() {
+                self.text_pipeline
+                    .ensure_instance_capacity(&self.device, glyphs.len() as u64);
+                let (atlas_w, atlas_h) = self.atlas.pixel_size();
+                self.text_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    &glyphs,
+                    surface_size,
+                    (atlas_w, atlas_h),
+                    (cell_w, cell_h),
+                    crate::render::atlas::ATLAS_LAYOUT,
+                );
+            }
+
+            // ---- Dead-tab banner (overlay on the cell grid area) ----
+            // Capacity was pre-allocated above; `glyph_count` proves the active
+            // session has died, so we can build and draw without re-checking.
+            if let Some(glyph_count) = banner_glyph_count {
+                let banner_h = (cell_h as f32) * 2.0;
+                let banner_y = layout.bar_height_px as f32 + 16.0;
+                let banner_w = surface_size.0 as f32;
+
+                // Semi-transparent dark background.
+                let banner_rect = crate::render::tabs::RectInstance::new(
+                    0.0,
+                    banner_y,
+                    banner_w,
+                    banner_h,
+                    [0.0, 0.0, 0.0, 0.85],
+                );
+                self.tab_bar_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    std::slice::from_ref(&banner_rect),
+                    surface_size,
+                );
+
+                // Centered text on top.
+                let text_w = (glyph_count as f32) * (cell_w as f32);
+                let text_x = (banner_w - text_w) / 2.0;
+                let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
+                let mut banner_glyphs = Vec::with_capacity(glyph_count);
+                let mut x = text_x;
+                for c in BANNER_TEXT.chars() {
+                    let glyph = crate::render::atlas::glyph_index(c).unwrap_or(0);
+                    banner_glyphs.push(crate::render::text::GlyphInstance::new(
+                        x,
+                        text_y,
+                        glyph,
+                        [
+                            0xff as f32 / 255.0,
+                            0xbd as f32 / 255.0,
+                            0x2e as f32 / 255.0,
+                            1.0,
+                        ], // amber
+                        [0.0, 0.0, 0.0, 1.0], // opaque black, matches banner rect underneath
+                    ));
+                    x += cell_w as f32;
+                }
+                let (atlas_w, atlas_h) = self.atlas.pixel_size();
+                self.text_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    &banner_glyphs,
+                    surface_size,
+                    (atlas_w, atlas_h),
+                    (cell_w, cell_h),
+                    crate::render::atlas::ATLAS_LAYOUT,
+                );
             }
         }
 
@@ -207,6 +338,13 @@ impl Renderer {
     #[must_use]
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
+    }
+
+    /// Per-cell pixel pitch reported by the atlas. Stage 6 wires this into
+    /// the window event loop's resize math (replacing the Stage 4 placeholders).
+    #[must_use]
+    pub fn cell_pitch(&self) -> (u32, u32) {
+        self.atlas.cell_pitch()
     }
 }
 

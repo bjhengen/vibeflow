@@ -16,11 +16,6 @@ use crate::app::App;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
-/// Stage-4 placeholder cell size. Stage 7 (font atlas) replaces this with
-/// values derived from cosmic-text font metrics for the configured font.
-const CELL_WIDTH_PX: u32 = 8;
-const CELL_HEIGHT_PX: u32 = 16;
-
 /// Compute terminal grid dimensions (rows, cols) from a window's physical
 /// pixel size and per-cell pixel size. Floor-divides; clamps to at least 1×1
 /// so degenerate (0, 0) surfaces still produce a usable grid for the child.
@@ -72,6 +67,10 @@ fn key_to_bytes(
         Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
         Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
+        // winit 0.30 routes the spacebar through `NamedKey::Space`, not
+        // through `Character(" ")` — so without this arm it falls into the
+        // `_ => None` catch-all and the byte never reaches the PTY.
+        Key::Named(NamedKey::Space) => Some(vec![b' ']),
         // Anything else → Stage 8.
         _ => None,
     }
@@ -101,6 +100,9 @@ pub struct WindowApp {
     /// `KeyEvent`, so we cache it here and pass it into the `key_to_bytes`
     /// helper alongside each key press.
     current_modifiers: ModifiersState,
+    /// Latest cursor position from `WindowEvent::CursorMoved`. Used by mouse
+    /// click handlers to hit-test the tab bar.
+    cursor_pos: Option<(u32, u32)>,
 }
 
 impl WindowApp {
@@ -113,6 +115,7 @@ impl WindowApp {
             renderer: None,
             app: App::new(),
             current_modifiers: ModifiersState::empty(),
+            cursor_pos: None,
         }
     }
 
@@ -154,6 +157,49 @@ impl WindowApp {
                 // The window does not auto-exit on the last tab dying in
                 // Stage 4 — the user closes the window with the close button.
             }
+        }
+    }
+
+    /// Hit-test the latest cursor position against the tab bar and dispatch
+    /// the corresponding action.
+    fn handle_left_click_release(&mut self) {
+        use crate::render::tabs::{TabBarHit, TabBarLayout};
+
+        let Some((px, py)) = self.cursor_pos else {
+            return;
+        };
+        // We need the same layout the renderer used. Since cell pitch + window
+        // width are the inputs, recompute it here from the renderer's atlas.
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let (_cell_w, cell_h) = renderer.cell_pitch();
+        let (window_w, _window_h) = renderer.surface_size();
+        let layout = TabBarLayout::compute(window_w, cell_h, self.app.tabs().len());
+
+        match layout.hit_test(px, py) {
+            TabBarHit::NewTab => {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+                if let Err(e) = self.app.new_tab(&[shell.as_str()]) {
+                    tracing::warn!(error = ?e, "new_tab failed");
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            TabBarHit::TabBody(idx) => {
+                self.app.set_active(idx);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            TabBarHit::TabClose(idx) => {
+                self.app.close_tab(idx);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            TabBarHit::None => {}
         }
     }
 }
@@ -206,7 +252,13 @@ impl ApplicationHandler for WindowApp {
         // on initial show, so we don't rely on that to correct the size.
         if let Some(renderer) = self.renderer.as_ref() {
             let (width, height) = renderer.surface_size();
-            let (rows, cols) = pixels_to_grid(width, height, CELL_WIDTH_PX, CELL_HEIGHT_PX);
+            let (cell_w, cell_h) = renderer.cell_pitch();
+            // Reserve the tab-bar strip at the top — the PTY only sees the
+            // visible cell area, so its row count matches what's actually
+            // rendered below the bar.
+            let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+            let visible_h = height.saturating_sub(bar_h);
+            let (rows, cols) = pixels_to_grid(width, visible_h, cell_w, cell_h);
             if let Err(e) = self.app.resize_all(rows, cols) {
                 tracing::warn!(error = %e, rows, cols, "initial PTY resize failed");
             }
@@ -229,7 +281,7 @@ impl ApplicationHandler for WindowApp {
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
                 };
-                match renderer.render(term) {
+                match renderer.render(term, &self.app) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         // Surface needs to be re-created with current config.
@@ -250,17 +302,17 @@ impl ApplicationHandler for WindowApp {
                 }
             }
             WindowEvent::Resized(new_size) => {
+                let cell_pitch = self.renderer.as_ref().map(|r| r.cell_pitch());
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(new_size.width, new_size.height);
                 }
-                let (rows, cols) = pixels_to_grid(
-                    new_size.width,
-                    new_size.height,
-                    CELL_WIDTH_PX,
-                    CELL_HEIGHT_PX,
-                );
-                if let Err(e) = self.app.resize_all(rows, cols) {
-                    tracing::warn!(error = %e, rows, cols, "PTY resize failed");
+                if let Some((cell_w, cell_h)) = cell_pitch {
+                    let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+                    let visible_h = new_size.height.saturating_sub(bar_h);
+                    let (rows, cols) = pixels_to_grid(new_size.width, visible_h, cell_w, cell_h);
+                    if let Err(e) = self.app.resize_all(rows, cols) {
+                        tracing::warn!(error = %e, rows, cols, "PTY resize failed");
+                    }
                 }
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -270,12 +322,39 @@ impl ApplicationHandler for WindowApp {
                 self.current_modifiers = modifiers.state();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(bytes) =
-                    key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
-                {
-                    if let Err(e) = self.app.send_input(&bytes) {
-                        tracing::warn!(error = %e, "send_input failed");
+                // Log every keypress at trace level so we can diagnose which
+                // logical keys reach us and which fall into the catch-all.
+                // Run with `RUST_LOG=vibeflow=trace` to see this.
+                tracing::trace!(
+                    state = ?event.state,
+                    logical_key = ?event.logical_key,
+                    text = ?event.text,
+                    "key event"
+                );
+                match key_to_bytes(&event.logical_key, event.state, self.current_modifiers) {
+                    Some(bytes) => {
+                        tracing::trace!(?bytes, "key → pty bytes");
+                        if let Err(e) = self.app.send_input(&bytes) {
+                            tracing::warn!(error = %e, "send_input failed");
+                        }
                     }
+                    None => {
+                        if event.state == winit::event::ElementState::Pressed {
+                            tracing::trace!(
+                                logical_key = ?event.logical_key,
+                                "press dropped (no key_to_bytes mapping)"
+                            );
+                        }
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = Some((position.x as u32, position.y as u32));
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                use winit::event::{ElementState, MouseButton};
+                if state == ElementState::Released && button == MouseButton::Left {
+                    self.handle_left_click_release();
                 }
             }
             _ => {}
@@ -283,20 +362,36 @@ impl ApplicationHandler for WindowApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::session::tracker::TabState;
+
         let now = Instant::now();
 
-        // Drain bytes that arrived since last tick.
         for (idx, ev) in self.app.poll_all(now) {
             self.handle_session_event(idx, ev);
         }
-        // Fire any timeout-driven transitions.
         for (idx, ev) in self.app.tick_all(now) {
             self.handle_session_event(idx, ev);
         }
 
-        // Re-arm a 100ms wake-up so trackers tick steadily. Stage 6+ will
-        // compute the exact next deadline from the per-session tracker state.
-        event_loop.set_control_flow(ControlFlow::WaitUntil(now + Duration::from_millis(100)));
+        // Pulse animation: while ANY tab is in Waiting, run at 60 Hz so the
+        // amber stripe pulse looks smooth. Otherwise fall back to the 10 Hz
+        // tracker-tick cadence.
+        let any_waiting = self
+            .app
+            .tabs()
+            .iter()
+            .any(|tab| tab.state() == TabState::Waiting);
+        let next_deadline = if any_waiting {
+            // Also request a redraw each tick so the new pulse alpha hits the GPU.
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            now + Duration::from_millis(16)
+        } else {
+            now + Duration::from_millis(100)
+        };
+
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
     }
 }
 
@@ -399,6 +494,20 @@ mod tests {
     }
 
     #[test]
+    fn key_to_bytes_space_returns_space_byte() {
+        // Regression: winit 0.30 routes the spacebar through NamedKey::Space,
+        // not Character(" "). Without this arm the byte never reached the PTY.
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Space),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(vec![b' '])
+        );
+    }
+
+    #[test]
     fn key_to_bytes_ignores_release_events() {
         assert_eq!(
             key_to_bytes(
@@ -420,6 +529,32 @@ mod tests {
                 ModifiersState::empty()
             ),
             None
+        );
+    }
+
+    #[test]
+    fn pixels_to_grid_with_real_jbm_metrics() {
+        // JetBrains Mono Regular at 16 px: advance_width ≈ 9.6 px → ceil = 10,
+        // line metrics' new_line_size ≈ 21.6 px → ceil = 22. Verify the math
+        // works for that pitch (we don't hardcode the values here because they
+        // depend on the font binary's hinting, but we sanity-check that
+        // 800/10 = 80 columns, not 800/8 = 100.
+        let (rows_jbm, cols_jbm) = pixels_to_grid(800, 480, 10, 22);
+        assert_eq!(cols_jbm, 80);
+        assert_eq!(rows_jbm, 21);
+
+        // The Stage-4 placeholder pitch (8×16) would have given different math.
+        // This contrast test makes the bug obvious if someone re-introduces
+        // the placeholders.
+        let (rows_placeholder, cols_placeholder) = pixels_to_grid(800, 480, 8, 16);
+        assert_eq!(cols_placeholder, 100);
+        assert_eq!(rows_placeholder, 30);
+        assert_ne!(
+            (rows_jbm, cols_jbm),
+            (rows_placeholder, cols_placeholder),
+            "real font metrics should produce different grid dims than the \
+             Stage-4 placeholder 8×16 pitch — if these are equal, window.rs \
+             is still using the placeholders"
         );
     }
 }

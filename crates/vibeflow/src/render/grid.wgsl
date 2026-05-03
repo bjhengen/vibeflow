@@ -11,6 +11,9 @@ struct GridUniform {
     cell_size_px:    vec2<f32>,   // per-cell pitch in physical pixels
     atlas_size_px:   vec2<f32>,   // atlas texture size in pixels
     atlas_cells:     vec2<u32>,   // atlas layout (cols, rows of glyphs)
+    // .x = pixel offset added to each cell's y position so the grid sits
+    // below the tab bar. Rest is std140 alignment padding.
+    y_offset_pad:    vec4<u32>,
 };
 
 @group(0) @binding(0) var<uniform> u: GridUniform;
@@ -50,8 +53,10 @@ fn vs_main(in: VsIn) -> VsOut {
     let row      = f32(in.cell.y);
     let glyph    = in.cell.z;
 
-    // Cell-pixel position: top-left of the cell.
-    let cell_top_left_px = vec2<f32>(col, row) * u.cell_size_px;
+    // Cell-pixel position: top-left of the cell, shifted down by y_offset
+    // so the grid sits below the tab bar.
+    let y_offset         = vec2<f32>(0.0, f32(u.y_offset_pad.x));
+    let cell_top_left_px = vec2<f32>(col, row) * u.cell_size_px + y_offset;
     let pos_px           = cell_top_left_px + corner * u.cell_size_px;
 
     // Convert to clip space. Viewport [0..W,0..H] → NDC [-1..1, 1..-1] (Y flipped).
