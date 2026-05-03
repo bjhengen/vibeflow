@@ -73,3 +73,54 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] Press Ctrl+D at an empty prompt. Stderr shows `session died`. The
   rendered grid freezes at the last known state (no banner yet — that's
   Stage 6). Click the close button to exit.
+
+## Stage 6 — tab bar + Notice indicator + dead-tab banner + mouse tab interaction
+
+Run:
+
+```bash
+cd /home/bhengen/dev/vibeflow
+cargo build --bin vibeflow
+RUST_LOG=vibeflow=info ./target/debug/vibeflow
+```
+
+- [ ] A tab bar is visible at the top of the window. One tab is shown, labeled
+  with the shell name (e.g. `bash`) on line 1 and `active` (or `idle` after
+  the prompt's OSC 133 fires) on line 2.
+- [ ] The tab has a `×` close button at its right edge and the bar has a `+`
+  button at the right end.
+- [ ] Click the `+` button. A second tab spawns, becomes active, and the cell
+  grid switches to its content.
+- [ ] Click on the first tab. Focus switches back; cell grid reflects the
+  first shell.
+- [ ] In the active tab, manually emit an OSC 1338 waiting frame:
+  ```
+  printf '\033]1338;state=waiting\007'
+  ```
+  The subtitle changes to `waiting`. An amber stripe appears on the left edge
+  of the tab and pulses smoothly (~1.4s sine, alpha between 40% and 100%).
+- [ ] Emit a working frame: `printf '\033]1338;state=working\007'`. The stripe
+  changes to steady blue (no pulse).
+- [ ] In a second tab, run `exit` (or close the shell). Session dies; an
+  amber banner appears over the cell grid area: "session died -- press
+  Ctrl+Shift+R to retry". (The keyboard shortcut isn't wired yet — that's
+  Stage 8. But the visual banner works.)
+- [ ] Click the `×` button on the second tab. The tab is removed; the bar
+  reverts to one tab.
+- [ ] Resize the window. The tab bar height stays constant; tab widths
+  re-scale.
+- [ ] Spawn many tabs (10+). Tab widths clamp to MIN_TAB_WIDTH_PX; the bar
+  remains usable.
+
+**Known Stage 6 limitations (deferred to later stages):**
+
+- The cell grid still draws with row 0 at the top of the window — the topmost
+  rows are clipped behind the tab bar. Stage 7+ adds a y-offset uniform to
+  shift the grid down by `tab_bar_height_px`. For now, run `clear` after
+  resizing to redraw the visible area.
+- Subtitle text isn't tinted by tracker state. Stage 7 will tint waiting
+  subtitles amber, working subtitles blue, etc.
+- Keyboard shortcuts (`Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Tab`, `Ctrl+Shift+R`)
+  arrive in Stage 8.
+
+If any step fails, capture the failure and a screenshot before fixing.
