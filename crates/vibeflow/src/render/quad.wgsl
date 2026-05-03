@@ -1,27 +1,29 @@
-// vibeflow Stage 6 text shader.
+// vibeflow Stage 7 unified quad shader. Replaces grid.wgsl + text.wgsl.
 //
-// Sibling of grid.wgsl. Per-instance buffer carries pixel-space position
-// + glyph index + fg/bg colors. Vertex shader expands 6 vertices per
-// instance. Fragment shader is identical to grid.wgsl: mix bg → fg by
-// the R8Unorm atlas alpha.
+// Per-instance buffer carries:
+//   .xyzw screen_rect_px (x, y, w, h in surface pixels)
+//   .xyzw atlas_rect_px  (x, y, w, h in atlas pixels)
+//   .rgba fg
+//   .rgba bg
+// Vertex shader expands 6 vertices per instance into a screen-space
+// rectangle with linear UV across the atlas rect. Fragment shader samples
+// R8Unorm `.r` as alpha and `mix(bg, fg, alpha)`.
 
-struct TextUniform {
-    surface_size_px: vec2<f32>,   // viewport size in physical pixels
-    cell_size_px:    vec2<f32>,   // per-cell pitch in physical pixels (atlas)
-    atlas_size_px:   vec2<f32>,   // atlas texture size in pixels
-    atlas_cells:     vec2<u32>,   // atlas layout (cols, rows of glyphs)
+struct QuadUniform {
+    surface_size_px: vec2<f32>,
+    atlas_size_px:   vec2<f32>,
 };
 
-@group(0) @binding(0) var<uniform> u: TextUniform;
+@group(0) @binding(0) var<uniform> u: QuadUniform;
 @group(0) @binding(1) var atlas_texture: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
 
 struct VsIn {
     @builtin(vertex_index) vertex_id: u32,
-    // .xy = pos_px (top-left of the glyph cell), .z = glyph_index_as_f32, .w = unused.
-    @location(0) pos_glyph: vec4<f32>,
-    @location(1) fg:        vec4<f32>,
-    @location(2) bg:        vec4<f32>,
+    @location(0) screen_rect_px: vec4<f32>,
+    @location(1) atlas_rect_px:  vec4<f32>,
+    @location(2) fg:             vec4<f32>,
+    @location(3) bg:             vec4<f32>,
 };
 
 struct VsOut {
@@ -43,18 +45,12 @@ fn vs_main(in: VsIn) -> VsOut {
     );
     let corner = quad_offsets[in.vertex_id];
 
-    let pos_top_left_px = in.pos_glyph.xy;
-    let glyph_idx       = u32(in.pos_glyph.z);
-
-    let pos_px = pos_top_left_px + corner * u.cell_size_px;
-    let ndc    = (pos_px / u.surface_size_px) * 2.0 - vec2<f32>(1.0, 1.0);
+    let screen_pos_px = in.screen_rect_px.xy + corner * in.screen_rect_px.zw;
+    let ndc = (screen_pos_px / u.surface_size_px) * 2.0 - vec2<f32>(1.0, 1.0);
     let clip_pos = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
 
-    let atlas_col = f32(glyph_idx % u.atlas_cells.x);
-    let atlas_row = f32(glyph_idx / u.atlas_cells.x);
-    let glyph_top_left_px = vec2<f32>(atlas_col, atlas_row) * u.cell_size_px;
-    let glyph_pos_px      = glyph_top_left_px + corner * u.cell_size_px;
-    let uv                = glyph_pos_px / u.atlas_size_px;
+    let atlas_pos_px = in.atlas_rect_px.xy + corner * in.atlas_rect_px.zw;
+    let uv = atlas_pos_px / u.atlas_size_px;
 
     var out: VsOut;
     out.clip_pos = clip_pos;
