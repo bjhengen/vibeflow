@@ -226,23 +226,11 @@ impl Renderer {
                         &mut pass,
                         &self.queue,
                         &instances,
-                        // The grid renders into the area BELOW the tab bar.
-                        // We pass the FULL surface size and let the scissor clip;
-                        // cells are drawn at cell-grid coordinates starting at (0, 0).
-                        // To shift the grid down by tab_bar_height_px, we need a
-                        // y-offset uniform — but Stage 6 keeps the grid shader
-                        // unchanged and shifts via the scissor + by adjusting cell row
-                        // origin in `build_cell_instances`. Stage 6 simplifies by
-                        // computing the scissor clip but still drawing cells at
-                        // grid-aligned positions starting at y=0. The visible
-                        // result: rows 0..N near the top of the cell grid pass are
-                        // hidden behind the tab bar. For Stage 6 demo this is OK;
-                        // Stage 7+ adds a proper y-offset uniform.
-                        // (See "Notable plan risks" at the bottom of this plan.)
                         surface_size,
                         (atlas_w, atlas_h),
                         (cell_w, cell_h),
                         crate::render::atlas::ATLAS_LAYOUT,
+                        layout.bar_height_px,
                     );
                     // Reset scissor for the next pass.
                     pass.set_scissor_rect(0, 0, surface_size.0, surface_size.1);

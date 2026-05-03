@@ -67,6 +67,10 @@ fn key_to_bytes(
         Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
         Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
         Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
+        // winit 0.30 routes the spacebar through `NamedKey::Space`, not
+        // through `Character(" ")` — so without this arm it falls into the
+        // `_ => None` catch-all and the byte never reaches the PTY.
+        Key::Named(NamedKey::Space) => Some(vec![b' ']),
         // Anything else → Stage 8.
         _ => None,
     }
@@ -249,7 +253,12 @@ impl ApplicationHandler for WindowApp {
         if let Some(renderer) = self.renderer.as_ref() {
             let (width, height) = renderer.surface_size();
             let (cell_w, cell_h) = renderer.cell_pitch();
-            let (rows, cols) = pixels_to_grid(width, height, cell_w, cell_h);
+            // Reserve the tab-bar strip at the top — the PTY only sees the
+            // visible cell area, so its row count matches what's actually
+            // rendered below the bar.
+            let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+            let visible_h = height.saturating_sub(bar_h);
+            let (rows, cols) = pixels_to_grid(width, visible_h, cell_w, cell_h);
             if let Err(e) = self.app.resize_all(rows, cols) {
                 tracing::warn!(error = %e, rows, cols, "initial PTY resize failed");
             }
@@ -298,8 +307,9 @@ impl ApplicationHandler for WindowApp {
                     renderer.resize(new_size.width, new_size.height);
                 }
                 if let Some((cell_w, cell_h)) = cell_pitch {
-                    let (rows, cols) =
-                        pixels_to_grid(new_size.width, new_size.height, cell_w, cell_h);
+                    let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+                    let visible_h = new_size.height.saturating_sub(bar_h);
+                    let (rows, cols) = pixels_to_grid(new_size.width, visible_h, cell_w, cell_h);
                     if let Err(e) = self.app.resize_all(rows, cols) {
                         tracing::warn!(error = %e, rows, cols, "PTY resize failed");
                     }
@@ -462,6 +472,20 @@ mod tests {
                 ModifiersState::CONTROL
             ),
             Some(vec![0x04])
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_space_returns_space_byte() {
+        // Regression: winit 0.30 routes the spacebar through NamedKey::Space,
+        // not Character(" "). Without this arm the byte never reached the PTY.
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Space),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(vec![b' '])
         );
     }
 

@@ -114,12 +114,10 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 
 **Known Stage 6 limitations (deferred to later stages):**
 
-- The cell grid still draws with row 0 at the top of the window — the topmost
-  rows are clipped behind the tab bar. Stage 7+ adds a y-offset uniform to
-  shift the grid down by `tab_bar_height_px`. For now, run `clear` after
-  resizing to redraw the visible area.
 - Subtitle text isn't tinted by tracker state. Stage 7 will tint waiting
   subtitles amber, working subtitles blue, etc.
+- Copy/paste is not wired (no clipboard integration yet) — Stage 8+ adds
+  selection-rect rendering on mouse drag plus winit clipboard.
 - Keyboard shortcuts (`Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Tab`, `Ctrl+Shift+R`)
   arrive in Stage 8.
 

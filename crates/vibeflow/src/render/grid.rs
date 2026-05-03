@@ -28,8 +28,8 @@ impl CellInstance {
     }
 }
 
-/// Per-frame uniform. Layout matches `GridUniform` in `grid.wgsl`. Total 32
-/// bytes — already a multiple of 16, so no padding is needed.
+/// Per-frame uniform. Layout matches `GridUniform` in `grid.wgsl`. Total 48
+/// bytes — already a multiple of 16, so no extra padding is needed.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct GridUniform {
@@ -37,6 +37,10 @@ struct GridUniform {
     cell_size_px: [f32; 2],
     atlas_size_px: [f32; 2],
     atlas_cells: [u32; 2],
+    /// `.x` = pixel offset added to each cell's `y` position so the cell
+    /// grid sits below the tab bar. Other components are reserved padding
+    /// to keep the struct 16-aligned for std140-like uniform layout.
+    y_offset_pad: [u32; 4],
 }
 
 /// Cell-grid render pipeline. One per [`crate::render::Renderer`].
@@ -237,6 +241,7 @@ impl GridPipeline {
         atlas_size_px: (u32, u32),
         cell_size_px: (u32, u32),
         atlas_cells: (u32, u32),
+        y_offset_px: u32,
     ) {
         if instances.is_empty() {
             return;
@@ -246,6 +251,7 @@ impl GridPipeline {
             cell_size_px: [cell_size_px.0 as f32, cell_size_px.1 as f32],
             atlas_size_px: [atlas_size_px.0 as f32, atlas_size_px.1 as f32],
             atlas_cells: [atlas_cells.0, atlas_cells.1],
+            y_offset_pad: [y_offset_px, 0, 0, 0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
