@@ -16,11 +16,6 @@ use crate::app::App;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
-/// Stage-4 placeholder cell size. Stage 7 (font atlas) replaces this with
-/// values derived from cosmic-text font metrics for the configured font.
-const CELL_WIDTH_PX: u32 = 8;
-const CELL_HEIGHT_PX: u32 = 16;
-
 /// Compute terminal grid dimensions (rows, cols) from a window's physical
 /// pixel size and per-cell pixel size. Floor-divides; clamps to at least 1×1
 /// so degenerate (0, 0) surfaces still produce a usable grid for the child.
@@ -206,7 +201,8 @@ impl ApplicationHandler for WindowApp {
         // on initial show, so we don't rely on that to correct the size.
         if let Some(renderer) = self.renderer.as_ref() {
             let (width, height) = renderer.surface_size();
-            let (rows, cols) = pixels_to_grid(width, height, CELL_WIDTH_PX, CELL_HEIGHT_PX);
+            let (cell_w, cell_h) = renderer.cell_pitch();
+            let (rows, cols) = pixels_to_grid(width, height, cell_w, cell_h);
             if let Err(e) = self.app.resize_all(rows, cols) {
                 tracing::warn!(error = %e, rows, cols, "initial PTY resize failed");
             }
@@ -250,17 +246,16 @@ impl ApplicationHandler for WindowApp {
                 }
             }
             WindowEvent::Resized(new_size) => {
+                let cell_pitch = self.renderer.as_ref().map(|r| r.cell_pitch());
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(new_size.width, new_size.height);
                 }
-                let (rows, cols) = pixels_to_grid(
-                    new_size.width,
-                    new_size.height,
-                    CELL_WIDTH_PX,
-                    CELL_HEIGHT_PX,
-                );
-                if let Err(e) = self.app.resize_all(rows, cols) {
-                    tracing::warn!(error = %e, rows, cols, "PTY resize failed");
+                if let Some((cell_w, cell_h)) = cell_pitch {
+                    let (rows, cols) =
+                        pixels_to_grid(new_size.width, new_size.height, cell_w, cell_h);
+                    if let Err(e) = self.app.resize_all(rows, cols) {
+                        tracing::warn!(error = %e, rows, cols, "PTY resize failed");
+                    }
                 }
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -420,6 +415,32 @@ mod tests {
                 ModifiersState::empty()
             ),
             None
+        );
+    }
+
+    #[test]
+    fn pixels_to_grid_with_real_jbm_metrics() {
+        // JetBrains Mono Regular at 16 px: advance_width ≈ 9.6 px → ceil = 10,
+        // line metrics' new_line_size ≈ 21.6 px → ceil = 22. Verify the math
+        // works for that pitch (we don't hardcode the values here because they
+        // depend on the font binary's hinting, but we sanity-check that
+        // 800/10 = 80 columns, not 800/8 = 100.
+        let (rows_jbm, cols_jbm) = pixels_to_grid(800, 480, 10, 22);
+        assert_eq!(cols_jbm, 80);
+        assert_eq!(rows_jbm, 21);
+
+        // The Stage-4 placeholder pitch (8×16) would have given different math.
+        // This contrast test makes the bug obvious if someone re-introduces
+        // the placeholders.
+        let (rows_placeholder, cols_placeholder) = pixels_to_grid(800, 480, 8, 16);
+        assert_eq!(cols_placeholder, 100);
+        assert_eq!(rows_placeholder, 30);
+        assert_ne!(
+            (rows_jbm, cols_jbm),
+            (rows_placeholder, cols_placeholder),
+            "real font metrics should produce different grid dims than the \
+             Stage-4 placeholder 8×16 pitch — if these are equal, window.rs \
+             is still using the placeholders"
         );
     }
 }

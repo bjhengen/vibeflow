@@ -210,6 +210,13 @@ impl Renderer {
     pub fn surface_size(&self) -> (u32, u32) {
         (self.surface_config.width, self.surface_config.height)
     }
+
+    /// Per-cell pixel pitch reported by the atlas. Stage 6 wires this into
+    /// the window event loop's resize math (replacing the Stage 4 placeholders).
+    #[must_use]
+    pub fn cell_pitch(&self) -> (u32, u32) {
+        self.atlas.cell_pitch()
+    }
 }
 
 /// Walk the active grid and emit one [`crate::render::grid::CellInstance`]
