@@ -5,6 +5,8 @@
 pub mod atlas;
 pub mod colors;
 pub mod grid;
+pub mod tabs;
+pub mod text;
 
 use std::sync::Arc;
 
