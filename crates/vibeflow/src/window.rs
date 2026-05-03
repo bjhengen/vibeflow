@@ -322,11 +322,29 @@ impl ApplicationHandler for WindowApp {
                 self.current_modifiers = modifiers.state();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if let Some(bytes) =
-                    key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
-                {
-                    if let Err(e) = self.app.send_input(&bytes) {
-                        tracing::warn!(error = %e, "send_input failed");
+                // Log every keypress at trace level so we can diagnose which
+                // logical keys reach us and which fall into the catch-all.
+                // Run with `RUST_LOG=vibeflow=trace` to see this.
+                tracing::trace!(
+                    state = ?event.state,
+                    logical_key = ?event.logical_key,
+                    text = ?event.text,
+                    "key event"
+                );
+                match key_to_bytes(&event.logical_key, event.state, self.current_modifiers) {
+                    Some(bytes) => {
+                        tracing::trace!(?bytes, "key → pty bytes");
+                        if let Err(e) = self.app.send_input(&bytes) {
+                            tracing::warn!(error = %e, "send_input failed");
+                        }
+                    }
+                    None => {
+                        if event.state == winit::event::ElementState::Pressed {
+                            tracing::trace!(
+                                logical_key = ?event.logical_key,
+                                "press dropped (no key_to_bytes mapping)"
+                            );
+                        }
                     }
                 }
             }
