@@ -224,3 +224,197 @@ mod tests {
         assert_eq!(layout.hit_test(232, 10), TabBarHit::TabBody(1));
     }
 }
+
+use anyhow::Result;
+use bytemuck::{Pod, Zeroable};
+
+/// Per-instance data for [`TabBarPipeline`]. 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct RectInstance {
+    /// .xy = pos_px (top-left), .zw = size_px (width, height).
+    pub pos_size: [f32; 4],
+    pub color: [f32; 4],
+}
+
+impl RectInstance {
+    #[must_use]
+    pub fn new(x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> Self {
+        Self {
+            pos_size: [x, y, w, h],
+            color,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+struct RectUniform {
+    surface_size_px: [f32; 2],
+    _pad: [f32; 2],
+}
+
+/// Solid-color-rectangle pipeline for the tab bar.
+pub struct TabBarPipeline {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: u64,
+}
+
+const INITIAL_RECT_CAPACITY: u64 = 64;
+const RECT_STRIDE: u64 = std::mem::size_of::<RectInstance>() as u64;
+
+impl TabBarPipeline {
+    /// Build the pipeline.
+    ///
+    /// # Errors
+    /// Currently infallible.
+    pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Result<Self> {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("vibeflow-tabs-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("tabs.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("vibeflow-tabs-bind-group-layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vibeflow-tabs-uniform"),
+            size: std::mem::size_of::<RectUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("vibeflow-tabs-bind-group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("vibeflow-tabs-pipeline-layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("vibeflow-tabs-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: RECT_STRIDE,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 0,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 16,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x4,
+                        },
+                    ],
+                }],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vibeflow-tabs-instances"),
+            size: RECT_STRIDE * INITIAL_RECT_CAPACITY,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Ok(Self {
+            pipeline,
+            bind_group,
+            uniform_buffer,
+            instance_buffer,
+            instance_capacity: INITIAL_RECT_CAPACITY,
+        })
+    }
+
+    pub fn ensure_instance_capacity(&mut self, device: &wgpu::Device, needed: u64) {
+        if needed <= self.instance_capacity {
+            return;
+        }
+        let mut new_capacity = self.instance_capacity;
+        while new_capacity < needed {
+            new_capacity *= 2;
+        }
+        self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("vibeflow-tabs-instances"),
+            size: RECT_STRIDE * new_capacity,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_capacity = new_capacity;
+    }
+
+    /// Submit one instanced draw call for all the rects.
+    pub fn draw<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        queue: &wgpu::Queue,
+        rects: &[RectInstance],
+        surface_size_px: (u32, u32),
+    ) {
+        if rects.is_empty() {
+            return;
+        }
+        let uniform = RectUniform {
+            surface_size_px: [surface_size_px.0 as f32, surface_size_px.1 as f32],
+            _pad: [0.0, 0.0],
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+        pass.draw(0..6, 0..(rects.len() as u32));
+    }
+}
