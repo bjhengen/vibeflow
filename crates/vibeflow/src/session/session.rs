@@ -23,6 +23,38 @@ use crate::session::tracker::{AiStateTracker, TabState, TrackerConfig, TrackerIn
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
 
+/// Display label for a tab. The renderer in [`crate::render::tabs`] reads
+/// this to draw the title (line 1) and subtitle (line 2). Stage 9's TOML
+/// config will call [`PtySession::set_label`] to override based on the
+/// `default_title_from` setting (`cwd` / `process` / `auto`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TabLabel {
+    pub title: String,
+    pub subtitle: String,
+}
+
+impl TabLabel {
+    /// Default label for a freshly-spawned session: shell binary basename for
+    /// the title, lowercased tracker-state name for the subtitle.
+    #[must_use]
+    pub fn default_for(argv0: &str, state: TabState) -> Self {
+        let title = std::path::Path::new(argv0)
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or(argv0)
+            .to_string();
+        let subtitle = match state {
+            TabState::Active => "active",
+            TabState::Working => "working",
+            TabState::Waiting => "waiting",
+            TabState::Done => "done",
+            TabState::Idle => "idle",
+        }
+        .to_string();
+        Self { title, subtitle }
+    }
+}
+
 /// Public event type the `App` observes from a session, beyond just the
 /// underlying [`DispatchEvent`]. `Died` lets the App detect when the child
 /// exits and the reader thread has finished. `TermUpdated` is the redraw
@@ -65,6 +97,10 @@ pub struct PtySession {
     tracker: AiStateTracker,
     /// True until either the child exits or the reader-thread errors out.
     alive: bool,
+    /// Display label for the tab bar. Updated automatically when the tracker
+    /// state changes (default policy = shell binary + state); overridable via
+    /// [`Self::set_label`] from the config layer.
+    label: TabLabel,
 }
 
 impl PtySession {
@@ -103,6 +139,8 @@ impl PtySession {
         let term_size = TermSize::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize);
         let term = Term::new(TermConfig::default(), &term_size, VoidListener);
 
+        let label = TabLabel::default_for(argv[0], TabState::default());
+
         Ok(Self {
             rx,
             writer,
@@ -114,6 +152,7 @@ impl PtySession {
             term,
             tracker: AiStateTracker::new(config),
             alive: true,
+            label,
         })
     }
 
@@ -121,6 +160,33 @@ impl PtySession {
     #[must_use]
     pub fn state(&self) -> TabState {
         self.tracker.state()
+    }
+
+    /// Read-only access to the tab's label.
+    #[must_use]
+    pub fn label(&self) -> &TabLabel {
+        &self.label
+    }
+
+    /// Override the tab's label. Stage 9's TOML config uses this to apply
+    /// templates like `default_title_from = "cwd"`.
+    pub fn set_label(&mut self, label: TabLabel) {
+        self.label = label;
+    }
+
+    /// Recompute the default subtitle from the current tracker state. Called
+    /// internally on every state transition. Public so `App` (or future
+    /// config layers) can refresh the label when policy changes; most users
+    /// won't need to call this directly.
+    pub fn refresh_default_subtitle(&mut self) {
+        // Only update if the title still matches what `default_for` would
+        // produce — i.e. the user hasn't called `set_label` to override.
+        // We use a heuristic: the title must NOT contain a space (default
+        // titles are single words; user-set titles are arbitrary).
+        if !self.label.title.contains(' ') {
+            let new_label = TabLabel::default_for(&self.label.title, self.tracker.state());
+            self.label = new_label;
+        }
     }
 
     /// Drain every pending byte chunk off the reader channel, run each through
@@ -136,11 +202,13 @@ impl PtySession {
                         match ev {
                             DispatchEvent::AiState(frame) => {
                                 if self.tracker.on_input(TrackerInput::AiFrame(frame), now) {
+                                    self.refresh_default_subtitle();
                                     events.push(SessionEvent::StateChanged(self.tracker.state()));
                                 }
                             }
                             DispatchEvent::Prompt(marker) => {
                                 if self.tracker.on_input(TrackerInput::Prompt(marker), now) {
+                                    self.refresh_default_subtitle();
                                     events.push(SessionEvent::StateChanged(self.tracker.state()));
                                 }
                             }
@@ -182,6 +250,7 @@ impl PtySession {
     /// per timeout-driven state change (currently zero or one event).
     pub fn tick(&mut self, now: Instant) -> Vec<SessionEvent> {
         if self.tracker.tick(now) {
+            self.refresh_default_subtitle();
             vec![SessionEvent::StateChanged(self.tracker.state())]
         } else {
             Vec::new()
@@ -509,5 +578,58 @@ mod tests {
         let evs = s.tick(now + Duration::from_secs(31));
         assert_eq!(evs, vec![SessionEvent::StateChanged(TabState::Active)]);
         assert_eq!(s.state(), TabState::Active);
+    }
+
+    #[test]
+    fn default_label_for_bin_sh_is_sh_idle() {
+        let label = TabLabel::default_for("/bin/sh", TabState::Idle);
+        assert_eq!(label.title, "sh");
+        assert_eq!(label.subtitle, "idle");
+    }
+
+    #[test]
+    fn default_label_for_bin_bash_is_bash_active() {
+        let label = TabLabel::default_for("/bin/bash", TabState::Active);
+        assert_eq!(label.title, "bash");
+        assert_eq!(label.subtitle, "active");
+    }
+
+    #[test]
+    fn default_label_for_zsh_in_path_is_zsh() {
+        // Whether spawned via `/usr/bin/zsh` or `zsh`, the title is the basename.
+        assert_eq!(
+            TabLabel::default_for("/usr/bin/zsh", TabState::Working).title,
+            "zsh"
+        );
+        assert_eq!(TabLabel::default_for("zsh", TabState::Working).title, "zsh");
+    }
+
+    #[test]
+    fn default_label_for_unknown_argv_falls_back_to_argv_basename() {
+        assert_eq!(
+            TabLabel::default_for("/path/to/some/weird-shell", TabState::Idle).title,
+            "weird-shell"
+        );
+    }
+
+    #[test]
+    fn ptysession_default_label_is_bash_active() {
+        // PtySession::spawn always starts with TabState::Active. The default
+        // label tracks that.
+        let s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default()).unwrap();
+        assert_eq!(s.label().title, "bash");
+        assert_eq!(s.label().subtitle, "active");
+    }
+
+    #[test]
+    fn ptysession_set_label_overrides_default() {
+        let mut s =
+            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        s.set_label(TabLabel {
+            title: "custom".into(),
+            subtitle: "claude · waiting".into(),
+        });
+        assert_eq!(s.label().title, "custom");
+        assert_eq!(s.label().subtitle, "claude · waiting");
     }
 }
