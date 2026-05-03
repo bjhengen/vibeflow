@@ -148,6 +148,13 @@ impl App {
     pub fn active(&self) -> usize {
         self.active
     }
+
+    /// Set the focused tab. No-op if `idx` is out of range.
+    pub fn set_active(&mut self, idx: usize) {
+        if idx < self.tabs.len() {
+            self.active = idx;
+        }
+    }
 }
 
 impl Default for App {
@@ -292,5 +299,25 @@ mod tests {
         // Expect Ok and no panic. Real per-tab observation lives in the
         // PtySession-level test in session::session.
         app.resize_all(40, 100).unwrap();
+    }
+
+    #[test]
+    fn set_active_focuses_the_specified_tab() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        // After three new_tab calls, active = 2 (most-recently-spawned).
+        assert_eq!(app.active(), 2);
+        app.set_active(0);
+        assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn set_active_with_out_of_range_idx_is_a_no_op() {
+        let mut app = App::new();
+        app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.set_active(99);
+        assert_eq!(app.active(), 0);
     }
 }

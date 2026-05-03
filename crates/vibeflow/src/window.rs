@@ -96,6 +96,9 @@ pub struct WindowApp {
     /// `KeyEvent`, so we cache it here and pass it into the `key_to_bytes`
     /// helper alongside each key press.
     current_modifiers: ModifiersState,
+    /// Latest cursor position from `WindowEvent::CursorMoved`. Used by mouse
+    /// click handlers to hit-test the tab bar.
+    cursor_pos: Option<(u32, u32)>,
 }
 
 impl WindowApp {
@@ -108,6 +111,7 @@ impl WindowApp {
             renderer: None,
             app: App::new(),
             current_modifiers: ModifiersState::empty(),
+            cursor_pos: None,
         }
     }
 
@@ -149,6 +153,49 @@ impl WindowApp {
                 // The window does not auto-exit on the last tab dying in
                 // Stage 4 — the user closes the window with the close button.
             }
+        }
+    }
+
+    /// Hit-test the latest cursor position against the tab bar and dispatch
+    /// the corresponding action.
+    fn handle_left_click_release(&mut self) {
+        use crate::render::tabs::{TabBarHit, TabBarLayout};
+
+        let Some((px, py)) = self.cursor_pos else {
+            return;
+        };
+        // We need the same layout the renderer used. Since cell pitch + window
+        // width are the inputs, recompute it here from the renderer's atlas.
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let (_cell_w, cell_h) = renderer.cell_pitch();
+        let (window_w, _window_h) = renderer.surface_size();
+        let layout = TabBarLayout::compute(window_w, cell_h, self.app.tabs().len());
+
+        match layout.hit_test(px, py) {
+            TabBarHit::NewTab => {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+                if let Err(e) = self.app.new_tab(&[shell.as_str()]) {
+                    tracing::warn!(error = ?e, "new_tab failed");
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            TabBarHit::TabBody(idx) => {
+                self.app.set_active(idx);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            TabBarHit::TabClose(idx) => {
+                self.app.close_tab(idx);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            TabBarHit::None => {}
         }
     }
 }
@@ -271,6 +318,15 @@ impl ApplicationHandler for WindowApp {
                     if let Err(e) = self.app.send_input(&bytes) {
                         tracing::warn!(error = %e, "send_input failed");
                     }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_pos = Some((position.x as u32, position.y as u32));
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                use winit::event::{ElementState, MouseButton};
+                if state == ElementState::Released && button == MouseButton::Left {
+                    self.handle_left_click_release();
                 }
             }
             _ => {}
