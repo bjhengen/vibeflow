@@ -1,12 +1,11 @@
 //! GPU rendering primitives. Stage 4 ships a minimal [`Renderer`] that opens a
 //! wgpu surface on a [`winit::window::Window`] and clears it to a solid color.
 //! Stage 5 layers the cell grid on top; Stage 6 adds the tab bar.
+//! Stage 7 migrates cell rendering to QuadPipeline + cosmic-text TextEngine.
 
-pub mod atlas; // deleted in Task 4 Step 4 once grid.rs is also gone
 pub mod bell;
 pub mod colors;
 pub mod cursor;
-pub mod grid; // deleted in Task 4 Step 4
 pub mod quad; // formerly `text` — see Step 3
 pub mod tabs;
 pub mod text_engine;
@@ -34,19 +33,25 @@ pub struct Renderer {
     /// Kept so the surface's borrow stays valid for the renderer's lifetime.
     _window: Arc<Window>,
     surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     surface_config: wgpu::SurfaceConfiguration,
-    /// Pre-rendered ASCII glyph atlas. Stage 7 replaces with cosmic-text.
-    atlas: crate::render::atlas::GlyphAtlas,
-    /// Cell-grid render pipeline. One instanced draw per frame.
-    grid_pipeline: crate::render::grid::GridPipeline,
-    /// Pixel-position text pipeline (tab titles, subtitles, dead-tab banner, button glyphs).
-    text_pipeline: crate::render::quad::TextPipeline,
-    /// Solid-color rectangle pipeline (tab backgrounds, indicator stripes, button bodies).
+    /// cosmic-text-backed glyph rasterizer + dynamic atlas. Replaces Stage 5's
+    /// static `GlyphAtlas` (fontdue).
+    text_engine: crate::render::text_engine::TextEngine,
+    /// Unified textured-quad pipeline used for cells, tab text, and the
+    /// dead-tab banner. Replaces Stage 5's `GridPipeline` + Stage 6's
+    /// `TextPipeline`.
+    quad_pipeline: crate::render::quad::QuadPipeline,
+    /// Solid-color rectangle pipeline (tab backgrounds, indicator stripes,
+    /// button bodies, bell flash overlay).
     tab_bar_pipeline: crate::render::tabs::TabBarPipeline,
-    /// Per-frame TabBarRenderer (owns the pulse-animation epoch).
+    /// Tab-bar layout glue with pulse animation.
     tab_bar: crate::render::tabs::TabBarRenderer,
+    /// Cursor blink state.
+    cursor: crate::render::cursor::CursorBlink,
+    /// Bell flash state.
+    bell: crate::render::bell::BellFlash,
 }
 
 impl Renderer {
@@ -99,6 +104,9 @@ impl Renderer {
         ))
         .context("request wgpu device + queue")?;
 
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+
         let surface_caps = surface.get_capabilities(&adapter);
         // Prefer sRGB so colours match designer expectations; fall back to the
         // first format if no sRGB option is offered.
@@ -121,11 +129,18 @@ impl Renderer {
         };
         surface.configure(&device, &surface_config);
 
-        let atlas = crate::render::atlas::GlyphAtlas::new(&device, &queue)?;
-        let grid_pipeline = crate::render::grid::GridPipeline::new(&device, format, &atlas)?;
-        let text_pipeline = crate::render::quad::TextPipeline::new(&device, format, &atlas)?;
+        let text_engine =
+            crate::render::text_engine::TextEngine::new(Arc::clone(&device), Arc::clone(&queue))?;
+        let quad_pipeline = crate::render::quad::QuadPipeline::new(
+            &device,
+            format,
+            &text_engine.view,
+            &text_engine.sampler,
+        )?;
         let tab_bar_pipeline = crate::render::tabs::TabBarPipeline::new(&device, format)?;
         let tab_bar = crate::render::tabs::TabBarRenderer::new();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let bell = crate::render::bell::BellFlash::new();
 
         Ok(Self {
             _window: window,
@@ -133,11 +148,12 @@ impl Renderer {
             device,
             queue,
             surface_config,
-            atlas,
-            grid_pipeline,
-            text_pipeline,
+            text_engine,
+            quad_pipeline,
             tab_bar_pipeline,
             tab_bar,
+            cursor,
+            bell,
         })
     }
 
@@ -163,6 +179,75 @@ impl Renderer {
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
+        // Pull metrics + atlas size up front. `atlas_size` may have changed since
+        // last frame if a glyph cache miss grew the texture.
+        let (cell_w, cell_h) = self.text_engine.cell_metrics();
+        let surface_size = (self.surface_config.width, self.surface_config.height);
+        let layout = TabBarLayout::compute(surface_size.0, cell_h, app.tabs().len());
+        let now = std::time::Instant::now();
+
+        // Banner detection — same DRY pattern as Stage 6 commit 0adc62f.
+        const BANNER_TEXT: &str = "session died -- press Ctrl+Shift+R to retry";
+        let banner_glyph_count = app
+            .tabs()
+            .get(app.active())
+            .filter(|s| !s.is_alive())
+            .map(|_| {
+                let count = BANNER_TEXT.chars().count();
+                self.tab_bar_pipeline
+                    .ensure_instance_capacity(&self.device, 1);
+                count
+            });
+
+        // Build per-pass instance lists OUTSIDE the render-pass scope so we can
+        // call `&mut self` methods on the engine and pipelines without conflicting
+        // with the render-pass borrow.
+        let cell_instances = if let Some(term) = term {
+            crate::render::quad::build_cell_instances(
+                term,
+                &mut self.text_engine,
+                &self.cursor,
+                now,
+                cell_w,
+                cell_h,
+                layout.bar_height_px,
+            )
+        } else {
+            Vec::new()
+        };
+        let tab_rects = self.tab_bar.build_rects(app, &layout);
+        let tab_glyphs = self
+            .tab_bar
+            .build_glyphs(app, &layout, &mut self.text_engine);
+        let banner_quads = banner_glyph_count.map(|count| {
+            crate::render::quad::build_banner_instances(
+                BANNER_TEXT,
+                count,
+                &mut self.text_engine,
+                cell_w,
+                cell_h,
+                &layout,
+                surface_size.0,
+            )
+        });
+        let bell_alpha = self.bell.tint_alpha(now);
+
+        // Now grow the GPU buffers (still outside the render-pass scope).
+        let atlas_size = self.text_engine.atlas_size();
+        if self.text_engine.texture_dirty() {
+            self.quad_pipeline.rebind_atlas(
+                &self.device,
+                &self.text_engine.view,
+                &self.text_engine.sampler,
+            );
+        }
+        let total_quads =
+            cell_instances.len() + tab_glyphs.len() + banner_quads.as_ref().map_or(0, |v| v.len());
+        self.quad_pipeline
+            .ensure_instance_capacity(&self.device, total_quads as u64);
+        self.tab_bar_pipeline
+            .ensure_instance_capacity(&self.device, (tab_rects.len() + 2) as u64); // +2 = banner rect + bell
+
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -171,29 +256,6 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("vibeflow-frame-encoder"),
-            });
-
-        let (cell_w, cell_h) = self.atlas.cell_pitch();
-        let surface_size = (self.surface_config.width, self.surface_config.height);
-        let layout = TabBarLayout::compute(surface_size.0, cell_h, app.tabs().len());
-
-        // Banner shown when the active tab's session has died. Defined once and
-        // reused below so the pre-allocation count and the actual draw can't
-        // diverge. Stage 8 will wire the Ctrl+Shift+R retry shortcut.
-        const BANNER_TEXT: &str = "session died -- press Ctrl+Shift+R to retry";
-        let banner_glyph_count = app
-            .tabs()
-            .get(app.active())
-            .filter(|s| !s.is_alive())
-            .map(|_| {
-                let count = BANNER_TEXT.chars().count();
-                // Pre-allocate capacity before entering the render-pass scope —
-                // can't take `&mut self` on the pipelines once `pass` borrows self.
-                self.tab_bar_pipeline
-                    .ensure_instance_capacity(&self.device, 1);
-                self.text_pipeline
-                    .ensure_instance_capacity(&self.device, count as u64);
-                count
             });
 
         {
@@ -212,69 +274,40 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // ---- Cell grid pass (excluded from tab bar region via scissor) ----
-            if let Some(term) = term {
-                let instances = build_cell_instances(term);
-                if !instances.is_empty() {
-                    self.grid_pipeline
-                        .ensure_instance_capacity(&self.device, instances.len() as u64);
-                    let (atlas_w, atlas_h) = self.atlas.pixel_size();
-                    pass.set_scissor_rect(
-                        0,
-                        layout.bar_height_px,
-                        surface_size.0,
-                        surface_size.1.saturating_sub(layout.bar_height_px),
-                    );
-                    self.grid_pipeline.draw(
-                        &mut pass,
-                        &self.queue,
-                        &instances,
-                        surface_size,
-                        (atlas_w, atlas_h),
-                        (cell_w, cell_h),
-                        crate::render::atlas::ATLAS_LAYOUT,
-                        layout.bar_height_px,
-                    );
-                    // Reset scissor for the next pass.
-                    pass.set_scissor_rect(0, 0, surface_size.0, surface_size.1);
-                }
-            }
-
-            // ---- Tab bar pass ----
-            let rects = self.tab_bar.build_rects(app, &layout);
-            if !rects.is_empty() {
-                self.tab_bar_pipeline
-                    .ensure_instance_capacity(&self.device, rects.len() as u64);
-                self.tab_bar_pipeline
-                    .draw(&mut pass, &self.queue, &rects, surface_size);
-            }
-
-            // ---- Tab bar text pass ----
-            let glyphs = self.tab_bar.build_glyphs(app, &layout, &self.atlas);
-            if !glyphs.is_empty() {
-                self.text_pipeline
-                    .ensure_instance_capacity(&self.device, glyphs.len() as u64);
-                let (atlas_w, atlas_h) = self.atlas.pixel_size();
-                self.text_pipeline.draw(
+            // ---- Cell grid pass ----
+            if !cell_instances.is_empty() {
+                self.quad_pipeline.draw(
                     &mut pass,
                     &self.queue,
-                    &glyphs,
+                    &cell_instances,
                     surface_size,
-                    (atlas_w, atlas_h),
-                    (cell_w, cell_h),
-                    crate::render::atlas::ATLAS_LAYOUT,
+                    atlas_size,
                 );
             }
 
-            // ---- Dead-tab banner (overlay on the cell grid area) ----
-            // Capacity was pre-allocated above; `glyph_count` proves the active
-            // session has died, so we can build and draw without re-checking.
-            if let Some(glyph_count) = banner_glyph_count {
+            // ---- Tab bar rects pass ----
+            if !tab_rects.is_empty() {
+                self.tab_bar_pipeline
+                    .draw(&mut pass, &self.queue, &tab_rects, surface_size);
+            }
+
+            // ---- Tab bar text pass ----
+            if !tab_glyphs.is_empty() {
+                self.quad_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    &tab_glyphs,
+                    surface_size,
+                    atlas_size,
+                );
+            }
+
+            // ---- Dead-tab banner ----
+            if let Some(quads) = banner_quads {
+                // Background rect first.
                 let banner_h = (cell_h as f32) * 2.0;
                 let banner_y = layout.bar_height_px as f32 + 16.0;
                 let banner_w = surface_size.0 as f32;
-
-                // Semi-transparent dark background.
                 let banner_rect = crate::render::tabs::RectInstance::new(
                     0.0,
                     banner_y,
@@ -288,38 +321,24 @@ impl Renderer {
                     std::slice::from_ref(&banner_rect),
                     surface_size,
                 );
+                self.quad_pipeline
+                    .draw(&mut pass, &self.queue, &quads, surface_size, atlas_size);
+            }
 
-                // Centered text on top.
-                let text_w = (glyph_count as f32) * (cell_w as f32);
-                let text_x = (banner_w - text_w) / 2.0;
-                let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
-                let mut banner_glyphs = Vec::with_capacity(glyph_count);
-                let mut x = text_x;
-                for c in BANNER_TEXT.chars() {
-                    let glyph = crate::render::atlas::glyph_index(c).unwrap_or(0);
-                    banner_glyphs.push(crate::render::quad::GlyphInstance::new(
-                        x,
-                        text_y,
-                        glyph,
-                        [
-                            0xff as f32 / 255.0,
-                            0xbd as f32 / 255.0,
-                            0x2e as f32 / 255.0,
-                            1.0,
-                        ], // amber
-                        [0.0, 0.0, 0.0, 1.0], // opaque black, matches banner rect underneath
-                    ));
-                    x += cell_w as f32;
-                }
-                let (atlas_w, atlas_h) = self.atlas.pixel_size();
-                self.text_pipeline.draw(
+            // ---- Bell flash overlay ----
+            if bell_alpha > 0.0 {
+                let bell_rect = crate::render::tabs::RectInstance::new(
+                    0.0,
+                    0.0,
+                    surface_size.0 as f32,
+                    surface_size.1 as f32,
+                    [1.0, 1.0, 1.0, bell_alpha],
+                );
+                self.tab_bar_pipeline.draw(
                     &mut pass,
                     &self.queue,
-                    &banner_glyphs,
+                    std::slice::from_ref(&bell_rect),
                     surface_size,
-                    (atlas_w, atlas_h),
-                    (cell_w, cell_h),
-                    crate::render::atlas::ATLAS_LAYOUT,
                 );
             }
         }
@@ -343,84 +362,16 @@ impl Renderer {
         (self.surface_config.width, self.surface_config.height)
     }
 
-    /// Per-cell pixel pitch reported by the atlas. Stage 6 wires this into
-    /// the window event loop's resize math (replacing the Stage 4 placeholders).
+    /// Per-cell pixel pitch reported by the text engine. Stage 6 wires this
+    /// into the window event loop's resize math.
     #[must_use]
     pub fn cell_pitch(&self) -> (u32, u32) {
-        self.atlas.cell_pitch()
+        self.text_engine.cell_metrics()
     }
-}
 
-/// Walk the active grid and emit one [`crate::render::grid::CellInstance`]
-/// per visible cell. Cells whose character is outside the atlas range
-/// (non-printable / non-ASCII for Stage 5) are emitted with the space-glyph
-/// index — visually they show only the background color, which matches
-/// well-behaved control characters.
-///
-/// Atlas state is not threaded through this function: glyph lookup uses the
-/// free [`crate::render::atlas::glyph_index`] (the atlas's pixel pitch + size
-/// are read in `Renderer::render` directly).
-fn build_cell_instances(
-    term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
-) -> Vec<crate::render::grid::CellInstance> {
-    use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
-
-    let content = term.renderable_content();
-    let colors = content.colors;
-    let fg_default = Rgb {
-        r: 0xe5,
-        g: 0xe5,
-        b: 0xe5,
-    };
-    let bg_default = Rgb {
-        r: 0x0e,
-        g: 0x0e,
-        b: 0x12,
-    };
-
-    let mut instances: Vec<crate::render::grid::CellInstance> = Vec::new();
-    let cursor_pos = content.cursor;
-    // CursorShape variants in vte 0.13.x: Block, Underline, Beam, HollowBlock, Hidden.
-    // Stage 5 treats every visible shape as a block (HollowBlock and Beam draw as
-    // blocks too); Stage 6+ may render them properly.
-    let cursor_visible = cursor_pos.shape != CursorShape::Hidden;
-    let cursor_row_col = if cursor_visible {
-        Some((cursor_pos.point.line.0, cursor_pos.point.column.0 as u32))
-    } else {
-        None
-    };
-
-    for indexed in content.display_iter {
-        let row = indexed.point.line.0;
-        if row < 0 {
-            continue;
-        }
-        let col = indexed.point.column.0 as u32;
-        let cell = indexed.cell;
-        let glyph = crate::render::atlas::glyph_index(cell.c).unwrap_or(0);
-        let fg_rgb = crate::render::colors::resolve_color(cell.fg, colors, fg_default, bg_default);
-        let bg_rgb = crate::render::colors::resolve_color(cell.bg, colors, fg_default, bg_default);
-
-        // If this is the cursor cell, swap fg and bg to draw a block cursor.
-        let on_cursor = cursor_row_col == Some((row, col));
-        let (fg, bg) = if on_cursor {
-            (rgb_to_f32(bg_rgb), rgb_to_f32(fg_rgb))
-        } else {
-            (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb))
-        };
-
-        instances.push(crate::render::grid::CellInstance::new(
-            col, row as u32, glyph, fg, bg,
-        ));
+    /// Note that the active tab's session rang the bell. Triggers a 200 ms
+    /// white-tint fade.
+    pub fn note_bell(&mut self) {
+        self.bell.note(std::time::Instant::now());
     }
-    instances
-}
-
-fn rgb_to_f32(rgb: alacritty_terminal::vte::ansi::Rgb) -> [f32; 4] {
-    [
-        rgb.r as f32 / 255.0,
-        rgb.g as f32 / 255.0,
-        rgb.b as f32 / 255.0,
-        1.0,
-    ]
 }

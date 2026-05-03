@@ -291,8 +291,160 @@ impl QuadPipeline {
     }
 }
 
-// Migration aliases. Removed in Tasks 4–5 once callers migrate.
-#[deprecated(note = "use QuadPipeline directly")]
-pub type TextPipeline = QuadPipeline;
-#[deprecated(note = "use QuadInstance directly")]
-pub type GlyphInstance = QuadInstance;
+use crate::render::cursor::CursorBlink;
+use crate::render::text_engine::{GlyphRef, TextEngine};
+
+/// Walk the active grid and emit one [`QuadInstance`] per visible cell.
+/// Skips cells whose glyph is unrenderable (`text_engine.glyph_for` returned
+/// `None`) — those become invisible cells (background still drawn via the
+/// shared bg pass). Toggles the cursor cell based on `CursorBlink::visible`.
+pub fn build_cell_instances(
+    term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
+    text_engine: &mut TextEngine,
+    cursor: &CursorBlink,
+    now: std::time::Instant,
+    cell_w: u32,
+    cell_h: u32,
+    y_offset_px: u32,
+) -> Vec<QuadInstance> {
+    use crate::render::colors::resolve_color;
+    use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
+
+    fn rgb_to_f32(rgb: Rgb) -> [f32; 4] {
+        [
+            rgb.r as f32 / 255.0,
+            rgb.g as f32 / 255.0,
+            rgb.b as f32 / 255.0,
+            1.0,
+        ]
+    }
+
+    let cursor_visible_per_blink = cursor.visible(now);
+    let content = term.renderable_content();
+    let cursor_state = content.cursor;
+    let cursor_shape_visible = cursor_state.shape != CursorShape::Hidden;
+    let colors = content.colors;
+    let fg_default = Rgb {
+        r: 0xe5,
+        g: 0xe5,
+        b: 0xe5,
+    };
+    let bg_default = Rgb {
+        r: 0x0e,
+        g: 0x0e,
+        b: 0x12,
+    };
+    let baseline_y = text_engine.baseline_y() as f32;
+
+    let mut out = Vec::new();
+    for cell in content.display_iter {
+        let line = cell.point.line.0;
+        let col = cell.point.column.0 as u32;
+        if line < 0 {
+            continue;
+        }
+        let row = line as u32;
+
+        // IMPORTANT: preserve Stage 6 mod.rs's resolve_color arg order:
+        // `(color, &Colors, fg_default, bg_default)` — same order for both fg
+        // and bg lookups.
+        let fg_rgb = resolve_color(cell.fg, colors, fg_default, bg_default);
+        let bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
+        let is_cursor = cell.point == cursor_state.point;
+        let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
+        if is_cursor && cursor_shape_visible && cursor_visible_per_blink {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+
+        let screen_x = (col * cell_w) as f32;
+        let screen_y = (row * cell_h + y_offset_px) as f32;
+
+        let glyph = text_engine.glyph_for(cell.c).unwrap_or(GlyphRef {
+            atlas_x: 0,
+            atlas_y: 0,
+            atlas_w: 0,
+            atlas_h: 0,
+            bearing_x: 0,
+            bearing_y: 0,
+        });
+
+        // Background rect: zero-size atlas rect → alpha=0 → pure bg.
+        out.push(QuadInstance::new(
+            screen_x,
+            screen_y,
+            cell_w as f32,
+            cell_h as f32,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            bg,
+            bg,
+        ));
+        if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
+            out.push(QuadInstance::new(
+                screen_x + glyph.bearing_x as f32,
+                screen_y + baseline_y - glyph.bearing_y as f32,
+                glyph.atlas_w as f32,
+                glyph.atlas_h as f32,
+                glyph.atlas_x as f32,
+                glyph.atlas_y as f32,
+                glyph.atlas_w as f32,
+                glyph.atlas_h as f32,
+                fg,
+                bg,
+            ));
+        }
+    }
+    out
+}
+
+/// Build the dead-tab banner's centered text quads.
+pub fn build_banner_instances(
+    text: &str,
+    glyph_count: usize,
+    text_engine: &mut TextEngine,
+    cell_w: u32,
+    cell_h: u32,
+    layout: &crate::render::tabs::TabBarLayout,
+    surface_w: u32,
+) -> Vec<QuadInstance> {
+    let banner_h = (cell_h as f32) * 2.0;
+    let banner_y = layout.bar_height_px as f32 + 16.0;
+    let banner_w = surface_w as f32;
+    let text_w = (glyph_count as f32) * (cell_w as f32);
+    let text_x = (banner_w - text_w) / 2.0;
+    let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
+    let baseline_y = text_engine.baseline_y() as f32;
+
+    let amber: [f32; 4] = [
+        0xff as f32 / 255.0,
+        0xbd as f32 / 255.0,
+        0x2e as f32 / 255.0,
+        1.0,
+    ];
+    let black: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+    let mut out = Vec::with_capacity(glyph_count);
+    let mut x = text_x;
+    for c in text.chars() {
+        if let Some(glyph) = text_engine.glyph_for(c) {
+            if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
+                out.push(QuadInstance::new(
+                    x + glyph.bearing_x as f32,
+                    text_y + baseline_y - glyph.bearing_y as f32,
+                    glyph.atlas_w as f32,
+                    glyph.atlas_h as f32,
+                    glyph.atlas_x as f32,
+                    glyph.atlas_y as f32,
+                    glyph.atlas_w as f32,
+                    glyph.atlas_h as f32,
+                    amber,
+                    black,
+                ));
+            }
+        }
+        x += cell_w as f32;
+    }
+    out
+}
