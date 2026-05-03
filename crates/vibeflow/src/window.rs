@@ -225,7 +225,7 @@ impl ApplicationHandler for WindowApp {
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
                 };
-                match renderer.render(term) {
+                match renderer.render(term, &self.app) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         // Surface needs to be re-created with current config.

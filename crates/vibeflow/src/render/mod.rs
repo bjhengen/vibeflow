@@ -38,6 +38,12 @@ pub struct Renderer {
     atlas: crate::render::atlas::GlyphAtlas,
     /// Cell-grid render pipeline. One instanced draw per frame.
     grid_pipeline: crate::render::grid::GridPipeline,
+    /// Pixel-position text pipeline (tab titles, subtitles, dead-tab banner, button glyphs).
+    text_pipeline: crate::render::text::TextPipeline,
+    /// Solid-color rectangle pipeline (tab backgrounds, indicator stripes, button bodies).
+    tab_bar_pipeline: crate::render::tabs::TabBarPipeline,
+    /// Per-frame TabBarRenderer (owns the pulse-animation epoch).
+    tab_bar: crate::render::tabs::TabBarRenderer,
 }
 
 impl Renderer {
@@ -114,6 +120,9 @@ impl Renderer {
 
         let atlas = crate::render::atlas::GlyphAtlas::new(&device, &queue)?;
         let grid_pipeline = crate::render::grid::GridPipeline::new(&device, format, &atlas)?;
+        let text_pipeline = crate::render::text::TextPipeline::new(&device, format, &atlas)?;
+        let tab_bar_pipeline = crate::render::tabs::TabBarPipeline::new(&device, format)?;
+        let tab_bar = crate::render::tabs::TabBarRenderer::new();
 
         Ok(Self {
             _window: window,
@@ -123,6 +132,9 @@ impl Renderer {
             surface_config,
             atlas,
             grid_pipeline,
+            text_pipeline,
+            tab_bar_pipeline,
+            tab_bar,
         })
     }
 
@@ -144,7 +156,10 @@ impl Renderer {
     pub fn render(
         &mut self,
         term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
+        app: &crate::app::App,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
+        use crate::render::tabs::TabBarLayout;
+
         let frame = self.surface.get_current_texture()?;
         let view = frame
             .texture
@@ -154,6 +169,10 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("vibeflow-frame-encoder"),
             });
+
+        let (cell_w, cell_h) = self.atlas.cell_pitch();
+        let surface_size = (self.surface_config.width, self.surface_config.height);
+        let layout = TabBarLayout::compute(surface_size.0, cell_h, app.tabs().len());
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -171,24 +190,70 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
+            // ---- Cell grid pass (excluded from tab bar region via scissor) ----
             if let Some(term) = term {
                 let instances = build_cell_instances(term);
                 if !instances.is_empty() {
                     self.grid_pipeline
                         .ensure_instance_capacity(&self.device, instances.len() as u64);
                     let (atlas_w, atlas_h) = self.atlas.pixel_size();
-                    let (cell_w, cell_h) = self.atlas.cell_pitch();
-                    let surface_size = (self.surface_config.width, self.surface_config.height);
+                    pass.set_scissor_rect(
+                        0,
+                        layout.bar_height_px,
+                        surface_size.0,
+                        surface_size.1.saturating_sub(layout.bar_height_px),
+                    );
                     self.grid_pipeline.draw(
                         &mut pass,
                         &self.queue,
                         &instances,
+                        // The grid renders into the area BELOW the tab bar.
+                        // We pass the FULL surface size and let the scissor clip;
+                        // cells are drawn at cell-grid coordinates starting at (0, 0).
+                        // To shift the grid down by tab_bar_height_px, we need a
+                        // y-offset uniform — but Stage 6 keeps the grid shader
+                        // unchanged and shifts via the scissor + by adjusting cell row
+                        // origin in `build_cell_instances`. Stage 6 simplifies by
+                        // computing the scissor clip but still drawing cells at
+                        // grid-aligned positions starting at y=0. The visible
+                        // result: rows 0..N near the top of the cell grid pass are
+                        // hidden behind the tab bar. For Stage 6 demo this is OK;
+                        // Stage 7+ adds a proper y-offset uniform.
+                        // (See "Notable plan risks" at the bottom of this plan.)
                         surface_size,
                         (atlas_w, atlas_h),
                         (cell_w, cell_h),
                         crate::render::atlas::ATLAS_LAYOUT,
                     );
+                    // Reset scissor for the next pass.
+                    pass.set_scissor_rect(0, 0, surface_size.0, surface_size.1);
                 }
+            }
+
+            // ---- Tab bar pass ----
+            let rects = self.tab_bar.build_rects(app, &layout);
+            if !rects.is_empty() {
+                self.tab_bar_pipeline
+                    .ensure_instance_capacity(&self.device, rects.len() as u64);
+                self.tab_bar_pipeline
+                    .draw(&mut pass, &self.queue, &rects, surface_size);
+            }
+
+            // ---- Tab bar text pass ----
+            let glyphs = self.tab_bar.build_glyphs(app, &layout, &self.atlas);
+            if !glyphs.is_empty() {
+                self.text_pipeline
+                    .ensure_instance_capacity(&self.device, glyphs.len() as u64);
+                let (atlas_w, atlas_h) = self.atlas.pixel_size();
+                self.text_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    &glyphs,
+                    surface_size,
+                    (atlas_w, atlas_h),
+                    (cell_w, cell_h),
+                    crate::render::atlas::ATLAS_LAYOUT,
+                );
             }
         }
 

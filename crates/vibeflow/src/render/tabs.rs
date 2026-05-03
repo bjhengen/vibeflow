@@ -223,6 +223,41 @@ mod tests {
         // 4 tabs, 928 / 4 = 232 px each (< MAX 250). x=232 is the start of tab 1.
         assert_eq!(layout.hit_test(232, 10), TabBarHit::TabBody(1));
     }
+
+    #[test]
+    fn pulse_alpha_at_t_zero_is_in_range() {
+        let a = pulse_alpha(0.0);
+        assert!((0.4..=1.0).contains(&a), "got {}", a);
+    }
+
+    #[test]
+    fn pulse_alpha_oscillates_over_a_full_period() {
+        // Full period is 1.4 s. The alpha hits both ends across that span.
+        let mut min = f32::INFINITY;
+        let mut max = f32::NEG_INFINITY;
+        for i in 0..100 {
+            let t = (i as f32) * 0.014; // 100 samples across 1.4 s
+            let a = pulse_alpha(t);
+            min = min.min(a);
+            max = max.max(a);
+        }
+        assert!(min < 0.5, "expected min near 0.4, got {}", min);
+        assert!(max > 0.95, "expected max near 1.0, got {}", max);
+    }
+
+    #[test]
+    fn indicator_color_is_amber_for_waiting() {
+        let c = indicator_color(TabState::Waiting);
+        // 0xff = 1.0, 0xbd ≈ 0.74, 0x2e ≈ 0.18.
+        assert!((c[0] - 1.0).abs() < 0.01);
+        assert!((c[1] - 0.74).abs() < 0.05);
+        assert!((c[2] - 0.18).abs() < 0.05);
+    }
+
+    #[test]
+    fn indicator_color_is_transparent_for_active() {
+        assert_eq!(indicator_color(TabState::Active), [0.0, 0.0, 0.0, 0.0]);
+    }
 }
 
 use anyhow::Result;
@@ -416,5 +451,299 @@ impl TabBarPipeline {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
         pass.draw(0..6, 0..(rects.len() as u32));
+    }
+}
+
+use std::time::Instant;
+
+use crate::app::App;
+use crate::render::atlas::{glyph_index, GlyphAtlas};
+use crate::render::text::GlyphInstance;
+use crate::session::tracker::TabState;
+
+/// Notice-indicator colors. The amber/blue/gray come from the design spec's
+/// `[theme.indicator]` defaults; they'll be configurable in Stage 9.
+fn indicator_color(state: TabState) -> [f32; 4] {
+    match state {
+        TabState::Waiting => [
+            0xff as f32 / 255.0,
+            0xbd as f32 / 255.0,
+            0x2e as f32 / 255.0,
+            1.0,
+        ], // amber
+        TabState::Working => [
+            0x5f as f32 / 255.0,
+            0xb4 as f32 / 255.0,
+            0xff as f32 / 255.0,
+            1.0,
+        ], // blue
+        TabState::Idle => [
+            0x45 as f32 / 255.0,
+            0x45 as f32 / 255.0,
+            0x4f as f32 / 255.0,
+            1.0,
+        ], // gray
+        TabState::Done => [
+            0x5f as f32 / 255.0,
+            0xff as f32 / 255.0,
+            0x9f as f32 / 255.0,
+            1.0,
+        ], // greenish
+        TabState::Active => [0.0, 0.0, 0.0, 0.0], // no stripe for the default state
+    }
+}
+
+/// Compute the pulse alpha for a `Waiting` tab at time `t` (seconds since some epoch).
+/// 1.4 s sine wave between 0.4 and 1.0.
+#[must_use]
+pub fn pulse_alpha(t_secs: f32) -> f32 {
+    let omega = std::f32::consts::TAU / 1.4;
+    let sin = (t_secs * omega).sin(); // -1 to 1
+    0.7 + 0.3 * sin // 0.4 to 1.0
+}
+
+/// Width of the Notice indicator stripe in pixels. Spec: 3px.
+pub const INDICATOR_STRIPE_WIDTH_PX: u32 = 3;
+
+/// Tab background colors (active vs inactive). Spec: active is "slightly lighter".
+const BG_ACTIVE: [f32; 4] = [
+    0x1a as f32 / 255.0,
+    0x1a as f32 / 255.0,
+    0x22 as f32 / 255.0,
+    1.0,
+];
+const BG_INACTIVE: [f32; 4] = [
+    0x15 as f32 / 255.0,
+    0x15 as f32 / 255.0,
+    0x1c as f32 / 255.0,
+    1.0,
+];
+
+/// Title text color (slightly muted on inactive tabs).
+const FG_ACTIVE: [f32; 4] = [
+    0xe5 as f32 / 255.0,
+    0xe5 as f32 / 255.0,
+    0xe5 as f32 / 255.0,
+    1.0,
+];
+const FG_INACTIVE: [f32; 4] = [
+    0x7a as f32 / 255.0,
+    0x7a as f32 / 255.0,
+    0x82 as f32 / 255.0,
+    1.0,
+];
+
+/// `+` and `×` button glyph indices into the atlas (looked up at construction).
+fn plus_glyph_idx() -> u32 {
+    glyph_index('+').unwrap_or(0)
+}
+fn x_glyph_idx() -> u32 {
+    glyph_index('×').unwrap_or_else(|| glyph_index('x').unwrap_or(0))
+}
+
+/// Glue between `App` state, `TabBarLayout`, and the wgpu pipelines.
+/// Stateless except for the pulse-time epoch.
+pub struct TabBarRenderer {
+    /// Wall-clock time at which the renderer was constructed; pulse alpha is
+    /// computed as `(now - epoch).as_secs_f32()`.
+    epoch: Instant,
+}
+
+impl TabBarRenderer {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            epoch: Instant::now(),
+        }
+    }
+
+    /// Build the RectInstance list (tab backgrounds + indicator stripes + close
+    /// buttons + new-tab button) for the current `App` state.
+    pub fn build_rects(&self, app: &App, layout: &TabBarLayout) -> Vec<RectInstance> {
+        let mut rects = Vec::new();
+        let bar_height = layout.bar_height_px as f32;
+        let active_idx = app.active();
+        // Continuous monotonic time — pulse_alpha cycles every 1.4 s naturally.
+        // (Do NOT use `t.fract()` here — that resets phase every integer second
+        // and produces a visible jump.)
+        let pulse = pulse_alpha(self.epoch.elapsed().as_secs_f32());
+
+        // Tab backgrounds first (so stripes draw on top).
+        for tab in &layout.tabs {
+            let is_active = tab.idx == active_idx && tab.idx < app.tabs().len();
+            let bg = if is_active { BG_ACTIVE } else { BG_INACTIVE };
+            rects.push(RectInstance::new(
+                tab.body.x as f32,
+                tab.body.y as f32,
+                tab.body.w as f32,
+                tab.body.h as f32,
+                bg,
+            ));
+
+            // Notice indicator stripe (3px on the left edge).
+            let session = match app.tabs().get(tab.idx) {
+                Some(s) => s,
+                None => continue,
+            };
+            let state = session.state();
+            let mut color = indicator_color(state);
+            if state == TabState::Waiting {
+                color[3] = pulse; // sine-modulated alpha
+            }
+            // Skip if the color is fully transparent (active state).
+            if color[3] > 0.0 {
+                rects.push(RectInstance::new(
+                    tab.body.x as f32,
+                    tab.body.y as f32,
+                    INDICATOR_STRIPE_WIDTH_PX as f32,
+                    bar_height,
+                    color,
+                ));
+            }
+
+            // Per-tab close button background (subtle).
+            rects.push(RectInstance::new(
+                tab.close_button.x as f32,
+                tab.close_button.y as f32,
+                tab.close_button.w as f32,
+                tab.close_button.h as f32,
+                [0.0, 0.0, 0.0, 0.3],
+            ));
+        }
+
+        // New-tab button background.
+        rects.push(RectInstance::new(
+            layout.new_tab_button.x as f32,
+            layout.new_tab_button.y as f32,
+            layout.new_tab_button.w as f32,
+            layout.new_tab_button.h as f32,
+            [0.0, 0.0, 0.0, 0.3],
+        ));
+
+        rects
+    }
+
+    /// Build the GlyphInstance list for tab titles + subtitles + `+` / `×`
+    /// button glyphs.
+    pub fn build_glyphs(
+        &self,
+        app: &App,
+        layout: &TabBarLayout,
+        atlas: &GlyphAtlas,
+    ) -> Vec<GlyphInstance> {
+        let mut glyphs = Vec::new();
+        let active_idx = app.active();
+        let (cell_w, cell_h) = atlas.cell_pitch();
+        let cell_w_f = cell_w as f32;
+        let cell_h_f = cell_h as f32;
+
+        for tab in &layout.tabs {
+            let is_active = tab.idx == active_idx && tab.idx < app.tabs().len();
+            let fg = if is_active { FG_ACTIVE } else { FG_INACTIVE };
+            let bg = if is_active { BG_ACTIVE } else { BG_INACTIVE };
+
+            let session = match app.tabs().get(tab.idx) {
+                Some(s) => s,
+                None => continue,
+            };
+            let label = session.label();
+
+            // Title on line 1 (top of tab body).
+            let title_x_start = tab.body.x as f32 + (INDICATOR_STRIPE_WIDTH_PX as f32) + 6.0;
+            let title_y = tab.body.y as f32 + 2.0;
+            push_text_glyphs(
+                &mut glyphs,
+                &label.title,
+                (title_x_start, title_y),
+                cell_w_f,
+                fg,
+                bg,
+                tab.body.x + tab.body.w - tab.close_button.w - 4,
+            );
+
+            // Subtitle on line 2 (below title).
+            let subtitle_x_start = title_x_start;
+            let subtitle_y = title_y + cell_h_f;
+            push_text_glyphs(
+                &mut glyphs,
+                &label.subtitle,
+                (subtitle_x_start, subtitle_y),
+                cell_w_f,
+                fg,
+                bg,
+                tab.body.x + tab.body.w - tab.close_button.w - 4,
+            );
+
+            // `×` glyph centered in the close button. The TextPipeline's
+            // fragment shader forces alpha=1, so we want bg to match the tab
+            // body — the close-button-rect overlay is drawn underneath in the
+            // RectInstance pass, but the × glyph's bg rectangle would override
+            // it. Using `bg` here makes the close button visually defined by
+            // the × glyph alone.
+            let close_glyph_x =
+                tab.close_button.x as f32 + (tab.close_button.w as f32 - cell_w_f) / 2.0;
+            let close_glyph_y =
+                tab.close_button.y as f32 + (tab.close_button.h as f32 - cell_h_f) / 2.0;
+            glyphs.push(GlyphInstance::new(
+                close_glyph_x,
+                close_glyph_y,
+                x_glyph_idx(),
+                fg,
+                bg,
+            ));
+        }
+
+        // `+` glyph centered in the new-tab button. Use BG_INACTIVE so the
+        // glyph's bg rectangle blends into the tab-bar strip; the visible mark
+        // is just the `+` character itself.
+        let nb = layout.new_tab_button;
+        let plus_glyph_x = nb.x as f32 + (nb.w as f32 - cell_w_f) / 2.0;
+        let plus_glyph_y = nb.y as f32 + (nb.h as f32 - cell_h_f) / 2.0;
+        glyphs.push(GlyphInstance::new(
+            plus_glyph_x,
+            plus_glyph_y,
+            plus_glyph_idx(),
+            FG_ACTIVE,
+            BG_INACTIVE,
+        ));
+
+        glyphs
+    }
+
+    /// Helper for the smoke checklist + tests: time since this renderer was
+    /// constructed, in seconds. Used to drive the pulse animation.
+    #[must_use]
+    pub fn elapsed_secs(&self) -> f32 {
+        self.epoch.elapsed().as_secs_f32()
+    }
+}
+
+impl Default for TabBarRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Convert a string to a sequence of `GlyphInstance`s laid out at integer
+/// pixel positions, clipped to a max-x boundary so titles/subtitles don't
+/// spill onto the close button.
+fn push_text_glyphs(
+    out: &mut Vec<GlyphInstance>,
+    s: &str,
+    pos: (f32, f32),
+    cell_w: f32,
+    fg: [f32; 4],
+    bg: [f32; 4],
+    max_x_px: u32,
+) {
+    let (x_start, y) = pos;
+    let mut x = x_start;
+    for c in s.chars() {
+        let glyph = glyph_index(c).unwrap_or(0);
+        if x + cell_w > max_x_px as f32 {
+            break;
+        }
+        out.push(GlyphInstance::new(x, y, glyph, fg, bg));
+        x += cell_w;
     }
 }
