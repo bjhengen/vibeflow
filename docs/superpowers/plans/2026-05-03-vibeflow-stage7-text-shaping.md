@@ -279,6 +279,9 @@ pub struct TextEngine {
     swash_cache: SwashCache,
     cell_w: u32,
     cell_h: u32,
+    /// Baseline y-coordinate within a cell, in pixels from cell top.
+    /// Read from cosmic-text's `LayoutRun::line_y` once at construction.
+    baseline_y: u32,
 }
 
 impl TextEngine {
@@ -298,9 +301,7 @@ impl TextEngine {
         // 'M' (the conventional widest monospace glyph) and read its advance.
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut font_system, metrics);
-        let attrs = Attrs::new()
-            .family(Family::Name("JetBrains Mono"))
-            .monospaced(true);
+        let attrs = Attrs::new().family(Family::Name("JetBrains Mono"));
         buffer.set_text(&mut font_system, "M", attrs, Shaping::Basic);
         buffer.shape_until_scroll(&mut font_system, false);
 
@@ -314,6 +315,10 @@ impl TextEngine {
             .context("cosmic-text produced no glyphs for 'M'")?;
         let cell_w = glyph.w.ceil() as u32;
         let cell_h = (line.line_height).ceil() as u32;
+        // `line.line_y` is the baseline y-coordinate within the line box, in
+        // pixels. Stash it so glyph placement can position the bitmap
+        // correctly relative to the baseline (NOT relative to cell top).
+        let baseline_y = line.line_y.ceil() as u32;
 
         drop(buffer);
 
@@ -322,6 +327,7 @@ impl TextEngine {
             swash_cache,
             cell_w,
             cell_h,
+            baseline_y,
         })
     }
 
@@ -330,6 +336,14 @@ impl TextEngine {
     #[must_use]
     pub fn cell_metrics(&self) -> (u32, u32) {
         (self.cell_w, self.cell_h)
+    }
+
+    /// Baseline y within a cell (pixels from cell top to baseline). Glyph
+    /// placement: `screen_y_for_glyph_top = cell_top + baseline_y - bearing_y`
+    /// where `bearing_y` is swash's `Placement::top` (positive for ascenders).
+    #[must_use]
+    pub fn baseline_y(&self) -> u32 {
+        self.baseline_y
     }
 
     /// Rasterize a single character. Returns `Some` for any glyph that
@@ -341,9 +355,7 @@ impl TextEngine {
     pub fn rasterize(&mut self, c: char) -> Option<RasterImage> {
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        let attrs = Attrs::new()
-            .family(Family::Name("JetBrains Mono"))
-            .monospaced(true);
+        let attrs = Attrs::new().family(Family::Name("JetBrains Mono"));
         buffer.set_text(
             &mut self.font_system,
             &c.to_string(),
@@ -381,7 +393,7 @@ impl TextEngine {
 Notes:
 - `cosmic_text::Metrics::new(font_size, line_height)` — we use 1.4× font size for line height, matching common terminal conventions (Stage 5 used fontdue's reported `new_line_size`, which was ~1.35×).
 - `Shaping::Basic` (not `Advanced`) skips programming ligatures so `==>` renders as three cells. Stage 8+ may switch to `Advanced` once the cell engine handles cluster widths.
-- Use `Attrs::monospaced(true)` so cosmic-text picks monospace fonts when JBM isn't available.
+- `Attrs::new().family(Family::Name("JetBrains Mono"))` is the cosmic-text 0.12-compatible call (no `.monospaced(true)` — that builder was added post-0.12). cosmic-text will fall back to system fonts via fontdb if JBM isn't found.
 
 - [ ] **Step 2: Add tests**
 
@@ -525,6 +537,8 @@ pub struct TextEngine {
     swash_cache: SwashCache,
     cell_w: u32,
     cell_h: u32,
+    /// Baseline y-coordinate within a cell, in pixels from cell top.
+    baseline_y: u32,
     // Atlas state.
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -533,12 +547,16 @@ pub struct TextEngine {
     atlas_h: u32,
     shelves: Vec<Shelf>,
     cache: HashMap<char, Option<GlyphRef>>, // None = unrenderable (e.g. color emoji), do not retry
+    /// True when the texture has been re-allocated (atlas grew). The caller
+    /// (`Renderer`) reads this each frame and rebuilds the bind group when set.
+    /// Reset on read by `texture_dirty()`.
+    atlas_dirty: bool,
     queue: Arc<wgpu::Queue>,
     device: Arc<wgpu::Device>,
 }
 ```
 
-(`Arc<Device>` and `Arc<Queue>` are passed in by `Renderer` so the engine can grow the texture without an external borrow gymnastics. `Renderer` already holds `Arc`s for these from Stage 4.)
+(`Arc<Device>` and `Arc<Queue>` are passed in by `Renderer`. **Stage 4 did NOT use Arcs** for these — `Renderer` holds plain `wgpu::Device`/`wgpu::Queue` fields. Task 4 Step 1 below explicitly wraps them when constructing the `Renderer`. Don't try to "restore" Arcs from a previous stage; introduce them fresh.)
 
 - [ ] **Step 2: Refactor the constructor**
 
@@ -558,9 +576,7 @@ impl TextEngine {
 
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut font_system, metrics);
-        let attrs = Attrs::new()
-            .family(Family::Name("JetBrains Mono"))
-            .monospaced(true);
+        let attrs = Attrs::new().family(Family::Name("JetBrains Mono"));
         buffer.set_text(&mut font_system, "M", attrs, Shaping::Basic);
         buffer.shape_until_scroll(&mut font_system, false);
         let line = buffer
@@ -573,6 +589,7 @@ impl TextEngine {
             .context("cosmic-text produced no glyphs for 'M'")?;
         let cell_w = glyph.w.ceil() as u32;
         let cell_h = line.line_height.ceil() as u32;
+        let baseline_y = line.line_y.ceil() as u32;
         drop(buffer);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -586,7 +603,11 @@ impl TextEngine {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // COPY_SRC is required for `grow_atlas` to use this texture as
+            // a source in `copy_texture_to_texture` when the atlas grows.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -606,6 +627,7 @@ impl TextEngine {
             swash_cache,
             cell_w,
             cell_h,
+            baseline_y,
             texture,
             view,
             sampler,
@@ -613,6 +635,7 @@ impl TextEngine {
             atlas_h: ATLAS_INITIAL_H,
             shelves: Vec::new(),
             cache: HashMap::new(),
+            atlas_dirty: false,
             queue,
             device,
         })
@@ -747,9 +770,9 @@ Add to `impl TextEngine`:
         self.texture = new_texture;
         self.view = self.texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.atlas_h = new_h;
-        // The bind group in QuadPipeline is now stale — Renderer will need
-        // to rebuild it. We expose `texture_dirty` so the caller can detect
-        // growth and refresh the bind group.
+        // The bind group in QuadPipeline is now stale — Renderer reads
+        // `texture_dirty()` next frame and rebuilds.
+        self.atlas_dirty = true;
     }
 
     fn upload_to_atlas(&self, x: u32, y: u32, w: u32, h: u32, data: &[u8]) {
@@ -790,7 +813,7 @@ Add to `impl TextEngine`:
     }
 ```
 
-Add `atlas_dirty: bool` to the struct, set it `true` in `grow_atlas`, initialise to `false` in `new`. The flag is the simplest way to tell the caller "your bind group is now stale" without making `TextEngine` know about pipelines.
+The `atlas_dirty: bool` field is included in the struct above and `new()`'s `Self { ... }` initializer; `grow_atlas` sets it `true`. The flag is the simplest way to tell the caller "your bind group is now stale" without making `TextEngine` know about pipelines.
 
 - [ ] **Step 4: Add tests**
 
@@ -798,9 +821,14 @@ Append to the `#[cfg(test)] mod tests` block:
 
 ```rust
     fn test_engine() -> TextEngine {
-        // Use wgpu's null backend so tests don't need a GPU.
+        // `Backends::GL` is wgpu's most portable backend on Linux, but it
+        // requires a usable OpenGL implementation (Mesa with software
+        // rendering at minimum: `LIBGL_ALWAYS_SOFTWARE=1`). On a vanilla
+        // Linux dev box this works; on a minimal Docker CI runner it may
+        // not. The tests below are marked `#[ignore]` so they only run
+        // when explicitly invoked (`cargo test -- --ignored`).
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::SECONDARY, // null backend on Linux test runners
+            backends: wgpu::Backends::GL,
             flags: wgpu::InstanceFlags::default(),
             dx12_shader_compiler: wgpu::Dx12Compiler::default(),
             gles_minor_version: wgpu::Gles3MinorVersion::default(),
@@ -810,16 +838,17 @@ Append to the `#[cfg(test)] mod tests` block:
             compatible_surface: None,
             force_fallback_adapter: true,
         }))
-        .expect("null adapter");
+        .expect("no GL adapter — try LIBGL_ALWAYS_SOFTWARE=1");
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor::default(),
             None,
         ))
-        .expect("null device");
+        .expect("request_device failed");
         TextEngine::new(Arc::new(device), Arc::new(queue)).unwrap()
     }
 
     #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_caches_repeat_lookups() {
         let mut engine = test_engine();
         let r1 = engine.glyph_for('A').unwrap();
@@ -828,6 +857,7 @@ Append to the `#[cfg(test)] mod tests` block:
     }
 
     #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_assigns_distinct_atlas_rects() {
         let mut engine = test_engine();
         let a = engine.glyph_for('A').unwrap();
@@ -841,6 +871,7 @@ Append to the `#[cfg(test)] mod tests` block:
     }
 
     #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn allocate_grows_atlas_when_shelves_fill() {
         let mut engine = test_engine();
         let initial_h = engine.atlas_size().1;
@@ -871,7 +902,13 @@ Append to the `#[cfg(test)] mod tests` block:
 
 You'll need `pollster = "0.3"` as a dev-dependency for `block_on`. Add it to `[dev-dependencies]` in `Cargo.toml` if not already present (Stage 4 added it for similar tests; check `Cargo.toml` first).
 
-If creating a wgpu null adapter in CI is flaky on the test machine, gate the GPU-touching tests behind `#[cfg(feature = "gpu_tests")]` or fall back to `#[ignore]` with a comment that they're smoke-only. Plan-default: keep them on, mark `#[ignore]` only if the test suite breaks.
+The three GPU-touching tests are `#[ignore]` by default because `Backends::GL` requires Mesa with usable software GL on headless Linux runners. The Task 1 tests (`cell_metrics_returns_jbm_pitch_at_16px`, `rasterize_*`) don't touch wgpu and pass unconditionally — those are the primary TDD gate. Smoke testing in Task 9 covers the GPU paths end-to-end.
+
+Run the ignored ones manually when developing locally:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 cargo test -p vibeflow --lib render::text_engine -- --ignored
+```
 
 - [ ] **Step 5: Verify**
 
@@ -883,9 +920,13 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
-Expected: 4 (Task 1) + 3 (Task 2) = 7 text_engine tests pass; total lib count rises to 133.
+Expected: 4 (Task 1) text_engine tests run + 3 (Task 2) `#[ignore]`d → default `cargo test` shows 4 passed, 3 ignored; total lib count rises to 130 passing (with 3 ignored).
 
-If the wgpu null adapter setup fails on CI, mark the three GPU-touching tests as `#[ignore]` and re-run. The `cell_metrics_returns_jbm_pitch_at_16px` and `rasterize_*` tests from Task 1 don't need wgpu and should pass unconditionally.
+To exercise the ignored tests locally:
+
+```bash
+LIBGL_ALWAYS_SOFTWARE=1 cargo test -p vibeflow --lib render::text_engine -- --ignored
+```
 
 - [ ] **Step 6: Commit**
 
@@ -1354,7 +1395,18 @@ pub struct Renderer {
 }
 ```
 
-`Arc<Device>` and `Arc<Queue>` were already present in Stage 4 (passed into `GlyphAtlas::new`). If Stage 6 inadvertently broke the Arc setup, restore it: `let device = Arc::new(device);` and `let queue = Arc::new(queue);` after `request_device`.
+**`Arc<Device>` / `Arc<Queue>` are NEW in Stage 7.** Stages 4–6 stored plain `wgpu::Device`/`wgpu::Queue` fields. `TextEngine` needs to call `&self.device` / `&self.queue` from inside its own methods (uploads, texture growth) without coordinating borrows with `Renderer`, so wrapping them is the cleanest fix.
+
+Inside `Renderer::new`, after `request_device` returns:
+
+```rust
+let device = Arc::new(device);
+let queue = Arc::new(queue);
+```
+
+Update the `Renderer` field types from `wgpu::Device` / `wgpu::Queue` to `Arc<wgpu::Device>` / `Arc<wgpu::Queue>`. The existing `Renderer::resize` and `Renderer::reconfigure` use `&self.device`, which works identically with `Arc<Device>` (deref coercion). No call-site changes elsewhere.
+
+Add `use std::sync::Arc;` at the top of `mod.rs` if it isn't already imported.
 
 In `Renderer::new`, replace the atlas + pipeline construction. The Stage 6 sequence was:
 
@@ -1383,7 +1435,7 @@ let cursor = crate::render::cursor::CursorBlink::new();
 let bell = crate::render::bell::BellFlash::new();
 ```
 
-Update the `Ok(Self { ... })` block to use the new field names.
+Update the `Ok(Self { ... })` block to use the new field names. Stage 6's `atlas`, `grid_pipeline`, and `text_pipeline` field initializers are gone; replaced by `text_engine`, `quad_pipeline`, `tab_bar_pipeline`, `tab_bar`, `cursor`, `bell`.
 
 The `Renderer::cell_pitch()` accessor (added in Stage 6 Task 1) now reads from `text_engine`:
 
@@ -1610,14 +1662,30 @@ pub fn build_cell_instances(
     y_offset_px: u32,
 ) -> Vec<QuadInstance> {
     use alacritty_terminal::index::Point;
+    use alacritty_terminal::vte::ansi::Rgb;
     use crate::render::colors::resolve_color;
+
+    /// Convert an alacritty `Rgb` (u8 channels) to the renderer's `[f32; 4]`
+    /// (0.0..=1.0, alpha=1.0). Same shape as the helper in `mod.rs`.
+    fn rgb_to_f32(rgb: Rgb) -> [f32; 4] {
+        [
+            rgb.r as f32 / 255.0,
+            rgb.g as f32 / 255.0,
+            rgb.b as f32 / 255.0,
+            1.0,
+        ]
+    }
 
     let cursor_visible = cursor.visible(now);
     let content = term.renderable_content();
     let cursor_pos = Point::new(content.cursor.point.line, content.cursor.point.column);
     let colors = content.colors;
-    let fg_default = [0.9_f32, 0.9, 0.9, 1.0];
-    let bg_default = [0.05_f32, 0.05, 0.07, 1.0];
+    // `resolve_color` returns `Rgb` (u8 channels); the function takes `Rgb`
+    // defaults too. These match the constants used by Stage 5/6's
+    // `build_cell_instances` in `mod.rs`.
+    let fg_default = Rgb { r: 0xe5, g: 0xe5, b: 0xe5 };
+    let bg_default = Rgb { r: 0x0e, g: 0x0e, b: 0x12 };
+    let baseline_y = text_engine.baseline_y() as f32;
 
     let mut out = Vec::new();
     for cell in content.display_iter {
@@ -1628,9 +1696,10 @@ pub fn build_cell_instances(
         }
         let row = line as u32;
 
-        let mut fg = resolve_color(cell.fg, &colors, fg_default, bg_default);
-        let mut bg = resolve_color(cell.bg, &colors, bg_default, fg_default);
+        let fg_rgb = resolve_color(cell.fg, &colors, fg_default, bg_default);
+        let bg_rgb = resolve_color(cell.bg, &colors, bg_default, fg_default);
         let is_cursor = cell.point == cursor_pos;
+        let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
         if is_cursor && cursor_visible {
             std::mem::swap(&mut fg, &mut bg);
         }
@@ -1647,9 +1716,10 @@ pub fn build_cell_instances(
             bearing_y: 0,
         });
 
-        // Always emit a background rect by drawing a quad with bg=bg, fg=bg
-        // and a zero-size atlas rect (so the alpha is 0 and the result is
-        // pure bg). Then emit a second quad for the glyph itself.
+        // Always emit a background rect (zero-size atlas rect → alpha=0 →
+        // pure bg). Then emit the glyph quad on top, positioned relative
+        // to the cell's baseline (not its top): the bitmap top sits at
+        // `baseline_y - bearing_y` below the cell origin.
         out.push(QuadInstance::new(
             screen_x,
             screen_y,
@@ -1665,7 +1735,7 @@ pub fn build_cell_instances(
         if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
             out.push(QuadInstance::new(
                 screen_x + glyph.bearing_x as f32,
-                screen_y + (cell_h as f32 - glyph.bearing_y as f32),
+                screen_y + baseline_y - glyph.bearing_y as f32,
                 glyph.atlas_w as f32,
                 glyph.atlas_h as f32,
                 glyph.atlas_x as f32,
@@ -1696,6 +1766,7 @@ pub fn build_banner_instances(
     let text_w = (glyph_count as f32) * (cell_w as f32);
     let text_x = (banner_w - text_w) / 2.0;
     let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
+    let baseline_y = text_engine.baseline_y() as f32;
 
     let amber: [f32; 4] = [
         0xff as f32 / 255.0,
@@ -1712,7 +1783,7 @@ pub fn build_banner_instances(
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
-                    text_y + (cell_h as f32 - glyph.bearing_y as f32),
+                    text_y + baseline_y - glyph.bearing_y as f32,
                     glyph.atlas_w as f32,
                     glyph.atlas_h as f32,
                     glyph.atlas_x as f32,
@@ -1736,8 +1807,20 @@ The two-quads-per-cell trick (background quad + glyph quad) keeps the shader sim
 
 - [ ] **Step 4: Delete `grid.rs`, `grid.wgsl`, `atlas.rs`**
 
+First confirm there are no remaining references in the rest of the tree:
+
 ```bash
 cd /home/bhengen/dev/vibeflow
+grep -rnE 'render::atlas|render::grid|GlyphAtlas|GridPipeline|CellInstance|ATLAS_LAYOUT|glyph_index' \
+  crates/vibeflow/src/ \
+  | grep -vE '(atlas|grid)\.(rs|wgsl):'
+```
+
+This grep excludes the soon-to-be-deleted files themselves; any remaining hits indicate a caller that needs migration. Stage 6's known callers (in `mod.rs` and `tabs.rs`) should already be migrated by Steps 1–3 of this task and Task 5's `tabs.rs` rewrite. If the grep produces output beyond what Tasks 4–5 already addressed, STOP and report.
+
+If the grep is clean, delete:
+
+```bash
 git rm crates/vibeflow/src/render/grid.rs
 git rm crates/vibeflow/src/render/grid.wgsl
 git rm crates/vibeflow/src/render/atlas.rs
@@ -1773,7 +1856,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
-Expected: clean. Test count drops by however many tests `atlas.rs` and `grid.rs` had (Stage 5 added 0 tests in atlas.rs, 0 in grid.rs — both modules are pure GPU code without unit tests). Total lib stays at 133 (post-Task-2).
+Expected: clean. `atlas.rs` and `grid.rs` had 0 tests (pure GPU code), so test count is unchanged. Default-running lib count stays at ~130 (4 from Task 1; 3 ignored from Task 2).
 
 If `cargo test` fails because some Stage 5/6 test referenced `atlas::glyph_index` or `grid::CellInstance`, STOP and report — the cited test should have already been migrated. Stage 6 didn't add any such tests; the only callers were inside `tabs.rs` and `mod.rs`.
 
@@ -1815,7 +1898,7 @@ pub fn build_glyphs(
 
 The Stage 6 body computed pixel positions per character via `cell_w_f` × char index, then pushed `GlyphInstance::new(x, y, glyph_idx, fg, bg)` with `glyph_idx = glyph_index(c).unwrap_or(0)`.
 
-Replace with `text_engine.glyph_for(c)` returning a `GlyphRef`, then push `QuadInstance::new(screen_x + bearing_x, screen_y + (cell_h - bearing_y), atlas_w, atlas_h, atlas_x, atlas_y, atlas_w, atlas_h, fg, bg)`.
+Replace with `text_engine.glyph_for(c)` returning a `GlyphRef`, then push `QuadInstance::new(screen_x + bearing_x, screen_y + baseline_y - bearing_y, atlas_w, atlas_h, atlas_x, atlas_y, atlas_w, atlas_h, fg, bg)` where `baseline_y = text_engine.baseline_y() as f32`.
 
 The helper `push_text_glyphs` from Stage 6 changes signature too:
 
@@ -1826,12 +1909,12 @@ fn push_text_glyphs(
     s: &str,
     pos: (f32, f32),
     cell_w: f32,
-    cell_h: f32,
     fg: [f32; 4],
     bg: [f32; 4],
     max_x_px: u32,
 ) {
     let (x_start, y) = pos;
+    let baseline_y = text_engine.baseline_y() as f32;
     let mut x = x_start;
     for c in s.chars() {
         if x + cell_w > max_x_px as f32 {
@@ -1841,7 +1924,7 @@ fn push_text_glyphs(
             if g.atlas_w > 0 && g.atlas_h > 0 {
                 out.push(crate::render::quad::QuadInstance::new(
                     x + g.bearing_x as f32,
-                    y + (cell_h - g.bearing_y as f32),
+                    y + baseline_y - g.bearing_y as f32,
                     g.atlas_w as f32,
                     g.atlas_h as f32,
                     g.atlas_x as f32,
@@ -1858,7 +1941,9 @@ fn push_text_glyphs(
 }
 ```
 
-The `cell_h` parameter is new — needed for baseline positioning.
+Notes:
+- The `cell_h` parameter from Stage 6's signature is gone — baseline is read from `text_engine.baseline_y()` instead. Update both call sites in `build_glyphs` to drop the `cell_h_f` argument.
+- The bearing math `y + baseline_y - bearing_y` matches `build_cell_instances` (Task 4 Step 3) so cell text and tab text share a consistent baseline.
 
 The `+` and `×` button glyphs change too: the Stage 6 code called `glyph_index('+')` and `glyph_index('×')`. Replace with `text_engine.glyph_for('+')` and `text_engine.glyph_for('×')`.
 
@@ -1901,7 +1986,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 
 The window should show the shell prompt, a blinking cursor (Task 7 wires the actual blink — for now it's just visible), and tab text. Type `echo hello`. Each character renders correctly via cosmic-text.
 
-If glyphs render at wrong positions (e.g. clipped at the top of cells), the bearing math is off. The conventional formula is: `screen_y_for_glyph = cell_origin_y + (line_height - bearing_y)`. The plan uses `screen_y + (cell_h as f32 - g.bearing_y as f32)`. If glyphs sit too high or too low, adjust by ±cell_h/4.
+If glyphs still render at wrong positions despite the `baseline_y - bearing_y` formula, double-check that `TextEngine::baseline_y()` returns a sensible value (~75% of `cell_h` for typical fonts at 1.4× line height). Compare with cosmic-text's `editor` example, which uses the same `LayoutRun::line_y` semantics. Don't invent — copy.
 
 - [ ] **Step 6: Commit**
 
@@ -2009,7 +2094,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
-Expected: 13 (Stage 6) + 2 (Task 6) = 15 render::tabs tests; total lib = 135.
+Expected: 13 (Stage 6) + 2 (Task 6) = 15 render::tabs tests; total default-running lib ≈ 132.
 
 Smoke: open vibeflow, emit `printf '\033]1338;state=working\007'`. The subtitle on the active tab changes to `working` (Stage 6 already does this) AND the subtitle text renders in blue (new in Stage 7).
 
@@ -2161,7 +2246,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
-Expected: 3 new tests pass; total lib = 138.
+Expected: 3 new tests pass; total default-running lib ≈ 135.
 
 Smoke: open vibeflow, look at the cursor. It blinks (visible / invisible) once per second. Type a character — the cursor jumps to the new position, still blinking.
 
@@ -2290,28 +2375,41 @@ pub enum SessionEvent {
 
 Add `bell_pending: bool` to `PtySession`. Initialise to `false` in `spawn`.
 
-vte's `Processor::advance` doesn't directly expose BEL — it's part of the C0 control set. The simplest hook is to scan the byte stream BEFORE handing it to vte: in `poll`, when iterating `DispatchEvent::PassThrough { byte }`, check if `byte == 0x07` and set `bell_pending = true`.
+vte's `Processor::advance` doesn't directly expose BEL — it's part of the C0 control set. The simplest hook is to scan the byte stream BEFORE handing it to vte: inside the existing `DispatchEvent::PassThrough(bytes)` arm in `PtySession::poll`, check each byte for `0x07` and set `bell_pending = true`.
 
-In `poll`, find the existing pass-through arm:
-
-```rust
-DispatchEvent::PassThrough { byte } => {
-    self.parser.advance(&mut self.term, byte);
-}
-```
-
-Replace with:
+The existing arm is a tuple variant `DispatchEvent::PassThrough(Vec<u8>)` (defined in `crates/vibeflow/src/session/osc.rs:57`). The Stage 6 body looks like:
 
 ```rust
-DispatchEvent::PassThrough { byte } => {
-    if byte == 0x07 {
-        self.bell_pending = true;
+DispatchEvent::PassThrough(bytes) => {
+    self.tracker.on_input(TrackerInput::OutputObserved, now);
+    // Feed bytes through the VT parser into Term. This is
+    // where the grid actually updates.
+    for &byte in &bytes {
+        self.parser.advance(&mut self.term, byte);
     }
-    self.parser.advance(&mut self.term, byte);
+    events.push(SessionEvent::TermUpdated);
 }
 ```
 
-After the inner loop in `poll`, drain the flag:
+Insert the bell check inside the existing byte loop:
+
+```rust
+DispatchEvent::PassThrough(bytes) => {
+    self.tracker.on_input(TrackerInput::OutputObserved, now);
+    for &byte in &bytes {
+        // BEL bytes that terminate an OSC sequence are consumed by the
+        // OscDispatcher and never reach here; only stray BEL (e.g.
+        // `printf '\007'`) surfaces as PassThrough.
+        if byte == 0x07 {
+            self.bell_pending = true;
+        }
+        self.parser.advance(&mut self.term, byte);
+    }
+    events.push(SessionEvent::TermUpdated);
+}
+```
+
+After the dispatcher loop completes (i.e. after the outer `for ev in self.dispatcher.feed(&buf)` block), drain the flag into a `SessionEvent::Bell`:
 
 ```rust
 if self.bell_pending {
@@ -2320,7 +2418,7 @@ if self.bell_pending {
 }
 ```
 
-(Place this after the existing `events.push(SessionEvent::TermUpdated)` block.)
+(Place this just before the existing `Err(mpsc::TryRecvError::Empty) => break,` arm — i.e. after the `Ok(buf)` handling completes for this iteration.)
 
 - [ ] **Step 3: Add a test for the bell pipeline**
 
@@ -2377,7 +2475,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
-Expected: 4 new bell.rs tests + 1 new session test = 5 new; total lib = 143. The session test is integration-flavored (spawns a real shell); if it's flaky on CI, mark `#[ignore]` and document.
+Expected: 4 new bell.rs tests + 1 new session test = 5 new; total default-running lib ≈ 140 (or 139 if the session test ends up `#[ignore]`d). The session test is integration-flavored (spawns a real shell); if it's flaky on CI, mark `#[ignore]` and document.
 
 Smoke: open vibeflow, run `printf '\007'`. The window briefly tints white. Run again — same flash.
 
@@ -2461,13 +2559,13 @@ cargo fmt --all -- --check && \
 ```
 
 Expected test count: every Stage-6 test still passes (126 lib + 3 + 4 + 27 = 160) plus Stage 7's additions:
-- Task 1: 4 tests (text_engine basics)
-- Task 2: 3 tests (atlas growth — may be `#[ignore]` if wgpu null adapter is unavailable)
+- Task 1: 4 tests (text_engine basics — no wgpu)
+- Task 2: 3 tests (atlas growth — `#[ignore]` by default; require `LIBGL_ALWAYS_SOFTWARE=1` + `--ignored`)
 - Task 6: 2 tests (subtitle_color)
 - Task 7: 3 tests (cursor blink)
 - Task 8: 4 + 1 = 5 tests (bell)
 
-Net: 17 new lib tests → ~143 lib + 3 + 4 + 27 = 177 Rust tests + 1 proptest + 15 npm.
+Net: 14 new lib tests run by default + 3 ignored = 17 tests added → default `cargo test` shows ~140 lib passing + 3 + 4 + 27 = 174 Rust tests + 3 ignored + 1 proptest + 15 npm.
 
 - [ ] **Step 3: 60-second fuzz on the protocol parser**
 
@@ -2537,12 +2635,12 @@ Mapping Stage 7 spec requirements → tasks:
   - `SessionEvent::Bell` — Task 8, handled in `WindowApp::handle_session_event`.
 - **Clippy / fmt discipline:** every code-changing task ends with verify-fmt+clippy.
 - **Threading-model discipline:** unchanged. `TextEngine`, `QuadPipeline`, `CursorBlink`, `BellFlash` all on the main thread.
-- **Test count tracking:** Stage 6 ended at 126 lib tests. Stage 7 ends at ~143 lib tests (counts may vary ±3 if any GPU-touching tests are `#[ignore]`d on CI).
+- **Test count tracking:** Stage 6 ended at 126 lib tests. Stage 7 ends at ~140 default-running lib tests + 3 ignored (the wgpu-touching atlas tests in `text_engine`, plus possibly the session BEL integration test if it proves flaky).
 
 ## Notable plan risks
 
 1. **cosmic-text's API isn't perfectly stable across 0.x releases.** Pinning to `cosmic-text = "0.12"` should be safe; if the tree resolves to a later 0.x with an incompatible `Buffer::shape_until_scroll` signature or `physical(...)` method, Task 1's verify will fail on the first cargo build. The fix: read the new API docs and adapt one or two call sites, then re-dispatch.
-2. **Glyph baseline math is the most likely source of "looks wrong" bugs.** The plan uses `screen_y + (cell_h - bearing_y)` to position glyphs. If glyphs render at the wrong vertical position, the implementer should compare with cosmic-text's own example renderer to see the correct formula. Don't invent — copy.
+2. **Glyph baseline math.** The plan uses `screen_y + baseline_y - bearing_y` where `baseline_y` comes from cosmic-text's `LayoutRun::line_y` at construction time (`TextEngine::new`). If glyphs still render at the wrong vertical position, suspect `line_y`'s semantics first — cosmic-text's docs are the authority. Compare with the `editor` example. Don't invent — copy.
 3. **Atlas growth path is GPU-side.** If `grow_atlas` produces a black atlas, the bind-group rebind isn't being triggered. Task 3 Step 2 adds `texture_dirty` for exactly this; verify it's called every frame in Task 4's `Renderer::render`.
 4. **System fonts may be unavailable on minimal Docker test images.** If the CI runner has no CJK fonts, `rasterize_cjk_uses_system_fallback` returns None — that's fine; the test asserts only "doesn't panic". If it ever does panic, FontSystem's fontdb scanner had a bug and we should report upstream.
 5. **Bell test is integration-flavored.** It spawns a real `/bin/sh` and waits up to 2 s for output. On a heavily-loaded CI runner this could time out. If the test is flaky, mark `#[ignore]` and rely on smoke testing.
