@@ -2,11 +2,14 @@
 //! wgpu surface on a [`winit::window::Window`] and clears it to a solid color.
 //! Stage 5 layers the cell grid on top; Stage 6 adds the tab bar.
 
-pub mod atlas;
+pub mod atlas; // deleted in Task 4 Step 4 once grid.rs is also gone
+pub mod bell;
 pub mod colors;
-pub mod grid;
+pub mod cursor;
+pub mod grid; // deleted in Task 4 Step 4
+pub mod quad; // formerly `text` — see Step 3
 pub mod tabs;
-pub mod text;
+pub mod text_engine;
 
 use std::sync::Arc;
 
@@ -39,7 +42,7 @@ pub struct Renderer {
     /// Cell-grid render pipeline. One instanced draw per frame.
     grid_pipeline: crate::render::grid::GridPipeline,
     /// Pixel-position text pipeline (tab titles, subtitles, dead-tab banner, button glyphs).
-    text_pipeline: crate::render::text::TextPipeline,
+    text_pipeline: crate::render::quad::TextPipeline,
     /// Solid-color rectangle pipeline (tab backgrounds, indicator stripes, button bodies).
     tab_bar_pipeline: crate::render::tabs::TabBarPipeline,
     /// Per-frame TabBarRenderer (owns the pulse-animation epoch).
@@ -120,7 +123,7 @@ impl Renderer {
 
         let atlas = crate::render::atlas::GlyphAtlas::new(&device, &queue)?;
         let grid_pipeline = crate::render::grid::GridPipeline::new(&device, format, &atlas)?;
-        let text_pipeline = crate::render::text::TextPipeline::new(&device, format, &atlas)?;
+        let text_pipeline = crate::render::quad::TextPipeline::new(&device, format, &atlas)?;
         let tab_bar_pipeline = crate::render::tabs::TabBarPipeline::new(&device, format)?;
         let tab_bar = crate::render::tabs::TabBarRenderer::new();
 
@@ -294,7 +297,7 @@ impl Renderer {
                 let mut x = text_x;
                 for c in BANNER_TEXT.chars() {
                     let glyph = crate::render::atlas::glyph_index(c).unwrap_or(0);
-                    banner_glyphs.push(crate::render::text::GlyphInstance::new(
+                    banner_glyphs.push(crate::render::quad::GlyphInstance::new(
                         x,
                         text_y,
                         glyph,

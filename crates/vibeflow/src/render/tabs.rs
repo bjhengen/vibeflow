@@ -13,7 +13,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::app::App;
 use crate::render::atlas::{glyph_index, GlyphAtlas};
-use crate::render::text::GlyphInstance;
+use crate::render::quad::GlyphInstance;
 use crate::session::tracker::TabState;
 
 /// Stage-6 default tab-bar height in pixels, expressed as (line_height × 2 + padding).
