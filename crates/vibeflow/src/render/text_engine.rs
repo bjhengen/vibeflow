@@ -86,7 +86,7 @@ pub struct TextEngine {
     atlas_w: u32,
     atlas_h: u32,
     shelves: Vec<Shelf>,
-    cache: HashMap<char, Option<GlyphRef>>, // None = unrenderable (e.g. color emoji), do not retry
+    cache: HashMap<char, Option<GlyphRef>>, // None = no font coverage for this codepoint; do not retry
     /// True when the texture has been re-allocated (atlas grew). The caller
     /// (`Renderer`) reads this each frame and rebuilds the bind group when set.
     /// Reset on read by `texture_dirty()`.
@@ -188,12 +188,9 @@ impl TextEngine {
         self.baseline_y
     }
 
-    /// Rasterize a single character. Returns `Some` for any glyph that
-    /// cosmic-text + the font stack can render; `None` only if every fallback
-    /// font lacks coverage.
-    ///
-    /// Stage 7 returns R8 alpha. Color emoji glyphs (which swash returns as
-    /// `SwashContent::Color`) are skipped — they're Stage 7.5 territory.
+    /// Rasterize a single character. Returns `Some` for any glyph the font
+    /// stack can produce, `None` only if no fallback covers the codepoint.
+    /// `RasterImage::kind` distinguishes mono (R8) from color (RGBA premultiplied).
     pub fn rasterize(&mut self, c: char) -> Option<RasterImage> {
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
@@ -227,8 +224,8 @@ impl TextEngine {
     }
 
     /// Look up (or rasterize + atlas) the glyph for `c`. Returns `None` for
-    /// characters the font stack can't render or color-emoji codepoints.
-    /// The cache memoises both successes and failures.
+    /// characters the font stack can't render. The cache memoises both
+    /// successes and failures.
     pub fn glyph_for(&mut self, c: char) -> Option<GlyphRef> {
         if let Some(cached) = self.cache.get(&c) {
             return *cached;
@@ -534,7 +531,7 @@ mod tests {
         let mut engine = test_engine();
         let img = engine.rasterize('A').unwrap();
         assert_eq!(img.kind, GlyphKind::Mono);
-        assert_eq!(img.data.len(), (img.width * img.height) as usize);
+        assert_eq!(img.data.len(), img.width as usize * img.height as usize);
     }
 
     #[test]
@@ -545,7 +542,7 @@ mod tests {
         if let Some(img) = engine.rasterize('🎉') {
             assert_eq!(img.kind, GlyphKind::Color);
             // RGBA: data length = 4 * width * height.
-            assert_eq!(img.data.len(), (4 * img.width * img.height) as usize);
+            assert_eq!(img.data.len(), 4 * img.width as usize * img.height as usize);
         }
     }
 }
