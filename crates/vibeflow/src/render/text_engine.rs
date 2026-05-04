@@ -401,12 +401,13 @@ impl TextEngine {
         shelf_pack(&mut self.color_shelves, self.color_atlas_w, w, h)
     }
 
-    /// Double mono atlas height until `min_height` fits. Copies old contents.
-    fn grow_mono_atlas(&mut self, min_height: u32) {
-        let mut new_h = self.atlas_h;
-        while new_h < min_height {
-            new_h *= 2;
-        }
+    /// Reallocate the mono atlas at height `new_h` (caller already computed it
+    /// via `double_until_fits`). Copies old contents.
+    fn grow_mono_atlas(&mut self, new_h: u32) {
+        debug_assert!(
+            new_h >= self.atlas_h,
+            "grow_mono_atlas called with height smaller than current"
+        );
         let new_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vibeflow-text-engine-atlas"),
             size: wgpu::Extent3d {
@@ -457,12 +458,13 @@ impl TextEngine {
         self.atlases_dirty = true;
     }
 
-    /// Double color atlas height until `min_height` fits. Copies old contents.
-    fn grow_color_atlas(&mut self, min_height: u32) {
-        let mut new_h = self.color_atlas_h;
-        while new_h < min_height {
-            new_h *= 2;
-        }
+    /// Reallocate the color atlas at height `new_h` (caller already computed it
+    /// via `double_until_fits`). Copies old contents.
+    fn grow_color_atlas(&mut self, new_h: u32) {
+        debug_assert!(
+            new_h >= self.color_atlas_h,
+            "grow_color_atlas called with height smaller than current"
+        );
         let new_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("vibeflow-text-engine-color-atlas"),
             size: wgpu::Extent3d {
@@ -740,22 +742,20 @@ mod tests {
     fn color_atlas_grows_when_full() {
         let mut engine = test_engine();
         let initial_h = engine.color_atlas_size().1;
-        // Force a barrage of distinct emoji codepoints. The Smiling-Face block
-        // (U+1F600 …) gives ~80 distinct emoji; at typical 16×16 size,
-        // 80 emoji = 80 × 16 × 16 × 4 = 81 920 B, fits in a single 256×256
-        // atlas (262 144 B). Use a wider span to force growth.
-        for code in 0x1F600u32..=0x1F64Fu32 {
+        // Force a barrage of distinct emoji codepoints. We track whether any
+        // color glyph was actually rasterized so the assertion strengthens on
+        // systems with a color emoji font (e.g. slmbeast/Noto Color Emoji) and
+        // gracefully degrades on CI runners that lack one.
+        let mut any_color = false;
+        for code in (0x1F600u32..=0x1F64Fu32).chain(0x1F300u32..=0x1F320u32) {
             if let Some(c) = char::from_u32(code) {
-                engine.glyph_for(c);
+                if let Some(g) = engine.glyph_for(c) {
+                    if g.kind == GlyphKind::Color {
+                        any_color = true;
+                    }
+                }
             }
         }
-        for code in 0x1F300u32..=0x1F320u32 {
-            if let Some(c) = char::from_u32(code) {
-                engine.glyph_for(c);
-            }
-        }
-        // If env has no color emoji font, glyph_for returns None and the
-        // atlas never grows. Both outcomes are valid; just assert no panic.
         let (_, h_after) = engine.color_atlas_size();
         assert!(
             h_after >= initial_h && h_after % initial_h == 0,
@@ -763,5 +763,14 @@ mod tests {
             h_after,
             initial_h
         );
+        if any_color {
+            assert!(
+                h_after > initial_h,
+                "color atlas did not grow despite color emoji being available \
+                 (initial {}, after {})",
+                initial_h,
+                h_after,
+            );
+        }
     }
 }
