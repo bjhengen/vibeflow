@@ -388,6 +388,10 @@ pub fn build_cell_instances(
         }
         let row = line as u32;
 
+        if should_skip_cell(cell.flags) {
+            continue;
+        }
+
         // IMPORTANT: preserve Stage 6 mod.rs's resolve_color arg order:
         // `(color, &Colors, fg_default, bg_default)` — same order for both fg
         // and bg lookups.
@@ -401,6 +405,11 @@ pub fn build_cell_instances(
 
         let screen_x = (col * cell_w) as f32;
         let screen_y = (row * cell_h + y_offset_px) as f32;
+        let bg_w = if cell_is_wide(cell.flags) {
+            (cell_w * 2) as f32
+        } else {
+            cell_w as f32
+        };
 
         let glyph = text_engine.glyph_for(cell.c).unwrap_or(GlyphRef {
             kind: GlyphKind::Mono,
@@ -421,7 +430,7 @@ pub fn build_cell_instances(
         out.push(QuadInstance::new(
             screen_x,
             screen_y,
-            cell_w as f32,
+            bg_w,
             cell_h as f32,
             0.0,
             0.0,
@@ -448,6 +457,24 @@ pub fn build_cell_instances(
         }
     }
     out
+}
+
+/// Returns `true` if a cell with the given flags should be skipped entirely
+/// during cell-instance building (no bg, no glyph). Covers both
+/// `WIDE_CHAR_SPACER` (trailing spacer after a wide char) and
+/// `LEADING_WIDE_CHAR_SPACER` (line-leading spacer when a wide char wrapped
+/// from the previous line).
+pub(crate) fn should_skip_cell(flags: alacritty_terminal::term::cell::Flags) -> bool {
+    flags.intersects(
+        alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER
+            | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER,
+    )
+}
+
+/// Returns `true` if a cell's background quad should be 2 × cell_w wide
+/// (covering itself + its WIDE_CHAR_SPACER neighbour).
+pub(crate) fn cell_is_wide(flags: alacritty_terminal::term::cell::Flags) -> bool {
+    flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR)
 }
 
 /// Build the dead-tab banner's centered text quads.
@@ -499,4 +526,42 @@ pub fn build_banner_instances(
         x += cell_w as f32;
     }
     out
+}
+
+#[cfg(test)]
+mod cell_layout_tests {
+    use super::{cell_is_wide, should_skip_cell};
+    use alacritty_terminal::term::cell::Flags;
+
+    #[test]
+    fn skips_wide_char_spacer() {
+        assert!(should_skip_cell(Flags::WIDE_CHAR_SPACER));
+    }
+
+    #[test]
+    fn skips_leading_wide_char_spacer() {
+        // Wrapped-wide-char start-of-line spacer.
+        assert!(should_skip_cell(Flags::LEADING_WIDE_CHAR_SPACER));
+    }
+
+    #[test]
+    fn does_not_skip_normal_cell() {
+        assert!(!should_skip_cell(Flags::empty()));
+    }
+
+    #[test]
+    fn detects_wide_char() {
+        assert!(cell_is_wide(Flags::WIDE_CHAR));
+    }
+
+    #[test]
+    fn does_not_widen_normal_cell() {
+        assert!(!cell_is_wide(Flags::empty()));
+    }
+
+    #[test]
+    fn does_not_skip_wide_char_itself() {
+        // The WIDE_CHAR cell renders normally (and gets a 2× bg).
+        assert!(!should_skip_cell(Flags::WIDE_CHAR));
+    }
 }
