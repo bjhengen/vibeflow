@@ -770,6 +770,10 @@ fn push_text_glyphs(
         }
         if let Some(g) = text_engine.glyph_for(c) {
             if g.atlas_w > 0 && g.atlas_h > 0 {
+                let kind: u32 = match g.kind {
+                    crate::render::text_engine::GlyphKind::Mono => crate::render::quad::KIND_MONO,
+                    crate::render::text_engine::GlyphKind::Color => crate::render::quad::KIND_COLOR,
+                };
                 out.push(crate::render::quad::QuadInstance::new(
                     x + g.bearing_x as f32,
                     y + baseline_y - g.bearing_y as f32,
@@ -781,6 +785,7 @@ fn push_text_glyphs(
                     g.atlas_h as f32,
                     fg,
                     bg,
+                    kind,
                 ));
             }
         }

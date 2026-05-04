@@ -6,7 +6,12 @@
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 
-/// One textured quad. 64 bytes total.
+/// Glyph kind: mono (R8 coverage) vs colour (premultiplied RGBA).
+pub const KIND_MONO: u32 = 0;
+/// Glyph kind: colour emoji from the colour atlas.
+pub const KIND_COLOR: u32 = 1;
+
+/// One textured quad. 80 bytes total (5 × 16).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct QuadInstance {
@@ -16,11 +21,14 @@ pub struct QuadInstance {
     pub atlas_rect_px: [f32; 4],
     pub fg: [f32; 4],
     pub bg: [f32; 4],
+    /// Lane 0: glyph kind (0 = Mono, 1 = Color). Lanes 1..=3 reserved for
+    /// future per-instance flags. Total instance size: 80 bytes (5 × 16).
+    pub flags: [u32; 4],
 }
 
 impl QuadInstance {
-    #[must_use]
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         screen_x: f32,
         screen_y: f32,
@@ -32,22 +40,29 @@ impl QuadInstance {
         atlas_h: f32,
         fg: [f32; 4],
         bg: [f32; 4],
+        kind: u32,
     ) -> Self {
         Self {
             screen_rect_px: [screen_x, screen_y, screen_w, screen_h],
             atlas_rect_px: [atlas_x, atlas_y, atlas_w, atlas_h],
             fg,
             bg,
+            flags: [kind, 0, 0, 0],
         }
     }
 }
 
-/// 16-byte uniform: surface size + atlas size.
+/// 32-byte uniform: surface size + mono atlas size + colour atlas size + pad.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct QuadUniform {
     surface_size_px: [f32; 2],
-    atlas_size_px: [f32; 2],
+    mono_atlas_size_px: [f32; 2],
+    color_atlas_size_px: [f32; 2],
+    /// 8-byte pad to keep the struct at a multiple of 16 bytes for std140-ish
+    /// alignment. WGSL `vec2<f32>` is 8-byte aligned but the struct as a whole
+    /// must be 16-byte aligned for uniform buffer binding.
+    _pad: [f32; 2],
 }
 
 pub struct QuadPipeline {
@@ -63,14 +78,15 @@ const INITIAL_QUAD_CAPACITY: u64 = 80 * 24; // matches default Term size
 const QUAD_STRIDE: u64 = std::mem::size_of::<QuadInstance>() as u64;
 
 impl QuadPipeline {
-    /// Build the pipeline. The `atlas_view` and `atlas_sampler` come from
-    /// `TextEngine`; the bind group is rebuilt by `rebind_atlas` whenever
-    /// the engine grows the texture.
+    /// Build the pipeline. The `mono_view`, `color_view`, and `sampler` come
+    /// from `TextEngine`; the bind group is rebuilt by `rebind_atlases`
+    /// whenever the engine grows either texture.
     pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
-        atlas_view: &wgpu::TextureView,
-        atlas_sampler: &wgpu::Sampler,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
     ) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vibeflow-quad-shader"),
@@ -103,6 +119,16 @@ impl QuadPipeline {
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -120,8 +146,9 @@ impl QuadPipeline {
             device,
             &bind_group_layout,
             &uniform_buffer,
-            atlas_view,
-            atlas_sampler,
+            mono_view,
+            color_view,
+            sampler,
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -159,6 +186,11 @@ impl QuadPipeline {
                             offset: 48,
                             shader_location: 3,
                             format: wgpu::VertexFormat::Float32x4,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 64,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Uint32x4,
                         },
                     ],
                 }],
@@ -209,8 +241,9 @@ impl QuadPipeline {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         uniform_buffer: &wgpu::Buffer,
-        atlas_view: &wgpu::TextureView,
-        atlas_sampler: &wgpu::Sampler,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vibeflow-quad-bind-group"),
@@ -222,31 +255,37 @@ impl QuadPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                    resource: wgpu::BindingResource::TextureView(mono_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(atlas_sampler),
+                    resource: wgpu::BindingResource::TextureView(color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         })
     }
 
-    /// Rebuild the bind group with a new atlas view (after `TextEngine` grew
-    /// the texture). Caller polls `TextEngine::texture_dirty()` and calls
+    /// Rebuild the bind group with new atlas views (after `TextEngine` grew
+    /// either texture). Caller polls `TextEngine::texture_dirty()` and calls
     /// this when it returns `true`.
-    pub fn rebind_atlas(
+    pub fn rebind_atlases(
         &mut self,
         device: &wgpu::Device,
-        atlas_view: &wgpu::TextureView,
-        atlas_sampler: &wgpu::Sampler,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
     ) {
         self.bind_group = Self::make_bind_group(
             device,
             &self.bind_group_layout,
             &self.uniform_buffer,
-            atlas_view,
-            atlas_sampler,
+            mono_view,
+            color_view,
+            sampler,
         );
     }
 
@@ -273,14 +312,17 @@ impl QuadPipeline {
         queue: &wgpu::Queue,
         instances: &[QuadInstance],
         surface_size_px: (u32, u32),
-        atlas_size_px: (u32, u32),
+        mono_atlas_size_px: (u32, u32),
+        color_atlas_size_px: (u32, u32),
     ) {
         if instances.is_empty() {
             return;
         }
         let uniform = QuadUniform {
             surface_size_px: [surface_size_px.0 as f32, surface_size_px.1 as f32],
-            atlas_size_px: [atlas_size_px.0 as f32, atlas_size_px.1 as f32],
+            mono_atlas_size_px: [mono_atlas_size_px.0 as f32, mono_atlas_size_px.1 as f32],
+            color_atlas_size_px: [color_atlas_size_px.0 as f32, color_atlas_size_px.1 as f32],
+            _pad: [0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
@@ -370,6 +412,11 @@ pub fn build_cell_instances(
             bearing_y: 0,
         });
 
+        let glyph_kind: u32 = match glyph.kind {
+            GlyphKind::Mono => KIND_MONO,
+            GlyphKind::Color => KIND_COLOR,
+        };
+
         // Background rect: zero-size atlas rect → alpha=0 → pure bg.
         out.push(QuadInstance::new(
             screen_x,
@@ -382,6 +429,7 @@ pub fn build_cell_instances(
             0.0,
             bg,
             bg,
+            KIND_MONO,
         ));
         if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
             out.push(QuadInstance::new(
@@ -395,6 +443,7 @@ pub fn build_cell_instances(
                 glyph.atlas_h as f32,
                 fg,
                 bg,
+                glyph_kind,
             ));
         }
     }
@@ -443,6 +492,7 @@ pub fn build_banner_instances(
                     glyph.atlas_h as f32,
                     amber,
                     black,
+                    KIND_MONO,
                 ));
             }
         }
