@@ -20,6 +20,7 @@ pub struct QuadInstance {
 
 impl QuadInstance {
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         screen_x: f32,
         screen_y: f32,
