@@ -662,6 +662,36 @@ Append to `mod tests` in `text_engine.rs`:
         let g = engine.glyph_for('A').unwrap();
         assert_eq!(g.kind, GlyphKind::Mono);
     }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn color_atlas_grows_when_full() {
+        let mut engine = test_engine();
+        let initial_h = engine.color_atlas_size().1;
+        // Force a barrage of distinct emoji codepoints. The Smiling-Face block
+        // (U+1F600 …) gives ~80 distinct emoji; at typical 16×16 size,
+        // 80 emoji = 80 × 16 × 16 × 4 = 81 920 B, fits in a single 256×256
+        // atlas (262 144 B). Use a wider span to force growth.
+        for code in 0x1F600u32..=0x1F64Fu32 {
+            if let Some(c) = char::from_u32(code) {
+                engine.glyph_for(c);
+            }
+        }
+        for code in 0x1F300u32..=0x1F320u32 {
+            if let Some(c) = char::from_u32(code) {
+                engine.glyph_for(c);
+            }
+        }
+        // If env has no color emoji font, glyph_for returns None and the
+        // atlas never grows. Both outcomes are valid; just assert no panic.
+        let (_, h_after) = engine.color_atlas_size();
+        assert!(
+            h_after >= initial_h && h_after % initial_h == 0,
+            "color atlas height {} is not a power-of-two multiple of {}",
+            h_after,
+            initial_h
+        );
+    }
 ```
 
 NOTE: The Stage 7 test `glyph_for_caches_repeat_lookups` already exists and tests cache hits for ASCII. Don't duplicate.
@@ -676,7 +706,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -10
 ```
 
-Expected: build clean. 128 default + 11 ignored (Stage 7's 7 + Task 0's 2 + Task 1's 2). Clippy clean.
+Expected: build clean. 128 default + 12 ignored (Stage 7's 7 + Task 0's 2 + Task 1's 3). Clippy clean.
 
 NOTE: If the build fails because `Renderer::render` calls the old `texture_dirty` and the old `rebind_atlas`, those signatures still match what we have post-Task-1 — we just renamed `atlas_dirty` to `atlases_dirty` internally. The public API of `texture_dirty()` is unchanged. So `mod.rs` doesn't need to change in this task.
 
@@ -1312,7 +1342,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: build clean. 128 default tests pass + 11 ignored. clippy clean.
+Expected: build clean. 128 default tests pass + 12 ignored. clippy clean.
 
 LOCAL ONLY:
 ```bash
@@ -1362,11 +1392,15 @@ mod cell_layout_tests {
     use alacritty_terminal::term::cell::Flags;
 
     /// Returns true if a cell with the given flags should be skipped entirely
-    /// during cell-instance building (no bg, no glyph). Currently: the spacer
-    /// cell that sits to the right of a WIDE_CHAR is rendered by the wide
-    /// cell's 2-cell bg quad, so skipping prevents double-rendering.
+    /// during cell-instance building (no bg, no glyph). Two cases:
+    ///   - `WIDE_CHAR_SPACER`: the spacer cell that sits to the right of a
+    ///     WIDE_CHAR. The wide cell's 2-cell bg quad covers it; skipping
+    ///     prevents double-rendering.
+    ///   - `LEADING_WIDE_CHAR_SPACER`: emitted at the start of a line when a
+    ///     wide char wrapped from the previous line. Same skip logic — the
+    ///     wide-cell on the previous line's right edge is the visual.
     pub(super) fn should_skip_cell(flags: Flags) -> bool {
-        flags.contains(Flags::WIDE_CHAR_SPACER)
+        flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
     }
 
     /// Returns true if a cell's background quad should be 2 × cell_w wide
@@ -1378,6 +1412,12 @@ mod cell_layout_tests {
     #[test]
     fn skips_wide_char_spacer() {
         assert!(should_skip_cell(Flags::WIDE_CHAR_SPACER));
+    }
+
+    #[test]
+    fn skips_leading_wide_char_spacer() {
+        // Wrapped-wide-char start-of-line spacer.
+        assert!(should_skip_cell(Flags::LEADING_WIDE_CHAR_SPACER));
     }
 
     #[test]
@@ -1411,9 +1451,15 @@ Move the two helpers `should_skip_cell` and `cell_is_wide` OUT of the `#[cfg(tes
 
 ```rust
 /// Returns true if a cell with the given flags should be skipped entirely
-/// during cell-instance building (no bg, no glyph).
+/// during cell-instance building (no bg, no glyph). Covers both
+/// `WIDE_CHAR_SPACER` (trailing spacer after a wide char) and
+/// `LEADING_WIDE_CHAR_SPACER` (line-leading spacer when a wide char wrapped
+/// from the previous line).
 pub(crate) fn should_skip_cell(flags: alacritty_terminal::term::cell::Flags) -> bool {
-    flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER)
+    flags.intersects(
+        alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER
+            | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER,
+    )
 }
 
 /// Returns true if a cell's background quad should be 2 × cell_w wide
@@ -1523,7 +1569,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: build clean. 128 + 5 = 133 default tests pass (+ 11 ignored). clippy clean.
+Expected: build clean. 128 + 6 = 134 default tests pass (+ 12 ignored). clippy clean.
 
 Smoke run (validates wide-glyph fix on real shell):
 
@@ -1610,10 +1656,10 @@ cargo fmt --all -- --check && \
 ```
 
 Expected:
-- 128 (Stage 7 default) + Task 4's 5 cell-layout tests = 133 default lib tests pass.
-- 11 ignored: Stage 7's 7 + Task 0's 2 + Task 1's 2.
-- 27 protocol crate tests, 15 npm tests, 4 integration tests.
-- Total: 133 + 11 + 27 + 15 + 4 = 190 (default-running). Up from Stage 7's 174.
+- 128 (Stage 7 default) + Task 4's 6 cell-layout tests = 134 default lib tests pass.
+- 12 ignored: Stage 7's 7 + Task 0's 2 + Task 1's 3.
+- 27 protocol crate tests, 15 npm tests, plus integration / bin tests.
+- The exact total varies by harness count (Stage 7 came in around 170 runs total). The gate is "any failure stops" — exact numbers are diagnostic, not gating.
 
 If any test fails, STOP and report.
 
@@ -1626,11 +1672,28 @@ cargo +nightly fuzz run parse -- -max_total_time=60
 
 Expected: no crashes / leaks. Same as Stage 7's fuzz baseline.
 
-- [ ] **Step 4: Manual smoke walkthrough**
+- [ ] **Step 4: Final senior-tier holistic code review**
+
+Stage 7's lesson: per-task Haiku reviewers consistently miss whole-stage issues. Before tagging, dispatch ONE more review covering the entire branch:
+
+```
+The reviewer should `git log --oneline main..HEAD` and inspect the cumulative
+diff. Focus areas: (a) cross-task coherence — did per-task fixes regress
+earlier work; (b) WGSL premultiplied-alpha math vs swash's actual output
+(verify by smoke); (c) wide-cell behavior on edge cases (empty cells, cursor
+on spacer, cursor on wrapped wide char); (d) test-count drift; (e) any
+lingering Stage 7 references in comments/docs.
+```
+
+Subagent dispatch: use `general-purpose` with the `sonnet` model. Treat the
+review's output as advisory unless flagged Critical or Important. If anything
+substantive surfaces, fix before tagging.
+
+- [ ] **Step 5: Manual smoke walkthrough**
 
 Walk the Stage 7.5 section of `docs/TESTING.md` (Step 1 above). Brian will exercise this on slmbeast via VNC.
 
-- [ ] **Step 5: Commit + tag**
+- [ ] **Step 6: Commit + tag**
 
 ```bash
 cd /home/bhengen/dev/vibeflow
@@ -1641,7 +1704,7 @@ git tag -a stage7.5-color-emoji-complete \
 git tag --list | grep stage7.5
 ```
 
-- [ ] **Step 6: Surface to user**
+- [ ] **Step 7: Surface to user**
 
 Report:
 - Number of new commits on this stage (~5 implementation + 1 docs = 6).
@@ -1694,7 +1757,7 @@ Mapping Stage 7.5 spec requirements → tasks:
   - `text_engine.color_view`, `text_engine.color_atlas_size()` defined Task 1, used Task 3.
 - **Clippy / fmt discipline:** every code-changing task ends with verify-fmt+clippy.
 - **Threading-model discipline:** unchanged. All atlas state on the main thread.
-- **Test count tracking:** Stage 7 ended at 128 default + 7 ignored. Stage 7.5 adds 5 cell-layout tests (default), 2 mono/color rasterize tests (ignored, Task 0), 2 glyph_for routing tests (ignored, Task 1). Final: 133 default + 11 ignored.
+- **Test count tracking:** Stage 7 ended at 128 default + 7 ignored. Stage 7.5 adds 6 cell-layout tests (default, Task 4 — includes `LEADING_WIDE_CHAR_SPACER` coverage), 2 mono/color rasterize tests (ignored, Task 0), 3 glyph_for / atlas-growth tests (ignored, Task 1). Final: 134 default + 12 ignored.
 
 ## Notable plan risks
 
