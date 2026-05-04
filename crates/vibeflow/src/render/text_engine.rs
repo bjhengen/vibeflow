@@ -11,6 +11,16 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 
+/// Which atlas a rasterized glyph belongs in. Stage 7 glyphs were all `Mono`;
+/// Stage 7.5 adds `Color` for emoji and other RGBA-rasterized glyphs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlyphKind {
+    /// R8Unorm mask (alpha-only). Renderer uses `mix(bg, fg, alpha)`.
+    Mono,
+    /// RGBA8Unorm with premultiplied alpha (swash's color-glyph format).
+    Color,
+}
+
 /// Embedded primary font. Same JBM file used by Stage 5's fontdue atlas.
 pub const PRIMARY_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Regular.ttf");
 
@@ -21,6 +31,7 @@ pub const FONT_PX: f32 = 16.0;
 /// One rasterized glyph plus its placement metrics (relative to the cell origin).
 #[derive(Debug, Clone)]
 pub struct RasterImage {
+    pub kind: GlyphKind,
     /// Width of the bitmap in pixels.
     pub width: u32,
     /// Height of the bitmap in pixels.
@@ -28,20 +39,21 @@ pub struct RasterImage {
     /// Offset from cell origin (cell top-left) to the bitmap top-left, in pixels.
     pub bearing_x: i32,
     pub bearing_y: i32,
-    /// R8 alpha bytes, length = width * height.
+    /// Mono: R8 alpha bytes (length = width * height).
+    /// Color: RGBA premultiplied bytes (length = 4 * width * height).
     pub data: Vec<u8>,
 }
 
 /// Reference to a rasterized glyph in the atlas. Returned by `glyph_for`.
-/// All fields in pixels.
+/// All position fields in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlyphRef {
+    pub kind: GlyphKind,
     pub atlas_x: u32,
     pub atlas_y: u32,
     pub atlas_w: u32,
     pub atlas_h: u32,
-    /// Bearing relative to the cell top-left. Negative values mean the
-    /// glyph starts to the left/above the cell origin.
+    /// Bearing relative to the cell top-left.
     pub bearing_x: i32,
     pub bearing_y: i32,
 }
@@ -198,13 +210,14 @@ impl TextEngine {
             .swash_cache
             .get_image(&mut self.font_system, cache_key)
             .as_ref()?;
-        if image.content == SwashContent::Color {
-            // Color emoji — Stage 7.5 task. Skip for now so the caller can
-            // substitute a tofu glyph or fall back to '?'.
-            return None;
-        }
+        let kind = match image.content {
+            SwashContent::Color => GlyphKind::Color,
+            // Stage 7.5 treats SubpixelMask as Mono (proper subpixel AA is Stage 9+).
+            SwashContent::Mask | SwashContent::SubpixelMask => GlyphKind::Mono,
+        };
 
         Some(RasterImage {
+            kind,
             width: image.placement.width,
             height: image.placement.height,
             bearing_x: image.placement.left,
@@ -228,10 +241,8 @@ impl TextEngine {
     fn try_atlas(&mut self, c: char) -> Option<GlyphRef> {
         let img = self.rasterize(c)?;
         if img.width == 0 || img.height == 0 {
-            // Whitespace — record an "empty" rect at (0, 0) so the cache hit
-            // path still works. The renderer will skip drawing zero-sized
-            // quads via `if w * h > 0`.
             return Some(GlyphRef {
+                kind: img.kind,
                 atlas_x: 0,
                 atlas_y: 0,
                 atlas_w: 0,
@@ -240,9 +251,11 @@ impl TextEngine {
                 bearing_y: 0,
             });
         }
+        // Task 0 still routes everything through the mono atlas. Task 1 splits.
         let (x, y) = self.allocate(img.width, img.height);
         self.upload_to_atlas(x, y, img.width, img.height, &img.data);
         Some(GlyphRef {
+            kind: img.kind,
             atlas_x: x,
             atlas_y: y,
             atlas_w: img.width,
@@ -513,5 +526,26 @@ mod tests {
             h_after,
             initial_h
         );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn rasterize_mono_letter_returns_mono_kind() {
+        let mut engine = test_engine();
+        let img = engine.rasterize('A').unwrap();
+        assert_eq!(img.kind, GlyphKind::Mono);
+        assert_eq!(img.data.len(), (img.width * img.height) as usize);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn rasterize_color_emoji_returns_color_kind() {
+        let mut engine = test_engine();
+        // 🎉 (U+1F389). Skip cleanly if the test env has no color emoji font.
+        if let Some(img) = engine.rasterize('🎉') {
+            assert_eq!(img.kind, GlyphKind::Color);
+            // RGBA: data length = 4 * width * height.
+            assert_eq!(img.data.len(), (4 * img.width * img.height) as usize);
+        }
     }
 }

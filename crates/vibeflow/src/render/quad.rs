@@ -293,7 +293,7 @@ impl QuadPipeline {
 }
 
 use crate::render::cursor::CursorBlink;
-use crate::render::text_engine::{GlyphRef, TextEngine};
+use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 
 /// Walk the active grid and emit one [`QuadInstance`] per visible cell.
 /// Skips cells whose glyph is unrenderable (`text_engine.glyph_for` returned
@@ -361,6 +361,7 @@ pub fn build_cell_instances(
         let screen_y = (row * cell_h + y_offset_px) as f32;
 
         let glyph = text_engine.glyph_for(cell.c).unwrap_or(GlyphRef {
+            kind: GlyphKind::Mono,
             atlas_x: 0,
             atlas_y: 0,
             atlas_w: 0,
