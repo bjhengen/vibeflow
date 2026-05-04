@@ -70,6 +70,8 @@ pub enum SessionEvent {
     /// The child exited or the reader thread terminated. After this event,
     /// `is_alive()` returns false and further `poll()` calls produce nothing.
     Died,
+    /// Shell rang the bell (BEL, 0x07).
+    Bell,
 }
 
 /// One terminal tab's per-session machinery.
@@ -101,6 +103,9 @@ pub struct PtySession {
     /// state changes (default policy = shell binary + state); overridable via
     /// [`Self::set_label`] from the config layer.
     label: TabLabel,
+    /// Set true when a stray BEL byte (0x07) is observed in PassThrough output.
+    /// Drained into a [`SessionEvent::Bell`] at the end of each `poll`.
+    bell_pending: bool,
 }
 
 impl PtySession {
@@ -153,6 +158,7 @@ impl PtySession {
             tracker: AiStateTracker::new(config),
             alive: true,
             label,
+            bell_pending: false,
         })
     }
 
@@ -214,14 +220,22 @@ impl PtySession {
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
-                                // Feed bytes through the VT parser into Term. This is
-                                // where the grid actually updates.
                                 for &byte in &bytes {
+                                    // BEL bytes that terminate an OSC sequence are consumed by the
+                                    // OscDispatcher and never reach here; only stray BEL (e.g.
+                                    // `printf '\007'`) surfaces as PassThrough.
+                                    if byte == 0x07 {
+                                        self.bell_pending = true;
+                                    }
                                     self.parser.advance(&mut self.term, byte);
                                 }
                                 events.push(SessionEvent::TermUpdated);
                             }
                         }
+                    }
+                    if self.bell_pending {
+                        self.bell_pending = false;
+                        events.push(SessionEvent::Bell);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -631,5 +645,26 @@ mod tests {
         });
         assert_eq!(s.label().title, "custom");
         assert_eq!(s.label().subtitle, "claude · waiting");
+    }
+
+    #[test]
+    fn poll_emits_bell_event_when_07_byte_received() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "printf '\\007hi'; sleep 0.5"],
+            TrackerConfig::default(),
+        )
+        .unwrap();
+        // Wait for child output.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut got_bell = false;
+        while std::time::Instant::now() < deadline && !got_bell {
+            for ev in s.poll(std::time::Instant::now()) {
+                if matches!(ev, SessionEvent::Bell) {
+                    got_bell = true;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(got_bell, "no Bell event seen within 2s");
     }
 }

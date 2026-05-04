@@ -12,8 +12,6 @@ use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 
 use crate::app::App;
-use crate::render::atlas::{glyph_index, GlyphAtlas};
-use crate::render::text::GlyphInstance;
 use crate::session::tracker::TabState;
 
 /// Stage-6 default tab-bar height in pixels, expressed as (line_height × 2 + padding).
@@ -268,6 +266,24 @@ mod tests {
     fn indicator_color_is_transparent_for_active() {
         assert_eq!(indicator_color(TabState::Active), [0.0, 0.0, 0.0, 0.0]);
     }
+
+    #[test]
+    fn subtitle_color_returns_amber_for_waiting() {
+        let fallback = [0.0, 0.0, 0.0, 1.0];
+        let c = subtitle_color(TabState::Waiting, fallback);
+        // Same as indicator_color(Waiting) but alpha forced to 1.0.
+        assert!((c[0] - 1.0).abs() < 0.01);
+        assert!((c[1] - 0.74).abs() < 0.05);
+        assert!((c[2] - 0.18).abs() < 0.05);
+        assert_eq!(c[3], 1.0);
+    }
+
+    #[test]
+    fn subtitle_color_falls_back_to_title_for_active() {
+        let fallback = [0.5, 0.6, 0.7, 1.0];
+        let c = subtitle_color(TabState::Active, fallback);
+        assert_eq!(c, fallback);
+    }
 }
 
 /// Per-instance data for [`TabBarPipeline`]. 32 bytes.
@@ -493,6 +509,17 @@ fn indicator_color(state: TabState) -> [f32; 4] {
     }
 }
 
+/// Subtitle text color: tracker-state-tinted for non-`Active` states,
+/// falls back to the title fg for `Active`.
+fn subtitle_color(state: TabState, fallback_fg: [f32; 4]) -> [f32; 4] {
+    let mut c = indicator_color(state);
+    if c[3] == 0.0 {
+        return fallback_fg;
+    }
+    c[3] = 1.0; // ensure opaque even though indicator may pulse
+    c
+}
+
 /// Compute the pulse alpha for a `Waiting` tab at time `t` (seconds since some epoch).
 /// 1.4 s sine wave between 0.4 and 1.0.
 #[must_use]
@@ -532,14 +559,6 @@ const FG_INACTIVE: [f32; 4] = [
     0x82 as f32 / 255.0,
     1.0,
 ];
-
-/// `+` and `×` button glyph indices into the atlas (looked up at construction).
-fn plus_glyph_idx() -> u32 {
-    glyph_index('+').unwrap_or(0)
-}
-fn x_glyph_idx() -> u32 {
-    glyph_index('×').unwrap_or_else(|| glyph_index('x').unwrap_or(0))
-}
 
 /// Glue between `App` state, `TabBarLayout`, and the wgpu pipelines.
 /// Stateless except for the pulse-time epoch.
@@ -623,17 +642,17 @@ impl TabBarRenderer {
         rects
     }
 
-    /// Build the GlyphInstance list for tab titles + subtitles + `+` / `×`
+    /// Build the QuadInstance list for tab titles + subtitles + `+` / `×`
     /// button glyphs.
     pub fn build_glyphs(
         &self,
         app: &App,
         layout: &TabBarLayout,
-        atlas: &GlyphAtlas,
-    ) -> Vec<GlyphInstance> {
+        text_engine: &mut crate::render::text_engine::TextEngine,
+    ) -> Vec<crate::render::quad::QuadInstance> {
         let mut glyphs = Vec::new();
         let active_idx = app.active();
-        let (cell_w, cell_h) = atlas.cell_pitch();
+        let (cell_w, cell_h) = text_engine.cell_metrics();
         let cell_w_f = cell_w as f32;
         let cell_h_f = cell_h as f32;
 
@@ -653,6 +672,7 @@ impl TabBarRenderer {
             let title_y = tab.body.y as f32 + 2.0;
             push_text_glyphs(
                 &mut glyphs,
+                text_engine,
                 &label.title,
                 (title_x_start, title_y),
                 cell_w_f,
@@ -666,31 +686,31 @@ impl TabBarRenderer {
             let subtitle_y = title_y + cell_h_f;
             push_text_glyphs(
                 &mut glyphs,
+                text_engine,
                 &label.subtitle,
                 (subtitle_x_start, subtitle_y),
                 cell_w_f,
-                fg,
+                subtitle_color(session.state(), fg),
                 bg,
                 tab.body.x + tab.body.w - tab.close_button.w - 4,
             );
 
-            // `×` glyph centered in the close button. The TextPipeline's
-            // fragment shader forces alpha=1, so we want bg to match the tab
-            // body — the close-button-rect overlay is drawn underneath in the
-            // RectInstance pass, but the × glyph's bg rectangle would override
-            // it. Using `bg` here makes the close button visually defined by
-            // the × glyph alone.
+            // `×` glyph centered in the close button. Using `bg` here makes
+            // the close button visually defined by the × glyph alone.
             let close_glyph_x =
                 tab.close_button.x as f32 + (tab.close_button.w as f32 - cell_w_f) / 2.0;
             let close_glyph_y =
                 tab.close_button.y as f32 + (tab.close_button.h as f32 - cell_h_f) / 2.0;
-            glyphs.push(GlyphInstance::new(
-                close_glyph_x,
-                close_glyph_y,
-                x_glyph_idx(),
+            push_text_glyphs(
+                &mut glyphs,
+                text_engine,
+                "×",
+                (close_glyph_x, close_glyph_y),
+                cell_w_f,
                 fg,
                 bg,
-            ));
+                tab.close_button.x + tab.close_button.w,
+            );
         }
 
         // `+` glyph centered in the new-tab button. Use BG_INACTIVE so the
@@ -699,13 +719,16 @@ impl TabBarRenderer {
         let nb = layout.new_tab_button;
         let plus_glyph_x = nb.x as f32 + (nb.w as f32 - cell_w_f) / 2.0;
         let plus_glyph_y = nb.y as f32 + (nb.h as f32 - cell_h_f) / 2.0;
-        glyphs.push(GlyphInstance::new(
-            plus_glyph_x,
-            plus_glyph_y,
-            plus_glyph_idx(),
+        push_text_glyphs(
+            &mut glyphs,
+            text_engine,
+            "+",
+            (plus_glyph_x, plus_glyph_y),
+            cell_w_f,
             FG_ACTIVE,
             BG_INACTIVE,
-        ));
+            nb.x + nb.w,
+        );
 
         glyphs
     }
@@ -724,11 +747,13 @@ impl Default for TabBarRenderer {
     }
 }
 
-/// Convert a string to a sequence of `GlyphInstance`s laid out at integer
+/// Convert a string to a sequence of `QuadInstance`s laid out at integer
 /// pixel positions, clipped to a max-x boundary so titles/subtitles don't
 /// spill onto the close button.
+#[allow(clippy::too_many_arguments)]
 fn push_text_glyphs(
-    out: &mut Vec<GlyphInstance>,
+    out: &mut Vec<crate::render::quad::QuadInstance>,
+    text_engine: &mut crate::render::text_engine::TextEngine,
     s: &str,
     pos: (f32, f32),
     cell_w: f32,
@@ -737,13 +762,28 @@ fn push_text_glyphs(
     max_x_px: u32,
 ) {
     let (x_start, y) = pos;
+    let baseline_y = text_engine.baseline_y() as f32;
     let mut x = x_start;
     for c in s.chars() {
-        let glyph = glyph_index(c).unwrap_or(0);
         if x + cell_w > max_x_px as f32 {
             break;
         }
-        out.push(GlyphInstance::new(x, y, glyph, fg, bg));
+        if let Some(g) = text_engine.glyph_for(c) {
+            if g.atlas_w > 0 && g.atlas_h > 0 {
+                out.push(crate::render::quad::QuadInstance::new(
+                    x + g.bearing_x as f32,
+                    y + baseline_y - g.bearing_y as f32,
+                    g.atlas_w as f32,
+                    g.atlas_h as f32,
+                    g.atlas_x as f32,
+                    g.atlas_y as f32,
+                    g.atlas_w as f32,
+                    g.atlas_h as f32,
+                    fg,
+                    bg,
+                ));
+            }
+        }
         x += cell_w;
     }
 }

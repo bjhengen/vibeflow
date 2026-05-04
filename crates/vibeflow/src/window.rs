@@ -157,6 +157,18 @@ impl WindowApp {
                 // The window does not auto-exit on the last tab dying in
                 // Stage 4 — the user closes the window with the close button.
             }
+            SessionEvent::Bell => {
+                tracing::trace!(tab = idx, "bell rung");
+                // Only flash for the active tab to avoid background tabs spamming.
+                if idx == self.app.active() {
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        renderer.note_bell();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
         }
     }
 
@@ -373,21 +385,24 @@ impl ApplicationHandler for WindowApp {
             self.handle_session_event(idx, ev);
         }
 
-        // Pulse animation: while ANY tab is in Waiting, run at 60 Hz so the
-        // amber stripe pulse looks smooth. Otherwise fall back to the 10 Hz
-        // tracker-tick cadence.
         let any_waiting = self
             .app
             .tabs()
             .iter()
             .any(|tab| tab.state() == TabState::Waiting);
+
         let next_deadline = if any_waiting {
-            // Also request a redraw each tick so the new pulse alpha hits the GPU.
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
             now + Duration::from_millis(16)
         } else {
+            // Cursor blinks at 1 Hz (500 ms toggle). Schedule a redraw at the
+            // next blink boundary, capped at 100 ms so tracker timeouts still
+            // tick at their usual cadence.
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
             now + Duration::from_millis(100)
         };
 
