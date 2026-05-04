@@ -122,3 +122,51 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
   arrive in Stage 8.
 
 If any step fails, capture the failure and a screenshot before fixing.
+
+## Stage 7 — cosmic-text font shaping + subtitle tint + cursor blink + bell flash
+
+Run:
+
+```bash
+cd /home/bhengen/dev/vibeflow
+cargo build --bin vibeflow
+RUST_LOG=vibeflow=info ./target/debug/vibeflow
+```
+
+- [ ] Window opens within ~700 ms (slightly longer than Stage 6 because
+  cosmic-text scans system fonts at startup). Tab bar at top, prompt below.
+- [ ] Cursor visibly blinks at 1 Hz on the active tab.
+- [ ] Type `echo "héllo wörld 中文 🎉"`. Each character renders:
+  - ASCII via JetBrainsMono.
+  - Latin extended (é, ö) via JBM (it has full Latin-1 coverage).
+  - CJK (中文) via the user's installed CJK font (Noto Sans CJK on most
+    Linux distros). If no CJK font installed: tofu boxes — that's fine.
+  - Emoji (🎉) renders as monochrome outline or tofu — Stage 7.5 adds
+    color emoji.
+- [ ] Run `printf '\007'`. Window briefly tints white (~200 ms).
+- [ ] Run `printf '\033]1338;state=waiting\007'`. Subtitle changes to
+  `waiting` AND renders in **amber** (Stage 6 only changed the text;
+  Stage 7 tints it).
+- [ ] Run `printf '\033]1338;state=working\007'`. Subtitle in **blue**.
+- [ ] Run `printf '\033]1338;state=active\007'` (or wait for it to default).
+  Subtitle tint disappears (back to the default tab fg).
+- [ ] Open ~10 tabs. Atlas shouldn't visibly stutter as new glyphs are
+  cached. (Internal: glyph_for cache hits on repeat ASCII; misses only on
+  first sighting of each codepoint.)
+- [ ] Resize the window to a tiny size (~10 px). No crash; no GPU errors.
+- [ ] Run an editor that hides the cursor (e.g. `vi`, then enter normal
+  mode). Cursor stops blinking on the active tab while shape is Hidden.
+- [ ] Press Ctrl+D in the active tab. Session dies; dead-tab banner appears
+  in amber. Cursor stops blinking on the dead tab.
+- [ ] Re-run with `WINIT_UNIX_BACKEND=x11`. All checks above still pass.
+
+**Known Stage 7 limitations (deferred to later stages):**
+
+- Color emoji renders as monochrome outline or tofu — Stage 7.5 adds the
+  RGBA atlas path.
+- No programming ligatures (`==>` renders as three glyphs) — Stage 8 polish.
+- No bidi or complex shaping — Stage 8+.
+- Font family hardcoded to JBM + system fallback — Stage 9 (TOML config).
+- Cursor blink period not configurable — Stage 9.
+- Bell-flash overlay always fires for the active tab; background-tab BELs
+  are silently dropped (UX choice; configurable in Stage 9).
