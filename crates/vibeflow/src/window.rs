@@ -157,6 +157,18 @@ impl WindowApp {
                 // The window does not auto-exit on the last tab dying in
                 // Stage 4 — the user closes the window with the close button.
             }
+            SessionEvent::Bell => {
+                tracing::trace!(tab = idx, "bell rung");
+                // Only flash for the active tab to avoid background tabs spamming.
+                if idx == self.app.active() {
+                    if let Some(renderer) = self.renderer.as_mut() {
+                        renderer.note_bell();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
         }
     }
 
