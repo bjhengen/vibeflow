@@ -135,6 +135,7 @@ impl Renderer {
             &device,
             format,
             &text_engine.view,
+            &text_engine.color_view,
             &text_engine.sampler,
         )?;
         let tab_bar_pipeline = crate::render::tabs::TabBarPipeline::new(&device, format)?;
@@ -234,11 +235,13 @@ impl Renderer {
         let bell_alpha = self.bell.tint_alpha(now);
 
         // Now grow the GPU buffers (still outside the render-pass scope).
-        let atlas_size = self.text_engine.atlas_size();
+        let mono_atlas_size = self.text_engine.atlas_size();
+        let color_atlas_size = self.text_engine.color_atlas_size();
         if self.text_engine.texture_dirty() {
-            self.quad_pipeline.rebind_atlas(
+            self.quad_pipeline.rebind_atlases(
                 &self.device,
                 &self.text_engine.view,
+                &self.text_engine.color_view,
                 &self.text_engine.sampler,
             );
         }
@@ -282,7 +285,8 @@ impl Renderer {
                     &self.queue,
                     &cell_instances,
                     surface_size,
-                    atlas_size,
+                    mono_atlas_size,
+                    color_atlas_size,
                 );
             }
 
@@ -299,7 +303,8 @@ impl Renderer {
                     &self.queue,
                     &tab_glyphs,
                     surface_size,
-                    atlas_size,
+                    mono_atlas_size,
+                    color_atlas_size,
                 );
             }
 
@@ -322,8 +327,14 @@ impl Renderer {
                     std::slice::from_ref(&banner_rect),
                     surface_size,
                 );
-                self.quad_pipeline
-                    .draw(&mut pass, &self.queue, &quads, surface_size, atlas_size);
+                self.quad_pipeline.draw(
+                    &mut pass,
+                    &self.queue,
+                    &quads,
+                    surface_size,
+                    mono_atlas_size,
+                    color_atlas_size,
+                );
             }
 
             // ---- Bell flash overlay ----
