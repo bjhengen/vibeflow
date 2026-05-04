@@ -266,6 +266,24 @@ mod tests {
     fn indicator_color_is_transparent_for_active() {
         assert_eq!(indicator_color(TabState::Active), [0.0, 0.0, 0.0, 0.0]);
     }
+
+    #[test]
+    fn subtitle_color_returns_amber_for_waiting() {
+        let fallback = [0.0, 0.0, 0.0, 1.0];
+        let c = subtitle_color(TabState::Waiting, fallback);
+        // Same as indicator_color(Waiting) but alpha forced to 1.0.
+        assert!((c[0] - 1.0).abs() < 0.01);
+        assert!((c[1] - 0.74).abs() < 0.05);
+        assert!((c[2] - 0.18).abs() < 0.05);
+        assert_eq!(c[3], 1.0);
+    }
+
+    #[test]
+    fn subtitle_color_falls_back_to_title_for_active() {
+        let fallback = [0.5, 0.6, 0.7, 1.0];
+        let c = subtitle_color(TabState::Active, fallback);
+        assert_eq!(c, fallback);
+    }
 }
 
 /// Per-instance data for [`TabBarPipeline`]. 32 bytes.
@@ -491,6 +509,17 @@ fn indicator_color(state: TabState) -> [f32; 4] {
     }
 }
 
+/// Subtitle text color: tracker-state-tinted for non-`Active` states,
+/// falls back to the title fg for `Active`.
+fn subtitle_color(state: TabState, fallback_fg: [f32; 4]) -> [f32; 4] {
+    let mut c = indicator_color(state);
+    if c[3] == 0.0 {
+        return fallback_fg;
+    }
+    c[3] = 1.0; // ensure opaque even though indicator may pulse
+    c
+}
+
 /// Compute the pulse alpha for a `Waiting` tab at time `t` (seconds since some epoch).
 /// 1.4 s sine wave between 0.4 and 1.0.
 #[must_use]
@@ -661,7 +690,7 @@ impl TabBarRenderer {
                 &label.subtitle,
                 (subtitle_x_start, subtitle_y),
                 cell_w_f,
-                fg,
+                subtitle_color(session.state(), fg),
                 bg,
                 tab.body.x + tab.body.w - tab.close_button.w - 4,
             );
