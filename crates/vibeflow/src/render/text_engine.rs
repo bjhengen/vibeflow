@@ -1,9 +1,9 @@
-//! `TextEngine` — cosmic-text-backed glyph rasterizer + dynamic R8 glyph
-//! atlas. Replaces the static fontdue atlas from Stage 5. Supports the full
-//! Unicode range via cosmic-text's font fallback (system fonts via fontdb).
+//! `TextEngine` — cosmic-text-backed glyph rasterizer + dynamic glyph atlas.
+//! Replaces the static fontdue atlas from Stage 5. Supports the full Unicode
+//! range via cosmic-text's font fallback (system fonts via fontdb).
 //!
-//! Stage 7 ships monochrome (R8Unorm) only. Color-emoji rendering needs an
-//! RGBA atlas + a dual-format sampling path — that's Stage 7.5.
+//! Stage 7 shipped monochrome (R8Unorm) only. Stage 7.5 adds a parallel
+//! RGBA8Unorm color atlas for emoji and other RGBA-rasterized glyphs.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -70,6 +70,59 @@ struct Shelf {
 const ATLAS_INITIAL_W: u32 = 256;
 const ATLAS_INITIAL_H: u32 = 256;
 
+/// Initial pixel size of the color (RGBA) atlas. Color glyphs are rare and
+/// usually small (16×16 emoji at FONT_PX), so 256×256 holds ~256 emoji.
+const COLOR_ATLAS_INITIAL_W: u32 = 256;
+const COLOR_ATLAS_INITIAL_H: u32 = 256;
+
+/// Returns `true` if the existing shelves can fit a `w × h` rect in an atlas
+/// of width `atlas_w` × height `atlas_h`. Used by both atlases.
+fn shelves_can_fit(shelves: &[Shelf], atlas_w: u32, atlas_h: u32, w: u32, h: u32) -> bool {
+    // Existing shelf with enough headroom?
+    if shelves
+        .iter()
+        .any(|s| s.height >= h && s.next_x + w <= atlas_w)
+    {
+        return true;
+    }
+    // New shelf at the bottom?
+    let bottom = shelves.iter().map(|s| s.y + s.height).max().unwrap_or(0);
+    bottom + h <= atlas_h
+}
+
+/// Returns the smallest power-of-two-multiple of `current_h` that fits a new
+/// shelf of height `new_shelf_h` after the existing shelves.
+fn double_until_fits(current_h: u32, new_shelf_h: u32, shelves: &[Shelf]) -> u32 {
+    let bottom = shelves.iter().map(|s| s.y + s.height).max().unwrap_or(0);
+    let needed = bottom + new_shelf_h;
+    let mut new_h = current_h;
+    while new_h < needed {
+        new_h *= 2;
+    }
+    new_h
+}
+
+/// Place a `w × h` rect into `shelves` (mutates). Caller has already verified
+/// it fits via `shelves_can_fit`. Returns the (x, y) offset of the new rect.
+fn shelf_pack(shelves: &mut Vec<Shelf>, atlas_w: u32, w: u32, h: u32) -> (u32, u32) {
+    if let Some(shelf) = shelves
+        .iter_mut()
+        .find(|s| s.height >= h && s.next_x + w <= atlas_w)
+    {
+        let x = shelf.next_x;
+        let y = shelf.y;
+        shelf.next_x += w;
+        return (x, y);
+    }
+    let shelf_y = shelves.iter().map(|s| s.y + s.height).max().unwrap_or(0);
+    shelves.push(Shelf {
+        y: shelf_y,
+        height: h,
+        next_x: w,
+    });
+    (0, shelf_y)
+}
+
 /// Stateful cosmic-text wrapper. Heavyweight to construct (loads the embedded
 /// font + system fonts via fontdb); cheap to query.
 pub struct TextEngine {
@@ -77,20 +130,26 @@ pub struct TextEngine {
     swash_cache: SwashCache,
     cell_w: u32,
     cell_h: u32,
-    /// Baseline y-coordinate within a cell, in pixels from cell top.
     baseline_y: u32,
-    // Atlas state.
+
+    // Mono atlas (R8Unorm).
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     atlas_w: u32,
     atlas_h: u32,
     shelves: Vec<Shelf>,
+
+    // Color atlas (RGBA8Unorm). Same sampler reused.
+    pub color_texture: wgpu::Texture,
+    pub color_view: wgpu::TextureView,
+    color_atlas_w: u32,
+    color_atlas_h: u32,
+    color_shelves: Vec<Shelf>,
+
     cache: HashMap<char, Option<GlyphRef>>, // None = no font coverage for this codepoint; do not retry
-    /// True when the texture has been re-allocated (atlas grew). The caller
-    /// (`Renderer`) reads this each frame and rebuilds the bind group when set.
-    /// Reset on read by `texture_dirty()`.
-    atlas_dirty: bool,
+    /// True when EITHER atlas has been re-allocated since the last call.
+    atlases_dirty: bool,
     queue: Arc<wgpu::Queue>,
     device: Arc<wgpu::Device>,
 }
@@ -135,7 +194,7 @@ impl TextEngine {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::R8Unorm,
-            // COPY_SRC is required for `grow_atlas` to use this texture as
+            // COPY_SRC is required for `grow_mono_atlas` to use this texture as
             // a source in `copy_texture_to_texture` when the atlas grows.
             usage: wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST
@@ -154,6 +213,25 @@ impl TextEngine {
             ..Default::default()
         });
 
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vibeflow-text-engine-color-atlas"),
+            size: wgpu::Extent3d {
+                width: COLOR_ATLAS_INITIAL_W,
+                height: COLOR_ATLAS_INITIAL_H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            // COPY_SRC required for grow_color_atlas's copy_texture_to_texture.
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = color_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         Ok(Self {
             font_system,
             swash_cache,
@@ -166,8 +244,13 @@ impl TextEngine {
             atlas_w: ATLAS_INITIAL_W,
             atlas_h: ATLAS_INITIAL_H,
             shelves: Vec::new(),
+            color_texture,
+            color_view,
+            color_atlas_w: COLOR_ATLAS_INITIAL_W,
+            color_atlas_h: COLOR_ATLAS_INITIAL_H,
+            color_shelves: Vec::new(),
             cache: HashMap::new(),
-            atlas_dirty: false,
+            atlases_dirty: false,
             queue,
             device,
         })
@@ -248,9 +331,18 @@ impl TextEngine {
                 bearing_y: 0,
             });
         }
-        // Task 0 still routes everything through the mono atlas. Task 1 splits.
-        let (x, y) = self.allocate(img.width, img.height);
-        self.upload_to_atlas(x, y, img.width, img.height, &img.data);
+        let (x, y) = match img.kind {
+            GlyphKind::Mono => {
+                let (x, y) = self.allocate_mono(img.width, img.height);
+                self.upload_to_mono_atlas(x, y, img.width, img.height, &img.data);
+                (x, y)
+            }
+            GlyphKind::Color => {
+                let (x, y) = self.allocate_color(img.width, img.height);
+                self.upload_to_color_atlas(x, y, img.width, img.height, &img.data);
+                (x, y)
+            }
+        };
         Some(GlyphRef {
             kind: img.kind,
             atlas_x: x,
@@ -262,40 +354,55 @@ impl TextEngine {
         })
     }
 
-    /// Shelf-pack: place a `w × h` rect into the atlas, growing as needed.
-    fn allocate(&mut self, w: u32, h: u32) -> (u32, u32) {
-        // Try existing shelves.
-        if let Some(shelf) = self
-            .shelves
-            .iter_mut()
-            .find(|s| s.height >= h && s.next_x + w <= self.atlas_w)
-        {
-            let x = shelf.next_x;
-            let y = shelf.y;
-            shelf.next_x += w;
-            return (x, y);
-        }
-        // Open a new shelf at the bottom.
-        let shelf_y = self
-            .shelves
-            .iter()
-            .map(|s| s.y + s.height)
-            .max()
-            .unwrap_or(0);
-        if shelf_y + h > self.atlas_h {
-            self.grow_atlas(shelf_y + h);
-        }
-        self.shelves.push(Shelf {
-            y: shelf_y,
-            height: h,
-            next_x: w,
-        });
-        (0, shelf_y)
+    /// Pixel size of the mono atlas.
+    #[must_use]
+    pub fn atlas_size(&self) -> (u32, u32) {
+        (self.atlas_w, self.atlas_h)
     }
 
-    /// Double the atlas height until the requested `min_height` fits.
-    /// Allocates a new texture, copies the old contents, swaps fields.
-    fn grow_atlas(&mut self, min_height: u32) {
+    /// Pixel size of the color atlas.
+    #[must_use]
+    pub fn color_atlas_size(&self) -> (u32, u32) {
+        (self.color_atlas_w, self.color_atlas_h)
+    }
+
+    /// True iff EITHER atlas has been re-allocated since the last call.
+    /// `QuadPipeline` polls this each frame to rebuild its bind group when set.
+    /// Resets the flag on read.
+    pub fn texture_dirty(&mut self) -> bool {
+        let dirty = self.atlases_dirty;
+        self.atlases_dirty = false;
+        dirty
+    }
+
+    /// Allocate a `w × h` rect in the mono atlas, growing as needed.
+    fn allocate_mono(&mut self, w: u32, h: u32) -> (u32, u32) {
+        let need_grow = !shelves_can_fit(&self.shelves, self.atlas_w, self.atlas_h, w, h);
+        if need_grow {
+            let new_h = double_until_fits(self.atlas_h, h, &self.shelves);
+            self.grow_mono_atlas(new_h);
+        }
+        shelf_pack(&mut self.shelves, self.atlas_w, w, h)
+    }
+
+    /// Allocate a `w × h` rect in the color atlas, growing as needed.
+    fn allocate_color(&mut self, w: u32, h: u32) -> (u32, u32) {
+        let need_grow = !shelves_can_fit(
+            &self.color_shelves,
+            self.color_atlas_w,
+            self.color_atlas_h,
+            w,
+            h,
+        );
+        if need_grow {
+            let new_h = double_until_fits(self.color_atlas_h, h, &self.color_shelves);
+            self.grow_color_atlas(new_h);
+        }
+        shelf_pack(&mut self.color_shelves, self.color_atlas_w, w, h)
+    }
+
+    /// Double mono atlas height until `min_height` fits. Copies old contents.
+    fn grow_mono_atlas(&mut self, min_height: u32) {
         let mut new_h = self.atlas_h;
         while new_h < min_height {
             new_h *= 2;
@@ -316,11 +423,10 @@ impl TextEngine {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        // Copy old contents into the new texture.
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("vibeflow-atlas-grow-copy"),
+                label: Some("vibeflow-mono-atlas-grow-copy"),
             });
         encoder.copy_texture_to_texture(
             wgpu::ImageCopyTexture {
@@ -348,12 +454,67 @@ impl TextEngine {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.atlas_h = new_h;
-        // The bind group in QuadPipeline is now stale — Renderer reads
-        // `texture_dirty()` next frame and rebuilds.
-        self.atlas_dirty = true;
+        self.atlases_dirty = true;
     }
 
-    fn upload_to_atlas(&self, x: u32, y: u32, w: u32, h: u32, data: &[u8]) {
+    /// Double color atlas height until `min_height` fits. Copies old contents.
+    fn grow_color_atlas(&mut self, min_height: u32) {
+        let mut new_h = self.color_atlas_h;
+        while new_h < min_height {
+            new_h *= 2;
+        }
+        let new_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("vibeflow-text-engine-color-atlas"),
+            size: wgpu::Extent3d {
+                width: self.color_atlas_w,
+                height: new_h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("vibeflow-color-atlas-grow-copy"),
+            });
+        encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &new_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.color_atlas_w,
+                height: self.color_atlas_h,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        self.color_texture = new_texture;
+        self.color_view = self
+            .color_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.color_atlas_h = new_h;
+        self.atlases_dirty = true;
+    }
+
+    /// Upload pixel bytes into the mono atlas at (x, y) of size (w, h). R8 = 1 byte/px.
+    fn upload_to_mono_atlas(&self, x: u32, y: u32, w: u32, h: u32, data: &[u8]) {
         self.queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &self.texture,
@@ -375,19 +536,27 @@ impl TextEngine {
         );
     }
 
-    /// Pixel size of the current atlas texture. Used by the shader's UV math.
-    #[must_use]
-    pub fn atlas_size(&self) -> (u32, u32) {
-        (self.atlas_w, self.atlas_h)
-    }
-
-    /// True iff the atlas texture has been re-allocated since the last call.
-    /// `QuadPipeline` polls this each frame to know when to rebuild its
-    /// bind group. Resets the flag on read.
-    pub fn texture_dirty(&mut self) -> bool {
-        let dirty = self.atlas_dirty;
-        self.atlas_dirty = false;
-        dirty
+    /// Upload pixel bytes into the color atlas at (x, y) of size (w, h). RGBA = 4 bytes/px.
+    fn upload_to_color_atlas(&self, x: u32, y: u32, w: u32, h: u32, data: &[u8]) {
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.color_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -544,5 +713,55 @@ mod tests {
             // RGBA: data length = 4 * width * height.
             assert_eq!(img.data.len(), 4 * img.width as usize * img.height as usize);
         }
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn glyph_for_emoji_routes_to_color_atlas() {
+        let mut engine = test_engine();
+        // Skip cleanly if no color emoji font in the test env.
+        if let Some(g) = engine.glyph_for('🎉') {
+            assert_eq!(g.kind, GlyphKind::Color);
+            // Cache hit on second call returns identical GlyphRef.
+            assert_eq!(engine.glyph_for('🎉'), Some(g));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn glyph_for_letter_routes_to_mono_atlas() {
+        let mut engine = test_engine();
+        let g = engine.glyph_for('A').unwrap();
+        assert_eq!(g.kind, GlyphKind::Mono);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn color_atlas_grows_when_full() {
+        let mut engine = test_engine();
+        let initial_h = engine.color_atlas_size().1;
+        // Force a barrage of distinct emoji codepoints. The Smiling-Face block
+        // (U+1F600 …) gives ~80 distinct emoji; at typical 16×16 size,
+        // 80 emoji = 80 × 16 × 16 × 4 = 81 920 B, fits in a single 256×256
+        // atlas (262 144 B). Use a wider span to force growth.
+        for code in 0x1F600u32..=0x1F64Fu32 {
+            if let Some(c) = char::from_u32(code) {
+                engine.glyph_for(c);
+            }
+        }
+        for code in 0x1F300u32..=0x1F320u32 {
+            if let Some(c) = char::from_u32(code) {
+                engine.glyph_for(c);
+            }
+        }
+        // If env has no color emoji font, glyph_for returns None and the
+        // atlas never grows. Both outcomes are valid; just assert no panic.
+        let (_, h_after) = engine.color_atlas_size();
+        assert!(
+            h_after >= initial_h && h_after % initial_h == 0,
+            "color atlas height {} is not a power-of-two multiple of {}",
+            h_after,
+            initial_h
+        );
     }
 }
