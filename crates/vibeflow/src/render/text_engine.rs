@@ -5,8 +5,6 @@
 //! Stage 7 ships monochrome (R8Unorm) only. Color-emoji rendering needs an
 //! RGBA atlas + a dual-format sampling path — that's Stage 7.5.
 
-#![allow(dead_code)] // first user is `Renderer` in Stage 7 Task 4
-
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -179,8 +179,9 @@ impl Renderer {
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
-        // Pull metrics + atlas size up front. `atlas_size` may have changed since
-        // last frame if a glyph cache miss grew the texture.
+        // Cell metrics are stable for the engine lifetime; pull up front so the
+        // builders can compute pixel positions. Atlas size is captured later
+        // (after build_* calls) so it reflects any growth that happened this frame.
         let (cell_w, cell_h) = self.text_engine.cell_metrics();
         let surface_size = (self.surface_config.width, self.surface_config.height);
         let layout = TabBarLayout::compute(surface_size.0, cell_h, app.tabs().len());
