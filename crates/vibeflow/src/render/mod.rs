@@ -135,6 +135,7 @@ impl Renderer {
             &device,
             format,
             &text_engine.view,
+            &text_engine.color_view,
             &text_engine.sampler,
         )?;
         let tab_bar_pipeline = crate::render::tabs::TabBarPipeline::new(&device, format)?;
@@ -203,6 +204,11 @@ impl Renderer {
         // Build per-pass instance lists OUTSIDE the render-pass scope so we can
         // call `&mut self` methods on the engine and pipelines without conflicting
         // with the render-pass borrow.
+        let is_active_session_alive = app
+            .tabs()
+            .get(app.active())
+            .map(|s| s.is_alive())
+            .unwrap_or(false);
         let cell_instances = if let Some(term) = term {
             crate::render::quad::build_cell_instances(
                 term,
@@ -212,6 +218,7 @@ impl Renderer {
                 cell_w,
                 cell_h,
                 layout.bar_height_px,
+                is_active_session_alive,
             )
         } else {
             Vec::new()
@@ -233,21 +240,91 @@ impl Renderer {
         });
         let bell_alpha = self.bell.tint_alpha(now);
 
-        // Now grow the GPU buffers (still outside the render-pass scope).
-        let atlas_size = self.text_engine.atlas_size();
+        // Build the per-frame banner rect + bell rect up front so we can
+        // concatenate them with the tab-bar rects into a single instance
+        // buffer write before the render pass starts. (See the doc comment
+        // on `TabBarPipeline::write_uniform_and_instances` for why.)
+        let banner_rect = banner_quads.as_ref().map(|_| {
+            let banner_h = (cell_h as f32) * 2.0;
+            let banner_y = layout.bar_height_px as f32 + 16.0;
+            let banner_w = surface_size.0 as f32;
+            crate::render::tabs::RectInstance::new(
+                0.0,
+                banner_y,
+                banner_w,
+                banner_h,
+                [0.0, 0.0, 0.0, 0.85],
+            )
+        });
+        let bell_rect = (bell_alpha > 0.0).then(|| {
+            crate::render::tabs::RectInstance::new(
+                0.0,
+                0.0,
+                surface_size.0 as f32,
+                surface_size.1 as f32,
+                [1.0, 1.0, 1.0, bell_alpha],
+            )
+        });
+
+        // Compute offsets for the unified buffers. Each pipeline lays its
+        // instances out in draw order so each `draw_range` reads its own
+        // disjoint slice.
+        let cell_count = cell_instances.len() as u32;
+        let tab_glyph_offset = cell_count;
+        let tab_glyph_count = tab_glyphs.len() as u32;
+        let banner_glyph_offset = tab_glyph_offset + tab_glyph_count;
+        let banner_glyph_count = banner_quads.as_ref().map_or(0, |v| v.len()) as u32;
+        let total_quads = banner_glyph_offset + banner_glyph_count;
+
+        let tab_rect_count = tab_rects.len() as u32;
+        let banner_rect_offset = tab_rect_count;
+        let banner_rect_count = u32::from(banner_rect.is_some());
+        let bell_rect_offset = banner_rect_offset + banner_rect_count;
+        let bell_rect_count = u32::from(bell_rect.is_some());
+        let total_rects = bell_rect_offset + bell_rect_count;
+
+        let mut all_quads = Vec::with_capacity(total_quads as usize);
+        all_quads.extend_from_slice(&cell_instances);
+        all_quads.extend_from_slice(&tab_glyphs);
+        if let Some(b) = &banner_quads {
+            all_quads.extend_from_slice(b);
+        }
+
+        let mut all_rects = Vec::with_capacity(total_rects as usize);
+        all_rects.extend_from_slice(&tab_rects);
+        if let Some(r) = banner_rect {
+            all_rects.push(r);
+        }
+        if let Some(r) = bell_rect {
+            all_rects.push(r);
+        }
+
+        // Now grow the GPU buffers + write all instance data (still outside
+        // the render-pass scope). Writes happen ONCE per pipeline per frame
+        // so they don't clobber each other.
+        let mono_atlas_size = self.text_engine.atlas_size();
+        let color_atlas_size = self.text_engine.color_atlas_size();
         if self.text_engine.texture_dirty() {
-            self.quad_pipeline.rebind_atlas(
+            self.quad_pipeline.rebind_atlases(
                 &self.device,
                 &self.text_engine.view,
+                &self.text_engine.color_view,
                 &self.text_engine.sampler,
             );
         }
-        let total_quads =
-            cell_instances.len() + tab_glyphs.len() + banner_quads.as_ref().map_or(0, |v| v.len());
         self.quad_pipeline
             .ensure_instance_capacity(&self.device, total_quads as u64);
         self.tab_bar_pipeline
-            .ensure_instance_capacity(&self.device, (tab_rects.len() + 2) as u64); // +2 = banner rect + bell
+            .ensure_instance_capacity(&self.device, total_rects as u64);
+        self.quad_pipeline.write_uniform_and_instances(
+            &self.queue,
+            surface_size,
+            mono_atlas_size,
+            color_atlas_size,
+            &all_quads,
+        );
+        self.tab_bar_pipeline
+            .write_uniform_and_instances(&self.queue, surface_size, &all_rects);
 
         let frame = self.surface.get_current_texture()?;
         let view = frame
@@ -276,71 +353,28 @@ impl Renderer {
             });
 
             // ---- Cell grid pass ----
-            if !cell_instances.is_empty() {
-                self.quad_pipeline.draw(
-                    &mut pass,
-                    &self.queue,
-                    &cell_instances,
-                    surface_size,
-                    atlas_size,
-                );
-            }
+            self.quad_pipeline.draw_range(&mut pass, 0..cell_count);
 
             // ---- Tab bar rects pass ----
-            if !tab_rects.is_empty() {
-                self.tab_bar_pipeline
-                    .draw(&mut pass, &self.queue, &tab_rects, surface_size);
-            }
+            self.tab_bar_pipeline
+                .draw_range(&mut pass, 0..tab_rect_count);
 
             // ---- Tab bar text pass ----
-            if !tab_glyphs.is_empty() {
-                self.quad_pipeline.draw(
-                    &mut pass,
-                    &self.queue,
-                    &tab_glyphs,
-                    surface_size,
-                    atlas_size,
-                );
-            }
+            self.quad_pipeline
+                .draw_range(&mut pass, tab_glyph_offset..banner_glyph_offset);
 
             // ---- Dead-tab banner ----
-            if let Some(quads) = banner_quads {
-                // Background rect first.
-                let banner_h = (cell_h as f32) * 2.0;
-                let banner_y = layout.bar_height_px as f32 + 16.0;
-                let banner_w = surface_size.0 as f32;
-                let banner_rect = crate::render::tabs::RectInstance::new(
-                    0.0,
-                    banner_y,
-                    banner_w,
-                    banner_h,
-                    [0.0, 0.0, 0.0, 0.85],
-                );
-                self.tab_bar_pipeline.draw(
-                    &mut pass,
-                    &self.queue,
-                    std::slice::from_ref(&banner_rect),
-                    surface_size,
-                );
+            if banner_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, banner_rect_offset..bell_rect_offset);
                 self.quad_pipeline
-                    .draw(&mut pass, &self.queue, &quads, surface_size, atlas_size);
+                    .draw_range(&mut pass, banner_glyph_offset..total_quads);
             }
 
             // ---- Bell flash overlay ----
-            if bell_alpha > 0.0 {
-                let bell_rect = crate::render::tabs::RectInstance::new(
-                    0.0,
-                    0.0,
-                    surface_size.0 as f32,
-                    surface_size.1 as f32,
-                    [1.0, 1.0, 1.0, bell_alpha],
-                );
-                self.tab_bar_pipeline.draw(
-                    &mut pass,
-                    &self.queue,
-                    std::slice::from_ref(&bell_rect),
-                    surface_size,
-                );
+            if bell_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, bell_rect_offset..total_rects);
             }
         }
 

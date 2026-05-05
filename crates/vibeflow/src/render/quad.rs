@@ -6,7 +6,12 @@
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 
-/// One textured quad. 64 bytes total.
+/// Glyph kind: mono (R8 coverage) vs colour (premultiplied RGBA).
+pub const KIND_MONO: u32 = 0;
+/// Glyph kind: colour emoji from the colour atlas.
+pub const KIND_COLOR: u32 = 1;
+
+/// One textured quad. 80 bytes total (5 × 16).
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct QuadInstance {
@@ -16,11 +21,14 @@ pub struct QuadInstance {
     pub atlas_rect_px: [f32; 4],
     pub fg: [f32; 4],
     pub bg: [f32; 4],
+    /// Lane 0: glyph kind (0 = Mono, 1 = Color). Lanes 1..=3 reserved for
+    /// future per-instance flags. Total instance size: 80 bytes (5 × 16).
+    pub flags: [u32; 4],
 }
 
 impl QuadInstance {
-    #[must_use]
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         screen_x: f32,
         screen_y: f32,
@@ -32,22 +40,29 @@ impl QuadInstance {
         atlas_h: f32,
         fg: [f32; 4],
         bg: [f32; 4],
+        kind: u32,
     ) -> Self {
         Self {
             screen_rect_px: [screen_x, screen_y, screen_w, screen_h],
             atlas_rect_px: [atlas_x, atlas_y, atlas_w, atlas_h],
             fg,
             bg,
+            flags: [kind, 0, 0, 0],
         }
     }
 }
 
-/// 16-byte uniform: surface size + atlas size.
+/// 32-byte uniform: surface size + mono atlas size + colour atlas size + pad.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 struct QuadUniform {
     surface_size_px: [f32; 2],
-    atlas_size_px: [f32; 2],
+    mono_atlas_size_px: [f32; 2],
+    color_atlas_size_px: [f32; 2],
+    /// 8-byte pad to keep the struct at a multiple of 16 bytes for std140-ish
+    /// alignment. WGSL `vec2<f32>` is 8-byte aligned but the struct as a whole
+    /// must be 16-byte aligned for uniform buffer binding.
+    _pad: [f32; 2],
 }
 
 pub struct QuadPipeline {
@@ -63,14 +78,15 @@ const INITIAL_QUAD_CAPACITY: u64 = 80 * 24; // matches default Term size
 const QUAD_STRIDE: u64 = std::mem::size_of::<QuadInstance>() as u64;
 
 impl QuadPipeline {
-    /// Build the pipeline. The `atlas_view` and `atlas_sampler` come from
-    /// `TextEngine`; the bind group is rebuilt by `rebind_atlas` whenever
-    /// the engine grows the texture.
+    /// Build the pipeline. The `mono_view`, `color_view`, and `sampler` come
+    /// from `TextEngine`; the bind group is rebuilt by `rebind_atlases`
+    /// whenever the engine grows either texture.
     pub fn new(
         device: &wgpu::Device,
         surface_format: wgpu::TextureFormat,
-        atlas_view: &wgpu::TextureView,
-        atlas_sampler: &wgpu::Sampler,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
     ) -> Result<Self> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vibeflow-quad-shader"),
@@ -103,6 +119,16 @@ impl QuadPipeline {
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -120,8 +146,9 @@ impl QuadPipeline {
             device,
             &bind_group_layout,
             &uniform_buffer,
-            atlas_view,
-            atlas_sampler,
+            mono_view,
+            color_view,
+            sampler,
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -159,6 +186,11 @@ impl QuadPipeline {
                             offset: 48,
                             shader_location: 3,
                             format: wgpu::VertexFormat::Float32x4,
+                        },
+                        wgpu::VertexAttribute {
+                            offset: 64,
+                            shader_location: 4,
+                            format: wgpu::VertexFormat::Uint32x4,
                         },
                     ],
                 }],
@@ -209,8 +241,9 @@ impl QuadPipeline {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         uniform_buffer: &wgpu::Buffer,
-        atlas_view: &wgpu::TextureView,
-        atlas_sampler: &wgpu::Sampler,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("vibeflow-quad-bind-group"),
@@ -222,31 +255,37 @@ impl QuadPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(atlas_view),
+                    resource: wgpu::BindingResource::TextureView(mono_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(atlas_sampler),
+                    resource: wgpu::BindingResource::TextureView(color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         })
     }
 
-    /// Rebuild the bind group with a new atlas view (after `TextEngine` grew
-    /// the texture). Caller polls `TextEngine::texture_dirty()` and calls
+    /// Rebuild the bind group with new atlas views (after `TextEngine` grew
+    /// either texture). Caller polls `TextEngine::texture_dirty()` and calls
     /// this when it returns `true`.
-    pub fn rebind_atlas(
+    pub fn rebind_atlases(
         &mut self,
         device: &wgpu::Device,
-        atlas_view: &wgpu::TextureView,
-        atlas_sampler: &wgpu::Sampler,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
     ) {
         self.bind_group = Self::make_bind_group(
             device,
             &self.bind_group_layout,
             &self.uniform_buffer,
-            atlas_view,
-            atlas_sampler,
+            mono_view,
+            color_view,
+            sampler,
         );
     }
 
@@ -267,38 +306,61 @@ impl QuadPipeline {
         self.instance_capacity = new_capacity;
     }
 
-    pub fn draw<'a>(
-        &'a self,
-        pass: &mut wgpu::RenderPass<'a>,
+    /// Write the per-frame uniform + the full concatenated instance list.
+    ///
+    /// **Call this BEFORE `begin_render_pass` and ONLY ONCE per frame.**
+    /// `wgpu::Queue::write_buffer` schedules its writes ahead of all encoder
+    /// commands at submit time, so multiple writes to the same buffer offset
+    /// within one render pass clobber each other and every draw reads only
+    /// the LAST data written. Instead, the renderer concatenates cells +
+    /// tab-text + banner-glyph instances into a single vec and writes once;
+    /// `draw_range` then issues per-batch draws from the unified buffer.
+    pub fn write_uniform_and_instances(
+        &self,
         queue: &wgpu::Queue,
-        instances: &[QuadInstance],
         surface_size_px: (u32, u32),
-        atlas_size_px: (u32, u32),
+        mono_atlas_size_px: (u32, u32),
+        color_atlas_size_px: (u32, u32),
+        instances: &[QuadInstance],
     ) {
-        if instances.is_empty() {
-            return;
-        }
         let uniform = QuadUniform {
             surface_size_px: [surface_size_px.0 as f32, surface_size_px.1 as f32],
-            atlas_size_px: [atlas_size_px.0 as f32, atlas_size_px.1 as f32],
+            mono_atlas_size_px: [mono_atlas_size_px.0 as f32, mono_atlas_size_px.1 as f32],
+            color_atlas_size_px: [color_atlas_size_px.0 as f32, color_atlas_size_px.1 as f32],
+            _pad: [0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        if !instances.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        }
+    }
 
+    /// Draw a sub-range of the concatenated instance buffer. The range is
+    /// expressed in instance indices (not bytes); each instance expands to
+    /// six vertices via the shared quad shader.
+    pub fn draw_range<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, range: std::ops::Range<u32>) {
+        if range.is_empty() {
+            return;
+        }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        pass.draw(0..6, 0..(instances.len() as u32));
+        pass.draw(0..6, range);
     }
 }
 
 use crate::render::cursor::CursorBlink;
-use crate::render::text_engine::{GlyphRef, TextEngine};
+use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 
 /// Walk the active grid and emit one [`QuadInstance`] per visible cell.
 /// Skips cells whose glyph is unrenderable (`text_engine.glyph_for` returned
 /// `None`) — those become invisible cells (background still drawn via the
 /// shared bg pass). Toggles the cursor cell based on `CursorBlink::visible`.
+///
+/// `is_session_alive` gates the cursor swap. Dead sessions still keep their
+/// final term state on screen (so the user can read the "exit" line) but the
+/// cursor must stop blinking — the dead-tab banner is the affordance.
+#[allow(clippy::too_many_arguments)]
 pub fn build_cell_instances(
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
     text_engine: &mut TextEngine,
@@ -307,6 +369,7 @@ pub fn build_cell_instances(
     cell_w: u32,
     cell_h: u32,
     y_offset_px: u32,
+    is_session_alive: bool,
 ) -> Vec<QuadInstance> {
     use crate::render::colors::resolve_color;
     use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
@@ -346,6 +409,10 @@ pub fn build_cell_instances(
         }
         let row = line as u32;
 
+        if should_skip_cell(cell.flags) {
+            continue;
+        }
+
         // IMPORTANT: preserve Stage 6 mod.rs's resolve_color arg order:
         // `(color, &Colors, fg_default, bg_default)` — same order for both fg
         // and bg lookups.
@@ -353,14 +420,20 @@ pub fn build_cell_instances(
         let bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
         let is_cursor = cell.point == cursor_state.point;
         let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
-        if is_cursor && cursor_shape_visible && cursor_visible_per_blink {
+        if is_cursor && is_session_alive && cursor_shape_visible && cursor_visible_per_blink {
             std::mem::swap(&mut fg, &mut bg);
         }
 
         let screen_x = (col * cell_w) as f32;
         let screen_y = (row * cell_h + y_offset_px) as f32;
+        let bg_w = if cell_is_wide(cell.flags) {
+            (cell_w * 2) as f32
+        } else {
+            cell_w as f32
+        };
 
         let glyph = text_engine.glyph_for(cell.c).unwrap_or(GlyphRef {
+            kind: GlyphKind::Mono,
             atlas_x: 0,
             atlas_y: 0,
             atlas_w: 0,
@@ -369,11 +442,16 @@ pub fn build_cell_instances(
             bearing_y: 0,
         });
 
+        let glyph_kind: u32 = match glyph.kind {
+            GlyphKind::Mono => KIND_MONO,
+            GlyphKind::Color => KIND_COLOR,
+        };
+
         // Background rect: zero-size atlas rect → alpha=0 → pure bg.
         out.push(QuadInstance::new(
             screen_x,
             screen_y,
-            cell_w as f32,
+            bg_w,
             cell_h as f32,
             0.0,
             0.0,
@@ -381,6 +459,7 @@ pub fn build_cell_instances(
             0.0,
             bg,
             bg,
+            KIND_MONO,
         ));
         if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
             out.push(QuadInstance::new(
@@ -394,6 +473,7 @@ pub fn build_cell_instances(
                 glyph.atlas_h as f32,
                 fg,
                 bg,
+                glyph_kind,
             ));
         }
     }
@@ -442,10 +522,79 @@ pub fn build_banner_instances(
                     glyph.atlas_h as f32,
                     amber,
                     black,
+                    KIND_MONO,
                 ));
             }
         }
         x += cell_w as f32;
     }
     out
+}
+
+/// Returns `true` if a cell with the given flags should be skipped entirely
+/// during cell-instance building (no bg, no glyph). Covers both
+/// `WIDE_CHAR_SPACER` (trailing spacer after a wide char) and
+/// `LEADING_WIDE_CHAR_SPACER` (line-leading spacer when a wide char wrapped
+/// from the previous line).
+pub(crate) fn should_skip_cell(flags: alacritty_terminal::term::cell::Flags) -> bool {
+    flags.intersects(
+        alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER
+            | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER,
+    )
+}
+
+/// Returns `true` if a cell's background quad should be 2 × cell_w wide.
+/// The WIDE_CHAR cell is the leading codepoint of a 2-column character; its
+/// trailing spacer (`WIDE_CHAR_SPACER` in the next column or, if the wide
+/// char wraps to a new line, `LEADING_WIDE_CHAR_SPACER` at column 0 of the
+/// next line) is always filtered out by `should_skip_cell`.
+pub(crate) fn cell_is_wide(flags: alacritty_terminal::term::cell::Flags) -> bool {
+    flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR)
+}
+
+#[cfg(test)]
+mod cell_layout_tests {
+    use super::{cell_is_wide, should_skip_cell};
+    use alacritty_terminal::term::cell::Flags;
+
+    #[test]
+    fn skips_wide_char_spacer() {
+        assert!(should_skip_cell(Flags::WIDE_CHAR_SPACER));
+    }
+
+    #[test]
+    fn skips_leading_wide_char_spacer() {
+        // Wrapped-wide-char start-of-line spacer.
+        assert!(should_skip_cell(Flags::LEADING_WIDE_CHAR_SPACER));
+    }
+
+    #[test]
+    fn does_not_skip_normal_cell() {
+        assert!(!should_skip_cell(Flags::empty()));
+    }
+
+    #[test]
+    fn detects_wide_char() {
+        assert!(cell_is_wide(Flags::WIDE_CHAR));
+    }
+
+    #[test]
+    fn does_not_widen_normal_cell() {
+        assert!(!cell_is_wide(Flags::empty()));
+    }
+
+    #[test]
+    fn does_not_skip_wide_char_itself() {
+        // The WIDE_CHAR cell renders normally (and gets a 2× bg).
+        assert!(!should_skip_cell(Flags::WIDE_CHAR));
+    }
+
+    #[test]
+    fn skip_wins_when_wide_char_and_spacer_both_set() {
+        // `alacritty_terminal` does not emit this combination in practice,
+        // but if a future grid model ever did, `should_skip_cell` should win
+        // — otherwise we'd emit a 2× bg quad on top of the trailing spacer
+        // and double-paint the cell.
+        assert!(should_skip_cell(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
+    }
 }

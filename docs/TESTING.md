@@ -170,3 +170,46 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - Cursor blink period not configurable — Stage 9.
 - Bell-flash overlay always fires for the active tab; background-tab BELs
   are silently dropped (UX choice; configurable in Stage 9).
+
+## Stage 7.5 — color emoji RGBA atlas + wide-glyph fix
+
+Run:
+
+```bash
+cd /home/bhengen/dev/vibeflow
+cargo build --bin vibeflow
+RUST_LOG=vibeflow=info ./target/debug/vibeflow
+```
+
+- [ ] Run `printf '🎉 🚀 😀\n'`. Each emoji renders in **full color** (not
+  monochrome outline, not tofu). Some emoji may still appear as outlines
+  if they only resolve to a non-color font (e.g. DejaVu Sans on Ubuntu) —
+  that's a font priority issue deferred to Stage 9.
+- [ ] Run `printf '中文 vs 中文\n'`. Each CJK pair renders identically; no
+  overflow or overlap into adjacent cells.
+- [ ] Run `printf '🎉🎉🎉\n'`. Backgrounds tile cleanly under back-to-back
+  wide chars; no clipping at cell boundaries.
+- [ ] Type at the prompt with cursor over a wide char. Cursor block covers
+  the full 2-cell width.
+- [ ] Run `for i in $(seq 1 100); do printf '%s' $(printf '\\U%x' $((0x1f600 + i % 40))); done`.
+  Atlas grows; no visible stutter.
+- [ ] Resize the window to ~10 px. No GPU errors; emoji still rasterized
+  correctly.
+- [ ] Run `vi`, enter normal mode. Cursor stops blinking on the active tab
+  while shape is Hidden (Stage 7 behavior preserved).
+- [ ] Press Ctrl+D in the active tab. Session dies; dead-tab banner appears
+  in amber. Cursor stops blinking on the dead tab. (Stage 7 behavior.)
+- [ ] On a system with NO color emoji font (uninstall Noto Color Emoji):
+  emoji renders as tofu/outline. No crash.
+- [ ] Re-run with `WINIT_UNIX_BACKEND=x11`. All checks above still pass.
+
+**Known Stage 7.5 limitations (deferred to later stages):**
+
+- No programming ligatures (`==>` renders as three glyphs) — Stage 8+.
+- Cursor over a color emoji shows the emoji on a swapped background (the
+  color path ignores fg/bg). Acceptable for v0.1; may revisit in Stage 9.
+- No bidi or complex shaping — Stage 8+.
+- Font family hardcoded to JBM + system fallback — Stage 9 (TOML config).
+- Emoji font selection not configurable — many smiley-face emoji
+  (U+1F600..) currently fall back to DejaVu Sans (mono) on Ubuntu rather
+  than Noto Color Emoji; fontdb priority adjustment is Stage 9.
