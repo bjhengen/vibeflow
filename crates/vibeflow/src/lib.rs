@@ -7,6 +7,8 @@
 //! See `docs/superpowers/specs/2026-05-01-vibeflow-design.md` for the full design.
 
 pub mod app;
+pub mod clipboard;
+pub mod keymap;
 pub mod render;
 pub mod session;
 pub mod window;

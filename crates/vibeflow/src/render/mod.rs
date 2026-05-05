@@ -6,7 +6,9 @@
 pub mod bell;
 pub mod colors;
 pub mod cursor;
+pub mod mouse_encoder;
 pub mod quad; // formerly `text` — see Step 3
+pub mod selection;
 pub mod tabs;
 pub mod text_engine;
 
