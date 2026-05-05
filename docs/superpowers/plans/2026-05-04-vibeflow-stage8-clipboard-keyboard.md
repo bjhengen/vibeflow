@@ -428,13 +428,13 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow --lib keymap 2>&1 | tail -10
 ```
 
-Expected: 18 new tests pass.
+Expected: 17 new tests pass.
 
 ```bash
 cargo test -p vibeflow --lib 2>&1 | tail -3
 ```
 
-Expected: 135 + 18 = 153 default tests pass + 12 ignored.
+Expected: 135 + 17 = 152 default tests pass + 12 ignored.
 
 ```bash
 cargo fmt --all -- --check
@@ -661,7 +661,7 @@ Expected: 8 tests pass.
 cargo test -p vibeflow --lib 2>&1 | tail -3
 ```
 
-Expected: 153 + 8 = 161 default + 12 ignored.
+Expected: 152 + 8 = 160 default + 12 ignored.
 
 ```bash
 cargo fmt --all -- --check
@@ -728,7 +728,7 @@ impl Clipboard {
     /// a copy failure must not crash the renderer.
     pub fn copy(&mut self, text: &str) -> Result<()> {
         self.inner
-            .set_text(text.to_string())
+            .set_text(text)
             .context("write to system clipboard")?;
         Ok(())
     }
@@ -765,7 +765,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: 161 default tests + 13 ignored (the new ignored clipboard test).
+Expected: 160 default tests + 13 ignored (the new ignored clipboard test).
 
 LOCAL ONLY — verify the ignored test on slmbeast:
 
@@ -1202,28 +1202,6 @@ mod tests {
     }
 
     #[test]
-    fn line_mode_snaps_to_full_line() {
-        let mut t = SelectionTracker::new();
-        let term = make_term(80, 24);
-        let t0 = Instant::now();
-        for i in 0..3 {
-            t.mouse_down(pt(0, 5), false, &term, t0 + Duration::from_millis(50 * i as u64));
-            t.mouse_up();
-        }
-        // Re-press to enter line mode
-        t.mouse_down(pt(0, 5), false, &term, t0 + Duration::from_millis(200));
-        let s = t.current().unwrap();
-        // After triple-click, count is 3 (line). On the 4th click count
-        // wraps to 1 (Cell). For this test we expect Line on the third
-        // mouse_down — adjusted: only count three down events + the third
-        // is the Line trigger.
-        // Note: actually three mouse_down + mouse_up cycles before the
-        // assertion put us at count=3 already; this test is redundant
-        // with the previous one. Keeping for clarity of bound-snapping.
-        let _ = s;
-    }
-
-    #[test]
     fn click_counter_resets_after_500ms_gap() {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
@@ -1335,13 +1313,13 @@ cd /home/bhengen/dev/vibeflow
 cargo test -p vibeflow --lib selection 2>&1 | tail -20
 ```
 
-Expected: ~16 tests pass (count varies based on how many you wrote — the verbatim block above has 16). All should pass.
+Expected: 14 tests pass.
 
 ```bash
 cargo test -p vibeflow --lib 2>&1 | tail -3
 ```
 
-Expected: 161 + 16 = 177 default tests pass + 13 ignored.
+Expected: 160 + 14 = 174 default tests pass + 13 ignored.
 
 ```bash
 cargo fmt --all -- --check
@@ -1429,45 +1407,33 @@ Append to the `impl PtySession` block, after `set_label` and before the test mod
 ```rust
     /// Re-spawn the session in place. Kills the existing child (if alive),
     /// drops the old receiver, and replaces `*self` with a fresh `spawn`
-    /// running `$SHELL` (fallback `bash`).
+    /// running `$SHELL` (fallback `bash`). Preserves the current PTY size
+    /// by re-applying it after the new spawn — avoids the new shell
+    /// believing it's at the hardcoded `DEFAULT_COLS`/`DEFAULT_ROWS`.
     ///
     /// Stage 8 always uses `$SHELL` regardless of the dying process. Stage
     /// 9 (TOML config) may grow argv-replay if a clear use case emerges.
+    /// Tracker config also resets to default; Stage 9's TOML hot-reload
+    /// will pass the current user config through.
     ///
     /// # Errors
     /// Propagates spawn / IO errors.
     pub fn restart(&mut self) -> std::io::Result<()> {
         let _ = self.child.kill();
+        // Capture the current PTY size before we drop the old master.
+        let size = self.master.get_size().ok();
         // The reader thread sees its tx invalidated when the new spawn
         // replaces self; we don't need to join it explicitly.
         let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
-        let config = self.tracker.config().clone();
-        let new_session = PtySession::spawn(&[argv.as_str()], config)?;
+        let mut new_session = PtySession::spawn(&[argv.as_str()], TrackerConfig::default())?;
+        if let Some(s) = size {
+            // PtySize uses u16 for rows/cols. Re-apply to the new master.
+            let _ = new_session.resize(s.rows, s.cols);
+        }
         *self = new_session;
         Ok(())
     }
 ```
-
-NOTE: This requires `AiStateTracker::config()` to return a clonable reference to its config. If `tracker.config()` doesn't exist, add it. Find the `AiStateTracker` definition (likely in `crates/vibeflow/src/session/tracker.rs`) and add:
-
-```rust
-impl AiStateTracker {
-    /// Returns a reference to the config this tracker was constructed with,
-    /// for use by `PtySession::restart`.
-    #[must_use]
-    pub fn config(&self) -> &TrackerConfig {
-        &self.config
-    }
-}
-```
-
-If the `config` field doesn't exist on `AiStateTracker` either, replace `let config = self.tracker.config().clone();` in `restart` with:
-
-```rust
-let config = TrackerConfig::default();
-```
-
-`TrackerConfig::default()` is fine for v0.1; the user's preferences haven't changed just because the session restarted. Stage 9 will pass it explicitly.
 
 - [ ] **Step 3: Add a unit test for restart**
 
@@ -1477,25 +1443,36 @@ Append to `mod tests` in `session.rs` (the existing test module — DO NOT MODIF
     #[test]
     fn restart_replaces_internals_with_fresh_spawn() {
         // Spawn a sleep then restart. After restart, the new session must
-        // be alive (sleep keeps running) and have a fresh, distinct PTY.
+        // be alive (the new shell is freshly spawned).
         let mut s = PtySession::spawn(&["sleep", "10"], TrackerConfig::default())
             .expect("first spawn");
         s.restart().expect("restart");
+        // Give the new PTY a moment to initialize before the liveness check
+        // — `child.try_wait` can race against the spawn handshake on slower
+        // CI runners.
+        std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(s.is_alive(), "restarted session should be alive");
         // Send some bytes to confirm the new PTY is responsive.
         s.send_input(b"\n").expect("send_input on restarted session");
-        // Kill it for cleanup; ignore errors.
-        let _ = s.child.kill();
+        // Drop the session — its Drop impl (or the kill-on-drop the
+        // child handle has) cleans up the spawned shell.
+        drop(s);
     }
 ```
-
-If `s.child.kill()` is private (it might be), call `drop(s)` instead.
 
 - [ ] **Step 4: Add `restart_active` and `cycle_active` to `App`**
 
 Open `crates/vibeflow/src/app.rs`. Append to the `impl App` block:
 
 ```rust
+    /// Mutable slice of all sessions. Stage 8's selection / mouse routing
+    /// needs `tabs_mut().get_mut(active)` to call `selection.mouse_*` and
+    /// `send_input` from the `window.rs` dispatch layer.
+    #[must_use]
+    pub fn tabs_mut(&mut self) -> &mut [PtySession] {
+        &mut self.tabs
+    }
+
     /// Restart the dead active session. No-op on live sessions and on the
     /// no-tabs sentinel state.
     ///
@@ -1504,7 +1481,7 @@ Open `crates/vibeflow/src/app.rs`. Append to the `impl App` block:
     pub fn restart_active(&mut self) -> std::io::Result<()> {
         let Some(s) = self.tabs.get_mut(self.active) else { return Ok(()) };
         if s.is_alive() {
-            log::trace!("Ctrl+Shift+R on live tab; ignoring");
+            tracing::trace!("Ctrl+Shift+R on live tab; ignoring");
             return Ok(());
         }
         s.restart()
@@ -1523,7 +1500,7 @@ Open `crates/vibeflow/src/app.rs`. Append to the `impl App` block:
     }
 ```
 
-If `log::trace!` requires a specific import, the `log` crate is already a vibeflow dependency (verify via `grep -n "log::" crates/vibeflow/src/`). If it's not, replace the trace-log with `// no-op on live tabs` comment and continue.
+`tracing` is already a vibeflow dependency (used throughout `window.rs` for tab spawn / state-changed / bell / died logs).
 
 - [ ] **Step 5: Add a unit test for cycle_active**
 
@@ -1533,17 +1510,10 @@ Append to `mod tests` in `app.rs`:
     #[test]
     fn cycle_active_wraps_forward_and_backward() {
         let mut app = App::new();
-        // Push three sentinel-ish session entries via test helper. If
-        // `App::new()` already creates one tab, adjust accordingly. The
-        // pattern in app.rs is:
+        // App::new() starts empty. App::new_tab spawns a sleep then sets
+        // active. Use it three times to populate.
         for _ in 0..3 {
-            // Construct a placeholder session — a sleep is a portable
-            // process that won't exit immediately.
-            let s = crate::session::session::PtySession::spawn(
-                &["sleep", "30"],
-                crate::session::tracker::TrackerConfig::default(),
-            ).expect("spawn");
-            app.push_tab(s);
+            app.new_tab(&["sleep", "30"]).expect("new_tab spawns");
         }
         app.set_active(0);
         app.cycle_active(1);
@@ -1557,9 +1527,7 @@ Append to `mod tests` in `app.rs`:
     }
 ```
 
-NOTE: If `App::new()` creates a default tab, the assertions above are off by one. Read `App::new` first and adjust the indices. If `App` doesn't have a public `push_tab`, add one or use `App::new_tab` if it accepts a session.
-
-If neither is available without surgery, *remove this test* and rely on the manual smoke at the end. The cycle math is trivial — `rem_euclid` — and the smoke walkthrough exercises it.
+NOTE: This test spawns three real `sleep 30` processes via PTY. They get cleaned up when `app` drops at end-of-test (PtySession's Drop / child handle terminates them). If running this test starts hanging on slow runners, mark it `#[ignore]` and rely on the manual smoke walkthrough — the cycle math is trivial `rem_euclid` and doesn't strictly need an integration test.
 
 - [ ] **Step 6: Verify**
 
@@ -1571,7 +1539,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: 177 + 1 or 2 new tests = 178-179 default + 13 ignored.
+Expected: 174 + 1 or 2 new tests = 175-176 default + 13 ignored.
 
 If `restart_replaces_internals_with_fresh_spawn` fails because spawning `sleep` is slow on the first run, try increasing the default test timeout or adding a 100ms sleep to let the new PTY initialize:
 
@@ -1620,7 +1588,7 @@ Note the line numbers of:
 let clipboard = match crate::clipboard::Clipboard::new() {
     Ok(c) => Some(c),
     Err(e) => {
-        log::warn!("system clipboard unavailable: {e}");
+        tracing::warn!("system clipboard unavailable: {e}");
         None
     }
 };
@@ -1655,7 +1623,7 @@ WindowEvent::KeyboardInput { event: ke, .. } => {
     // Shortcut dispatch FIRST. If the combo matches, suppress the literal
     // byte fallthrough.
     if let Some(shortcut) =
-        crate::keymap::match_shortcut(&ke.logical_key, self.modifiers.state())
+        crate::keymap::match_shortcut(&ke.logical_key, self.current_modifiers)
     {
         self.handle_shortcut(shortcut);
         return;
@@ -1672,9 +1640,9 @@ WindowEvent::KeyboardInput { event: ke, .. } => {
 }
 ```
 
-NOTE: `self.modifiers.state()` returns `ModifiersState` (the bitfield). winit 0.30's `Modifiers` struct wraps `state()` accessor. Double-check by reading existing code in `window.rs`.
+NOTE: `self.current_modifiers` returns `ModifiersState` (the bitfield). winit 0.30's `Modifiers` struct wraps `state()` accessor. Double-check by reading existing code in `window.rs`.
 
-If `self.app.tabs_mut()` doesn't exist as a method, use `self.app.tabs.get_mut(...)` (direct field access if the field is `pub(crate)`) or whatever pattern the codebase uses.
+`App::tabs_mut` is added as part of Task 5 alongside `restart_active` / `cycle_active`. If you're executing Task 6 before Task 5 for some reason, add it now too — three lines, see Task 5 Step 4.
 
 - [ ] **Step 4: Implement `handle_shortcut`**
 
@@ -1685,13 +1653,10 @@ Add to the `impl Window` (or wherever the dispatch struct is) block:
         use crate::keymap::Shortcut;
         match shortcut {
             Shortcut::NewTab => {
+                // `App::new_tab` spawns + appends + sets active in one call.
                 let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
-                if let Ok(s) = crate::session::session::PtySession::spawn(
-                    &[argv.as_str()],
-                    crate::session::tracker::TrackerConfig::default(),
-                ) {
-                    self.app.push_tab(s);
-                    self.app.set_active(self.app.tabs().len() - 1);
+                if let Err(e) = self.app.new_tab(&[argv.as_str()]) {
+                    tracing::warn!("new tab spawn failed: {e}");
                 }
             }
             Shortcut::CloseTab => {
@@ -1701,7 +1666,7 @@ Add to the `impl Window` (or wherever the dispatch struct is) block:
             Shortcut::PrevTab => self.app.cycle_active(-1),
             Shortcut::RestartTab => {
                 if let Err(e) = self.app.restart_active() {
-                    log::warn!("restart failed: {e}");
+                    tracing::warn!("restart failed: {e}");
                 }
             }
             Shortcut::Copy => self.handle_copy(),
@@ -1714,7 +1679,7 @@ Add to the `impl Window` (or wherever the dispatch struct is) block:
         let Some(s) = self.app.tabs().get(self.app.active()) else { return };
         let Some(text) = s.selection.text(s.term()) else { return };
         if let Err(e) = clipboard.copy(&text) {
-            log::warn!("copy failed: {e}");
+            tracing::warn!("copy failed: {e}");
         }
     }
 
@@ -1736,9 +1701,7 @@ Add to the `impl Window` (or wherever the dispatch struct is) block:
     }
 ```
 
-NOTE: If `App::push_tab` doesn't exist, use whatever the existing pattern is for adding a session — either modify the public API of `App` or call into `App::new_tab` directly.
-
-If `App::close_tab` returns a `Result` or has different signature than assumed, adjust.
+NOTE: `App::close_tab` is `pub fn close_tab(&mut self, idx: usize)` (no Result) — verified against current `app.rs`. The plan's match arm matches.
 
 - [ ] **Step 5: Verify build green**
 
@@ -1811,7 +1774,7 @@ WindowEvent::MouseInput { state, button, .. } => {
     let Some((px, py)) = self.cursor_pos else { return };
     let pressed = matches!(state, ElementState::Pressed);
     let released = matches!(state, ElementState::Released);
-    let shift = self.modifiers.state().shift_key();
+    let shift = self.current_modifiers.shift_key();
 
     // Tab bar passthrough (existing Stage 6 hit-test). The y-bound check
     // is done inside `tab_bar_hit_test`.
@@ -1885,12 +1848,9 @@ The `// existing tab_bar handling` block is a placeholder for whatever Stage 6's
 
 ```rust
 WindowEvent::CursorMoved { position, .. } => {
-    self.cursor_pos = Some((
-        position.x as u32,
-        position.y as u32,
-    ));
+    let (px, py) = (position.x as u32, position.y as u32);
+    self.cursor_pos = Some((px, py));
 
-    let (px, py) = self.cursor_pos.unwrap();
     if py < self.layout_bar_height_px() {
         // tab bar hover — existing Stage 6 handling.
         return;
@@ -1901,7 +1861,7 @@ WindowEvent::CursorMoved { position, .. } => {
         cell_w, cell_h, self.layout_bar_height_px(), px, py,
     ) else { return };
 
-    let shift = self.modifiers.state().shift_key();
+    let shift = self.current_modifiers.shift_key();
     let Some(s) = self.app.tabs_mut().get_mut(self.app.active()) else { return };
 
     let mode_on = s.term().mode().intersects(
@@ -1916,7 +1876,10 @@ WindowEvent::CursorMoved { position, .. } => {
     );
 
     if mode_on && drag_tracking && !shift {
-        // Encode as drag for PTY.
+        // Encode as drag for PTY. v0.1 simplification: assume Left button
+        // drags. Middle/right drags in mouse-mode-aware apps are extremely
+        // rare and Stage 9 can track which button initiated the drag if
+        // that ever bites.
         let bytes = crate::render::mouse_encoder::encode_drag(
             crate::render::mouse_encoder::Button::Left,
             point,
@@ -2141,7 +2104,7 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: build green. Test count = ~178 default + 13-14 ignored.
+Expected: build green. Test count = ~176 default + 13-14 ignored.
 
 Smoke run on slmbeast:
 
@@ -2268,7 +2231,7 @@ cargo fmt --all -- --check && \
 ```
 
 Expected:
-- ~178 default lib tests pass + ~14 ignored.
+- ~176 default lib tests pass + ~14 ignored.
 - 27 protocol crate tests, 15 npm tests, integration tests pass.
 - The exact total varies by harness count. The gate is "any failure stops" — exact numbers are diagnostic, not gating.
 
@@ -2369,18 +2332,18 @@ Mapping Stage 8 spec requirements → tasks:
 - **Clippy / fmt discipline:** every code-changing task ends with verify-fmt+clippy.
 - **Threading-model discipline:** unchanged. All selection/clipboard state on the main thread.
 - **Test count tracking:** Stage 7.5 ends at 135 default + 12 ignored. Stage 8 adds:
-  - keymap (Task 1): 18 default
+  - keymap (Task 1): 17 default
   - mouse_encoder (Task 2): 8 default
   - clipboard (Task 3): 1 ignored
-  - selection (Task 4): ~16 default
-  - session/app (Task 5): ~2 default (restart + cycle_active; subject to App API)
+  - selection (Task 4): 14 default
+  - session/app (Task 5): 2 default (restart + cycle_active; cycle_active test may be ignored on slow runners)
   - rendering (Task 8): 1 ignored
-  - **Final: ~179 default + ~14 ignored.**
+  - **Final: ~176 default + ~14 ignored.**
 
 ## Notable plan risks
 
 1. **`AiStateTracker::config()` accessor may not exist.** Task 5 adds it if needed; failing that, falls back to `TrackerConfig::default()`. Either way, restart works.
-2. **`App::push_tab` may not exist** — Task 6 references it. If `App` only exposes `new_tab(argv)` (which spawns internally), the dispatch needs to call that instead. The implementer should read `app.rs` first.
+2. **`App::push_tab`** — verified absent. Task 6's NewTab handler routes through `App::new_tab(argv)` instead, which spawns + appends + sets active in one call. Done.
 3. **alacritty_terminal `Term::grid()[Point]` indexing** — Task 4's `text()` method assumes `&grid[Point]` works. If it requires `&grid[Line(n)][Column(m)]`, adapt the iteration.
 4. **`TermSize` in tests may be gated** — Task 4's tests use it; if it's `#[cfg(test)]`-private to `alacritty_terminal`, the test module needs a local `Dimensions` impl. Plan provides the fallback.
 5. **winit 0.30 ModifiersState API** — `modifiers.state()` accessor was correct as of writing; if winit changed, adapt. The `control_key()`/`shift_key()`/`alt_key()`/`super_key()` methods on `ModifiersState` are stable.
