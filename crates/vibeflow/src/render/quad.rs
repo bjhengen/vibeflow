@@ -459,24 +459,6 @@ pub fn build_cell_instances(
     out
 }
 
-/// Returns `true` if a cell with the given flags should be skipped entirely
-/// during cell-instance building (no bg, no glyph). Covers both
-/// `WIDE_CHAR_SPACER` (trailing spacer after a wide char) and
-/// `LEADING_WIDE_CHAR_SPACER` (line-leading spacer when a wide char wrapped
-/// from the previous line).
-pub(crate) fn should_skip_cell(flags: alacritty_terminal::term::cell::Flags) -> bool {
-    flags.intersects(
-        alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER
-            | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER,
-    )
-}
-
-/// Returns `true` if a cell's background quad should be 2 × cell_w wide
-/// (covering itself + its WIDE_CHAR_SPACER neighbour).
-pub(crate) fn cell_is_wide(flags: alacritty_terminal::term::cell::Flags) -> bool {
-    flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR)
-}
-
 /// Build the dead-tab banner's centered text quads.
 pub fn build_banner_instances(
     text: &str,
@@ -528,6 +510,27 @@ pub fn build_banner_instances(
     out
 }
 
+/// Returns `true` if a cell with the given flags should be skipped entirely
+/// during cell-instance building (no bg, no glyph). Covers both
+/// `WIDE_CHAR_SPACER` (trailing spacer after a wide char) and
+/// `LEADING_WIDE_CHAR_SPACER` (line-leading spacer when a wide char wrapped
+/// from the previous line).
+pub(crate) fn should_skip_cell(flags: alacritty_terminal::term::cell::Flags) -> bool {
+    flags.intersects(
+        alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER
+            | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER,
+    )
+}
+
+/// Returns `true` if a cell's background quad should be 2 × cell_w wide.
+/// The WIDE_CHAR cell is the leading codepoint of a 2-column character; its
+/// trailing spacer (`WIDE_CHAR_SPACER` in the next column or, if the wide
+/// char wraps to a new line, `LEADING_WIDE_CHAR_SPACER` at column 0 of the
+/// next line) is always filtered out by `should_skip_cell`.
+pub(crate) fn cell_is_wide(flags: alacritty_terminal::term::cell::Flags) -> bool {
+    flags.contains(alacritty_terminal::term::cell::Flags::WIDE_CHAR)
+}
+
 #[cfg(test)]
 mod cell_layout_tests {
     use super::{cell_is_wide, should_skip_cell};
@@ -563,5 +566,14 @@ mod cell_layout_tests {
     fn does_not_skip_wide_char_itself() {
         // The WIDE_CHAR cell renders normally (and gets a 2× bg).
         assert!(!should_skip_cell(Flags::WIDE_CHAR));
+    }
+
+    #[test]
+    fn skip_wins_when_wide_char_and_spacer_both_set() {
+        // `alacritty_terminal` does not emit this combination in practice,
+        // but if a future grid model ever did, `should_skip_cell` should win
+        // — otherwise we'd emit a 2× bg quad on top of the trailing spacer
+        // and double-paint the cell.
+        assert!(should_skip_cell(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
     }
 }
