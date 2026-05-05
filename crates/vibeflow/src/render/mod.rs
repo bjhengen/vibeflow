@@ -204,6 +204,11 @@ impl Renderer {
         // Build per-pass instance lists OUTSIDE the render-pass scope so we can
         // call `&mut self` methods on the engine and pipelines without conflicting
         // with the render-pass borrow.
+        let is_active_session_alive = app
+            .tabs()
+            .get(app.active())
+            .map(|s| s.is_alive())
+            .unwrap_or(false);
         let cell_instances = if let Some(term) = term {
             crate::render::quad::build_cell_instances(
                 term,
@@ -213,6 +218,7 @@ impl Renderer {
                 cell_w,
                 cell_h,
                 layout.bar_height_px,
+                is_active_session_alive,
             )
         } else {
             Vec::new()

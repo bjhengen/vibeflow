@@ -341,6 +341,11 @@ use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 /// Skips cells whose glyph is unrenderable (`text_engine.glyph_for` returned
 /// `None`) — those become invisible cells (background still drawn via the
 /// shared bg pass). Toggles the cursor cell based on `CursorBlink::visible`.
+///
+/// `is_session_alive` gates the cursor swap. Dead sessions still keep their
+/// final term state on screen (so the user can read the "exit" line) but the
+/// cursor must stop blinking — the dead-tab banner is the affordance.
+#[allow(clippy::too_many_arguments)]
 pub fn build_cell_instances(
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
     text_engine: &mut TextEngine,
@@ -349,6 +354,7 @@ pub fn build_cell_instances(
     cell_w: u32,
     cell_h: u32,
     y_offset_px: u32,
+    is_session_alive: bool,
 ) -> Vec<QuadInstance> {
     use crate::render::colors::resolve_color;
     use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
@@ -399,7 +405,7 @@ pub fn build_cell_instances(
         let bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
         let is_cursor = cell.point == cursor_state.point;
         let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
-        if is_cursor && cursor_shape_visible && cursor_visible_per_blink {
+        if is_cursor && is_session_alive && cursor_shape_visible && cursor_visible_per_blink {
             std::mem::swap(&mut fg, &mut bg);
         }
 
