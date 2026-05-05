@@ -8,7 +8,12 @@
 // Vertex shader expands 6 vertices per instance; UV uses the matching atlas
 // size from QuadUniform. Fragment shader branches on kind:
 //   Mono  → mix(bg, fg, sampled.r)
-//   Color → premultiplied over: sampled.rgb + bg.rgb * (1 - sampled.a)
+//   Color → mix(bg, sampled.rgb, sampled.a)
+// Note: swash 0.1.19 returns STRAIGHT-alpha RGBA for color glyphs (verified
+// empirically: pixels with rgba=(243,66,53,6) appear in Noto Color Emoji
+// output, which is impossible under premultiplied invariants). Hence the
+// straight-alpha mix above; a premultiplied formula would haloize emoji
+// over their low-alpha edges.
 
 struct QuadUniform {
     surface_size_px:     vec2<f32>,
@@ -72,9 +77,9 @@ fn vs_main(in: VsIn) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (in.kind == 1u) {
-        // Color path. swash provides premultiplied RGBA.
+        // Color path. swash returns straight-alpha RGBA for color glyphs.
         let s = textureSample(color_texture, atlas_sampler, in.uv);
-        let rgb = s.rgb + in.bg.rgb * (1.0 - s.a);
+        let rgb = mix(in.bg.rgb, s.rgb, s.a);
         return vec4<f32>(rgb, 1.0);
     } else {
         // Mono path. Same as Stage 7.

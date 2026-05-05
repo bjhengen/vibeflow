@@ -17,7 +17,10 @@ use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCach
 pub enum GlyphKind {
     /// R8Unorm mask (alpha-only). Renderer uses `mix(bg, fg, alpha)`.
     Mono,
-    /// RGBA8Unorm with premultiplied alpha (swash's color-glyph format).
+    /// RGBA8Unorm straight-alpha (swash 0.1.19's color-glyph output, verified
+    /// empirically: PNG-sourced color bitmaps from Noto Color Emoji and friends
+    /// pass through `EmitRgba8` without a premultiply step). Renderer uses
+    /// `mix(bg, sampled.rgb, sampled.a)`.
     Color,
 }
 
@@ -40,7 +43,7 @@ pub struct RasterImage {
     pub bearing_x: i32,
     pub bearing_y: i32,
     /// Mono: R8 alpha bytes (length = width * height).
-    /// Color: RGBA premultiplied bytes (length = 4 * width * height).
+    /// Color: RGBA straight-alpha bytes (length = 4 * width * height).
     pub data: Vec<u8>,
 }
 
