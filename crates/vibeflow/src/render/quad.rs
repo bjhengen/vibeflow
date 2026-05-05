@@ -306,18 +306,23 @@ impl QuadPipeline {
         self.instance_capacity = new_capacity;
     }
 
-    pub fn draw<'a>(
-        &'a self,
-        pass: &mut wgpu::RenderPass<'a>,
+    /// Write the per-frame uniform + the full concatenated instance list.
+    ///
+    /// **Call this BEFORE `begin_render_pass` and ONLY ONCE per frame.**
+    /// `wgpu::Queue::write_buffer` schedules its writes ahead of all encoder
+    /// commands at submit time, so multiple writes to the same buffer offset
+    /// within one render pass clobber each other and every draw reads only
+    /// the LAST data written. Instead, the renderer concatenates cells +
+    /// tab-text + banner-glyph instances into a single vec and writes once;
+    /// `draw_range` then issues per-batch draws from the unified buffer.
+    pub fn write_uniform_and_instances(
+        &self,
         queue: &wgpu::Queue,
-        instances: &[QuadInstance],
         surface_size_px: (u32, u32),
         mono_atlas_size_px: (u32, u32),
         color_atlas_size_px: (u32, u32),
+        instances: &[QuadInstance],
     ) {
-        if instances.is_empty() {
-            return;
-        }
         let uniform = QuadUniform {
             surface_size_px: [surface_size_px.0 as f32, surface_size_px.1 as f32],
             mono_atlas_size_px: [mono_atlas_size_px.0 as f32, mono_atlas_size_px.1 as f32],
@@ -325,12 +330,22 @@ impl QuadPipeline {
             _pad: [0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        if !instances.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+        }
+    }
 
+    /// Draw a sub-range of the concatenated instance buffer. The range is
+    /// expressed in instance indices (not bytes); each instance expands to
+    /// six vertices via the shared quad shader.
+    pub fn draw_range<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, range: std::ops::Range<u32>) {
+        if range.is_empty() {
+            return;
+        }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        pass.draw(0..6, 0..(instances.len() as u32));
+        pass.draw(0..6, range);
     }
 }
 

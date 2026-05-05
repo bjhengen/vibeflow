@@ -452,28 +452,39 @@ impl TabBarPipeline {
         self.instance_capacity = new_capacity;
     }
 
-    /// Submit one instanced draw call for all the rects.
-    pub fn draw<'a>(
-        &'a self,
-        pass: &mut wgpu::RenderPass<'a>,
+    /// Write the per-frame uniform + the full concatenated rect list. See
+    /// `QuadPipeline::write_uniform_and_instances` for the full rationale —
+    /// in short, multiple `queue.write_buffer` calls to the same offset
+    /// within one render pass clobber each other, so the renderer must
+    /// concatenate tab-rects + banner-rect + bell-rect into a single vec
+    /// and write once before the pass.
+    pub fn write_uniform_and_instances(
+        &self,
         queue: &wgpu::Queue,
-        rects: &[RectInstance],
         surface_size_px: (u32, u32),
+        rects: &[RectInstance],
     ) {
-        if rects.is_empty() {
-            return;
-        }
         let uniform = RectUniform {
             surface_size_px: [surface_size_px.0 as f32, surface_size_px.1 as f32],
             _pad: [0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
+        if !rects.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(rects));
+        }
+    }
 
+    /// Draw a sub-range of the concatenated rect buffer. The range is
+    /// expressed in instance indices (not bytes); each rect expands to six
+    /// vertices via the shared rect shader.
+    pub fn draw_range<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, range: std::ops::Range<u32>) {
+        if range.is_empty() {
+            return;
+        }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
-        pass.draw(0..6, 0..(rects.len() as u32));
+        pass.draw(0..6, range);
     }
 }
 
