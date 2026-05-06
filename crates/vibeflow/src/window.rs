@@ -524,6 +524,11 @@ impl ApplicationHandler for WindowApp {
                 );
 
                 if mode_on && drag_tracking && !shift {
+                    // Same stale-drag guard as MouseInput — clear an in-progress
+                    // selection if mouse mode kicked in mid-drag.
+                    if s.selection.is_dragging() {
+                        s.selection.clear();
+                    }
                     let bytes = crate::render::mouse_encoder::encode_drag(
                         crate::render::mouse_encoder::Button::Left,
                         point,
@@ -588,6 +593,11 @@ impl ApplicationHandler for WindowApp {
                 };
 
                 if mode_on && !shift {
+                    // If a selection drag was started before mouse mode engaged,
+                    // discard it so it doesn't haunt us when mouse mode toggles back off.
+                    if s.selection.is_dragging() {
+                        s.selection.clear();
+                    }
                     // Pass to PTY as encoded mouse event.
                     if let Some(b) = encoder_button {
                         let bytes = if pressed {
