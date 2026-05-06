@@ -103,6 +103,9 @@ pub struct WindowApp {
     /// Latest cursor position from `WindowEvent::CursorMoved`. Used by mouse
     /// click handlers to hit-test the tab bar.
     cursor_pos: Option<(u32, u32)>,
+    /// System clipboard handle for Ctrl+Shift+C / Ctrl+Shift+V. `None` on
+    /// systems without a display server (CI, headless containers).
+    clipboard: Option<crate::clipboard::Clipboard>,
 }
 
 impl WindowApp {
@@ -110,12 +113,20 @@ impl WindowApp {
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
     pub fn new() -> Self {
+        let clipboard = match crate::clipboard::Clipboard::new() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!("system clipboard unavailable: {e}");
+                None
+            }
+        };
         Self {
             window: None,
             renderer: None,
             app: App::new(),
             current_modifiers: ModifiersState::empty(),
             cursor_pos: None,
+            clipboard,
         }
     }
 
@@ -212,6 +223,71 @@ impl WindowApp {
                 }
             }
             TabBarHit::None => {}
+        }
+    }
+
+    fn handle_shortcut(&mut self, shortcut: crate::keymap::Shortcut) {
+        use crate::keymap::Shortcut;
+        match shortcut {
+            Shortcut::NewTab => {
+                // `App::new_tab` spawns + appends + sets active in one call.
+                let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+                if let Err(e) = self.app.new_tab(&[argv.as_str()]) {
+                    tracing::warn!("new tab spawn failed: {e}");
+                }
+            }
+            Shortcut::CloseTab => {
+                self.app.close_tab(self.app.active());
+            }
+            Shortcut::NextTab => self.app.cycle_active(1),
+            Shortcut::PrevTab => self.app.cycle_active(-1),
+            Shortcut::RestartTab => {
+                if let Err(e) = self.app.restart_active() {
+                    tracing::warn!("restart failed: {e}");
+                }
+            }
+            Shortcut::Copy => self.handle_copy(),
+            Shortcut::Paste => self.handle_paste(),
+        }
+    }
+
+    fn handle_copy(&mut self) {
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return;
+        };
+        let active = self.app.active();
+        let Some(s) = self.app.tabs().get(active) else {
+            return;
+        };
+        let Some(text) = s.selection.text(s.term()) else {
+            return;
+        };
+        if let Err(e) = clipboard.copy(&text) {
+            tracing::warn!("copy failed: {e}");
+        }
+    }
+
+    fn handle_paste(&mut self) {
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return;
+        };
+        let Some(text) = clipboard.paste() else {
+            return;
+        };
+        let active = self.app.active();
+        let Some(s) = self.app.tabs_mut().get_mut(active) else {
+            return;
+        };
+        let bracketed = s
+            .term()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        if bracketed {
+            let _ = s.send_input(b"\x1b[200~");
+            let _ = s.send_input(text.as_bytes());
+            let _ = s.send_input(b"\x1b[201~");
+        } else {
+            let _ = s.send_input(text.as_bytes());
         }
     }
 }
@@ -343,21 +419,38 @@ impl ApplicationHandler for WindowApp {
                     text = ?event.text,
                     "key event"
                 );
-                match key_to_bytes(&event.logical_key, event.state, self.current_modifiers) {
-                    Some(bytes) => {
-                        tracing::trace!(?bytes, "key → pty bytes");
-                        if let Err(e) = self.app.send_input(&bytes) {
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+                // Shortcut dispatch FIRST. If the combo matches, suppress the
+                // literal byte fallthrough.
+                if let Some(shortcut) =
+                    crate::keymap::match_shortcut(&event.logical_key, self.current_modifiers)
+                {
+                    self.handle_shortcut(shortcut);
+                    return;
+                }
+                // Otherwise: typed-input fallthrough. Selection clears on any
+                // input.
+                let active = self.app.active();
+                if let Some(s) = self.app.tabs_mut().get_mut(active) {
+                    s.selection.clear();
+                }
+                if let Some(bytes) =
+                    key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
+                {
+                    tracing::trace!(?bytes, "key → pty bytes");
+                    let active = self.app.active();
+                    if let Some(s) = self.app.tabs_mut().get_mut(active) {
+                        if let Err(e) = s.send_input(&bytes) {
                             tracing::warn!(error = %e, "send_input failed");
                         }
                     }
-                    None => {
-                        if event.state == winit::event::ElementState::Pressed {
-                            tracing::trace!(
-                                logical_key = ?event.logical_key,
-                                "press dropped (no key_to_bytes mapping)"
-                            );
-                        }
-                    }
+                } else {
+                    tracing::trace!(
+                        logical_key = ?event.logical_key,
+                        "press dropped (no key_to_bytes mapping)"
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
