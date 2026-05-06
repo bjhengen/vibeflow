@@ -160,6 +160,42 @@ impl App {
             self.active = idx;
         }
     }
+
+    /// Mutable slice of all sessions. Stage 8's selection / mouse routing
+    /// needs `tabs_mut().get_mut(active)` to call `selection.mouse_*` and
+    /// `send_input` from the `window.rs` dispatch layer.
+    #[must_use]
+    pub fn tabs_mut(&mut self) -> &mut [PtySession] {
+        &mut self.tabs
+    }
+
+    /// Restart the dead active session. No-op on live sessions and on the
+    /// no-tabs sentinel state.
+    ///
+    /// # Errors
+    /// Propagates `PtySession::restart` errors.
+    pub fn restart_active(&mut self) -> std::io::Result<()> {
+        let Some(s) = self.tabs.get_mut(self.active) else {
+            return Ok(());
+        };
+        if s.is_alive() {
+            tracing::trace!("Ctrl+Shift+R on live tab; ignoring");
+            return Ok(());
+        }
+        s.restart()
+    }
+
+    /// Cycle the active tab by `direction`: +1 = forward, -1 = backward.
+    /// Wraps around. No-op when there are no tabs.
+    pub fn cycle_active(&mut self, direction: i32) {
+        let len = self.tabs.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.active as i32;
+        let next = (cur + direction).rem_euclid(len as i32);
+        self.active = next as usize;
+    }
 }
 
 impl Default for App {
@@ -335,5 +371,24 @@ mod tests {
         // `active` is a sentinel value on an empty App; `tabs().get(0)`
         // returns None so callers never mis-index.
         assert_eq!(app.active(), 0);
+    }
+
+    #[test]
+    fn cycle_active_wraps_forward_and_backward() {
+        let mut app = App::new();
+        // App::new() starts empty. App::new_tab spawns a sleep then sets
+        // active. Use it three times to populate.
+        for _ in 0..3 {
+            app.new_tab(&["sleep", "30"]).expect("new_tab spawns");
+        }
+        app.set_active(0);
+        app.cycle_active(1);
+        assert_eq!(app.active(), 1);
+        app.cycle_active(1);
+        assert_eq!(app.active(), 2);
+        app.cycle_active(1);
+        assert_eq!(app.active(), 0); // wraps
+        app.cycle_active(-1);
+        assert_eq!(app.active(), 2); // wraps backward
     }
 }

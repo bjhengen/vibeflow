@@ -27,6 +27,7 @@ winit = "0.30"
 wgpu = "0.20"
 pollster = "0.3"
 anyhow = "1"
+arboard = "3.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 alacritty_terminal = "0.24"

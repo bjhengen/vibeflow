@@ -6,7 +6,9 @@
 pub mod bell;
 pub mod colors;
 pub mod cursor;
+pub mod mouse_encoder;
 pub mod quad; // formerly `text` — see Step 3
+pub mod selection;
 pub mod tabs;
 pub mod text_engine;
 
@@ -14,6 +16,32 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use winit::window::Window;
+
+const SELECTION_COLOR: [f32; 4] = [0.4, 0.6, 1.0, 0.4];
+
+fn build_selection_rects(
+    selection: &crate::render::selection::SelectionTracker,
+    term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
+    cell_w: u32,
+    cell_h: u32,
+    bar_height_px: u32,
+) -> Vec<crate::render::tabs::RectInstance> {
+    selection
+        .cells(term)
+        .filter_map(|p| {
+            if p.line.0 < 0 {
+                return None; // scrollback — skip in v0.1
+            }
+            Some(crate::render::tabs::RectInstance::new(
+                (p.column.0 as u32 * cell_w) as f32,
+                (p.line.0 as u32 * cell_h + bar_height_px) as f32,
+                cell_w as f32,
+                cell_h as f32,
+                SELECTION_COLOR,
+            ))
+        })
+        .collect()
+}
 
 /// Default clear color for Stage 4 — matches the dark-theme background from
 /// `docs/superpowers/specs/2026-05-01-vibeflow-design.md` (`#0e0e12`).
@@ -224,6 +252,21 @@ impl Renderer {
             Vec::new()
         };
         let tab_rects = self.tab_bar.build_rects(app, &layout);
+        let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
+            if active.selection.current().is_some() {
+                build_selection_rects(
+                    &active.selection,
+                    active.term(),
+                    cell_w,
+                    cell_h,
+                    layout.bar_height_px,
+                )
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
         let tab_glyphs = self
             .tab_bar
             .build_glyphs(app, &layout, &mut self.text_engine);
@@ -277,7 +320,9 @@ impl Renderer {
         let total_quads = banner_glyph_offset + banner_glyph_count;
 
         let tab_rect_count = tab_rects.len() as u32;
-        let banner_rect_offset = tab_rect_count;
+        let selection_rect_offset = tab_rect_count;
+        let selection_rect_count = selection_rects.len() as u32;
+        let banner_rect_offset = selection_rect_offset + selection_rect_count;
         let banner_rect_count = u32::from(banner_rect.is_some());
         let bell_rect_offset = banner_rect_offset + banner_rect_count;
         let bell_rect_count = u32::from(bell_rect.is_some());
@@ -292,6 +337,7 @@ impl Renderer {
 
         let mut all_rects = Vec::with_capacity(total_rects as usize);
         all_rects.extend_from_slice(&tab_rects);
+        all_rects.extend_from_slice(&selection_rects);
         if let Some(r) = banner_rect {
             all_rects.push(r);
         }
@@ -362,6 +408,12 @@ impl Renderer {
             // ---- Tab bar text pass ----
             self.quad_pipeline
                 .draw_range(&mut pass, tab_glyph_offset..banner_glyph_offset);
+
+            // ---- Selection highlight rects ----
+            if selection_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, selection_rect_offset..banner_rect_offset);
+            }
 
             // ---- Dead-tab banner ----
             if banner_rect_count > 0 {

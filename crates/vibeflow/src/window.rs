@@ -30,6 +30,33 @@ fn pixels_to_grid(width_px: u32, height_px: u32, cell_w: u32, cell_h: u32) -> (u
     )
 }
 
+/// Translate a pixel position to an alacritty terminal grid `Point`. Returns
+/// `None` when the pixel is inside the tab bar (above the cell grid) or when
+/// a zero-sized cell pitch would cause a divide-by-zero.
+///
+/// This is a SEPARATE helper from `pixels_to_grid`. That function returns
+/// `(u16, u16)` for PTY resize; this one returns `Point` for mouse routing.
+/// They have different semantics and must not be consolidated.
+fn pixel_to_grid_point(
+    cell_w: u32,
+    cell_h: u32,
+    bar_height_px: u32,
+    px: u32,
+    py: u32,
+) -> Option<alacritty_terminal::index::Point> {
+    use alacritty_terminal::index::{Column, Line, Point};
+    if cell_w == 0 || cell_h == 0 {
+        return None;
+    }
+    if py < bar_height_px {
+        return None; // tab bar — selection is grid-only
+    }
+    let py_local = py - bar_height_px;
+    let col = (px / cell_w) as usize;
+    let line = (py_local / cell_h) as i32;
+    Some(Point::new(Line(line), Column(col)))
+}
+
 /// Translate a winit key press into the bytes the PTY child expects on stdin.
 /// Returns `None` for releases, modifier-only events, and any key not in
 /// Stage 4's minimal subset (Stage 8 fills in arrows, F-keys, full Alt/Meta
@@ -103,6 +130,9 @@ pub struct WindowApp {
     /// Latest cursor position from `WindowEvent::CursorMoved`. Used by mouse
     /// click handlers to hit-test the tab bar.
     cursor_pos: Option<(u32, u32)>,
+    /// System clipboard handle for Ctrl+Shift+C / Ctrl+Shift+V. `None` on
+    /// systems without a display server (CI, headless containers).
+    clipboard: Option<crate::clipboard::Clipboard>,
 }
 
 impl WindowApp {
@@ -110,12 +140,20 @@ impl WindowApp {
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
     pub fn new() -> Self {
+        let clipboard = match crate::clipboard::Clipboard::new() {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!("system clipboard unavailable: {e}");
+                None
+            }
+        };
         Self {
             window: None,
             renderer: None,
             app: App::new(),
             current_modifiers: ModifiersState::empty(),
             cursor_pos: None,
+            clipboard,
         }
     }
 
@@ -212,6 +250,71 @@ impl WindowApp {
                 }
             }
             TabBarHit::None => {}
+        }
+    }
+
+    fn handle_shortcut(&mut self, shortcut: crate::keymap::Shortcut) {
+        use crate::keymap::Shortcut;
+        match shortcut {
+            Shortcut::NewTab => {
+                // `App::new_tab` spawns + appends + sets active in one call.
+                let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+                if let Err(e) = self.app.new_tab(&[argv.as_str()]) {
+                    tracing::warn!("new tab spawn failed: {e}");
+                }
+            }
+            Shortcut::CloseTab => {
+                self.app.close_tab(self.app.active());
+            }
+            Shortcut::NextTab => self.app.cycle_active(1),
+            Shortcut::PrevTab => self.app.cycle_active(-1),
+            Shortcut::RestartTab => {
+                if let Err(e) = self.app.restart_active() {
+                    tracing::warn!("restart failed: {e}");
+                }
+            }
+            Shortcut::Copy => self.handle_copy(),
+            Shortcut::Paste => self.handle_paste(),
+        }
+    }
+
+    fn handle_copy(&mut self) {
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return;
+        };
+        let active = self.app.active();
+        let Some(s) = self.app.tabs().get(active) else {
+            return;
+        };
+        let Some(text) = s.selection.text(s.term()) else {
+            return;
+        };
+        if let Err(e) = clipboard.copy(&text) {
+            tracing::warn!("copy failed: {e}");
+        }
+    }
+
+    fn handle_paste(&mut self) {
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return;
+        };
+        let Some(text) = clipboard.paste() else {
+            return;
+        };
+        let active = self.app.active();
+        let Some(s) = self.app.tabs_mut().get_mut(active) else {
+            return;
+        };
+        let bracketed = s
+            .term()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        if bracketed {
+            let _ = s.send_input(b"\x1b[200~");
+            let _ = s.send_input(text.as_bytes());
+            let _ = s.send_input(b"\x1b[201~");
+        } else {
+            let _ = s.send_input(text.as_bytes());
         }
     }
 }
@@ -329,6 +432,12 @@ impl ApplicationHandler for WindowApp {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
+                // Any resize invalidates the current selection — grid coordinates
+                // shift when the column count changes, so the selection range no
+                // longer refers to the same visual characters.
+                for tab in self.app.tabs_mut().iter_mut() {
+                    tab.selection.clear();
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.current_modifiers = modifiers.state();
@@ -343,30 +452,179 @@ impl ApplicationHandler for WindowApp {
                     text = ?event.text,
                     "key event"
                 );
-                match key_to_bytes(&event.logical_key, event.state, self.current_modifiers) {
-                    Some(bytes) => {
-                        tracing::trace!(?bytes, "key → pty bytes");
-                        if let Err(e) = self.app.send_input(&bytes) {
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+                // Shortcut dispatch FIRST. If the combo matches, suppress the
+                // literal byte fallthrough.
+                if let Some(shortcut) =
+                    crate::keymap::match_shortcut(&event.logical_key, self.current_modifiers)
+                {
+                    self.handle_shortcut(shortcut);
+                    return;
+                }
+                // Otherwise: typed-input fallthrough. Selection clears only
+                // when a key actually produces PTY bytes — bare modifier
+                // presses (Ctrl, Shift, Alt, Super) must NOT clear the
+                // selection, or shortcuts like Ctrl+Shift+C never see the
+                // selection their action depends on (the user presses Ctrl
+                // first, then Shift, then C, and we only want the selection
+                // to survive long enough for the C event to read it).
+                if let Some(bytes) =
+                    key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
+                {
+                    tracing::trace!(?bytes, "key → pty bytes");
+                    let active = self.app.active();
+                    if let Some(s) = self.app.tabs_mut().get_mut(active) {
+                        s.selection.clear();
+                        if let Err(e) = s.send_input(&bytes) {
                             tracing::warn!(error = %e, "send_input failed");
                         }
                     }
-                    None => {
-                        if event.state == winit::event::ElementState::Pressed {
-                            tracing::trace!(
-                                logical_key = ?event.logical_key,
-                                "press dropped (no key_to_bytes mapping)"
-                            );
-                        }
-                    }
+                } else {
+                    tracing::trace!(
+                        logical_key = ?event.logical_key,
+                        "press dropped (no key_to_bytes mapping)"
+                    );
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = Some((position.x as u32, position.y as u32));
+                let (px, py) = (position.x as u32, position.y as u32);
+                self.cursor_pos = Some((px, py));
+
+                let Some(renderer) = self.renderer.as_ref() else {
+                    return;
+                };
+                let (cell_w, cell_h) = renderer.cell_pitch();
+                let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+
+                if py < bar_h {
+                    return; // tab bar — no drag tracking
+                }
+                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                    return;
+                };
+                let shift = self.current_modifiers.shift_key();
+
+                let active = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active) else {
+                    return;
+                };
+
+                let mode_on = s.term().mode().intersects(
+                    alacritty_terminal::term::TermMode::MOUSE_REPORT_CLICK
+                        | alacritty_terminal::term::TermMode::MOUSE_DRAG
+                        | alacritty_terminal::term::TermMode::MOUSE_MOTION,
+                );
+                let sgr = s
+                    .term()
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::SGR_MOUSE);
+                let drag_tracking = s.term().mode().intersects(
+                    alacritty_terminal::term::TermMode::MOUSE_DRAG
+                        | alacritty_terminal::term::TermMode::MOUSE_MOTION,
+                );
+
+                if mode_on && drag_tracking && !shift {
+                    // Same stale-drag guard as MouseInput — clear an in-progress
+                    // selection if mouse mode kicked in mid-drag.
+                    if s.selection.is_dragging() {
+                        s.selection.clear();
+                    }
+                    let bytes = crate::render::mouse_encoder::encode_drag(
+                        crate::render::mouse_encoder::Button::Left,
+                        point,
+                        sgr,
+                    );
+                    let _ = s.send_input(&bytes);
+                } else if s.selection.is_dragging() {
+                    let (sel, term) = s.split_borrow_mouse();
+                    sel.mouse_drag(point, term);
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
-                if state == ElementState::Released && button == MouseButton::Left {
-                    self.handle_left_click_release();
+                let Some((px, py)) = self.cursor_pos else {
+                    return;
+                };
+                // Resolve cell metrics.
+                let Some(renderer) = self.renderer.as_ref() else {
+                    return;
+                };
+                let (cell_w, cell_h) = renderer.cell_pitch();
+                let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+
+                // Tab bar passthrough: route Released-Left (Stage 6 contract —
+                // click to switch / close / new) to the existing handler. Press
+                // in the tab bar and any non-Left buttons in the tab bar are
+                // ignored (no-op).
+                if py < bar_h {
+                    if state == ElementState::Released && button == MouseButton::Left {
+                        self.handle_left_click_release();
+                    }
+                    return;
+                }
+
+                // Below the tab bar: cell-grid mouse routing.
+                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                    return;
+                };
+                let pressed = state == ElementState::Pressed;
+                let released = state == ElementState::Released;
+                let shift = self.current_modifiers.shift_key();
+
+                let active = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active) else {
+                    return;
+                };
+
+                let mode_on = s.term().mode().intersects(
+                    alacritty_terminal::term::TermMode::MOUSE_REPORT_CLICK
+                        | alacritty_terminal::term::TermMode::MOUSE_DRAG
+                        | alacritty_terminal::term::TermMode::MOUSE_MOTION,
+                );
+                let sgr = s
+                    .term()
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::SGR_MOUSE);
+                let encoder_button = match button {
+                    MouseButton::Left => Some(crate::render::mouse_encoder::Button::Left),
+                    MouseButton::Middle => Some(crate::render::mouse_encoder::Button::Middle),
+                    MouseButton::Right => Some(crate::render::mouse_encoder::Button::Right),
+                    _ => None,
+                };
+
+                if mode_on && !shift {
+                    // If a selection drag was started before mouse mode engaged,
+                    // discard it so it doesn't haunt us when mouse mode toggles back off.
+                    if s.selection.is_dragging() {
+                        s.selection.clear();
+                    }
+                    // Pass to PTY as encoded mouse event.
+                    if let Some(b) = encoder_button {
+                        let bytes = if pressed {
+                            crate::render::mouse_encoder::encode_press(b, point, sgr)
+                        } else if released {
+                            crate::render::mouse_encoder::encode_release(b, point, sgr)
+                        } else {
+                            return;
+                        };
+                        let _ = s.send_input(&bytes);
+                    }
+                    return;
+                }
+
+                // Selection path — only Left button creates / clears selection.
+                // Right and Middle buttons are no-ops in the selection world.
+                if button != MouseButton::Left {
+                    return;
+                }
+                if pressed {
+                    let now = std::time::Instant::now();
+                    let (sel, term) = s.split_borrow_mouse();
+                    sel.mouse_down(point, shift, term, now);
+                } else if released {
+                    s.selection.mouse_up();
                 }
             }
             _ => {}
