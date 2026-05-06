@@ -106,6 +106,8 @@ pub struct PtySession {
     /// Set true when a stray BEL byte (0x07) is observed in PassThrough output.
     /// Drained into a [`SessionEvent::Bell`] at the end of each `poll`.
     bell_pending: bool,
+    /// Per-tab mouse-driven cell selection. Stage 8.
+    pub selection: crate::render::selection::SelectionTracker,
 }
 
 impl PtySession {
@@ -159,6 +161,7 @@ impl PtySession {
             alive: true,
             label,
             bell_pending: false,
+            selection: crate::render::selection::SelectionTracker::new(),
         })
     }
 
@@ -306,6 +309,35 @@ impl PtySession {
     #[must_use]
     pub fn term(&self) -> &Term<VoidListener> {
         &self.term
+    }
+
+    /// Re-spawn the session in place. Kills the existing child (if alive),
+    /// drops the old receiver, and replaces `*self` with a fresh `spawn`
+    /// running `$SHELL` (fallback `bash`). Preserves the current PTY size
+    /// by re-applying it after the new spawn — avoids the new shell
+    /// believing it's at the hardcoded `DEFAULT_COLS`/`DEFAULT_ROWS`.
+    ///
+    /// Stage 8 always uses `$SHELL` regardless of the dying process. Stage
+    /// 9 (TOML config) may grow argv-replay if a clear use case emerges.
+    /// Tracker config also resets to default; Stage 9's TOML hot-reload
+    /// will pass the current user config through.
+    ///
+    /// # Errors
+    /// Propagates spawn / IO errors.
+    pub fn restart(&mut self) -> std::io::Result<()> {
+        let _ = self.child.kill();
+        // Capture the current PTY size before we drop the old master.
+        let size = self.master.get_size().ok();
+        // The reader thread sees its tx invalidated when the new spawn
+        // replaces self; we don't need to join it explicitly.
+        let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
+        let mut new_session = PtySession::spawn(&[argv.as_str()], TrackerConfig::default())?;
+        if let Some(s) = size {
+            // PtySize uses u16 for rows/cols. Re-apply to the new master.
+            let _ = new_session.resize(s.rows, s.cols);
+        }
+        *self = new_session;
+        Ok(())
     }
 }
 
@@ -666,5 +698,25 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(got_bell, "no Bell event seen within 2s");
+    }
+
+    #[test]
+    fn restart_replaces_internals_with_fresh_spawn() {
+        // Spawn a sleep then restart. After restart, the new session must
+        // be alive (the new shell is freshly spawned).
+        let mut s =
+            PtySession::spawn(&["sleep", "10"], TrackerConfig::default()).expect("first spawn");
+        s.restart().expect("restart");
+        // Give the new PTY a moment to initialize before the liveness check
+        // — `child.try_wait` can race against the spawn handshake on slower
+        // CI runners.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(s.is_alive(), "restarted session should be alive");
+        // Send some bytes to confirm the new PTY is responsive.
+        s.send_input(b"\n")
+            .expect("send_input on restarted session");
+        // Drop the session — its Drop impl (or the kill-on-drop the
+        // child handle has) cleans up the spawned shell.
+        drop(s);
     }
 }
