@@ -463,18 +463,20 @@ impl ApplicationHandler for WindowApp {
                     self.handle_shortcut(shortcut);
                     return;
                 }
-                // Otherwise: typed-input fallthrough. Selection clears on any
-                // input.
-                let active = self.app.active();
-                if let Some(s) = self.app.tabs_mut().get_mut(active) {
-                    s.selection.clear();
-                }
+                // Otherwise: typed-input fallthrough. Selection clears only
+                // when a key actually produces PTY bytes — bare modifier
+                // presses (Ctrl, Shift, Alt, Super) must NOT clear the
+                // selection, or shortcuts like Ctrl+Shift+C never see the
+                // selection their action depends on (the user presses Ctrl
+                // first, then Shift, then C, and we only want the selection
+                // to survive long enough for the C event to read it).
                 if let Some(bytes) =
                     key_to_bytes(&event.logical_key, event.state, self.current_modifiers)
                 {
                     tracing::trace!(?bytes, "key → pty bytes");
                     let active = self.app.active();
                     if let Some(s) = self.app.tabs_mut().get_mut(active) {
+                        s.selection.clear();
                         if let Err(e) = s.send_input(&bytes) {
                             tracing::warn!(error = %e, "send_input failed");
                         }
