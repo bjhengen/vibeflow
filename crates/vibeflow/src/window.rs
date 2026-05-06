@@ -30,6 +30,33 @@ fn pixels_to_grid(width_px: u32, height_px: u32, cell_w: u32, cell_h: u32) -> (u
     )
 }
 
+/// Translate a pixel position to an alacritty terminal grid `Point`. Returns
+/// `None` when the pixel is inside the tab bar (above the cell grid) or when
+/// a zero-sized cell pitch would cause a divide-by-zero.
+///
+/// This is a SEPARATE helper from `pixels_to_grid`. That function returns
+/// `(u16, u16)` for PTY resize; this one returns `Point` for mouse routing.
+/// They have different semantics and must not be consolidated.
+fn pixel_to_grid_point(
+    cell_w: u32,
+    cell_h: u32,
+    bar_height_px: u32,
+    px: u32,
+    py: u32,
+) -> Option<alacritty_terminal::index::Point> {
+    use alacritty_terminal::index::{Column, Line, Point};
+    if cell_w == 0 || cell_h == 0 {
+        return None;
+    }
+    if py < bar_height_px {
+        return None; // tab bar — selection is grid-only
+    }
+    let py_local = py - bar_height_px;
+    let col = (px / cell_w) as usize;
+    let line = (py_local / cell_h) as i32;
+    Some(Point::new(Line(line), Column(col)))
+}
+
 /// Translate a winit key press into the bytes the PTY child expects on stdin.
 /// Returns `None` for releases, modifier-only events, and any key not in
 /// Stage 4's minimal subset (Stage 8 fills in arrows, F-keys, full Alt/Meta
@@ -405,6 +432,12 @@ impl ApplicationHandler for WindowApp {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
+                // Any resize invalidates the current selection — grid coordinates
+                // shift when the column count changes, so the selection range no
+                // longer refers to the same visual characters.
+                for tab in self.app.tabs_mut().iter_mut() {
+                    tab.selection.clear();
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.current_modifiers = modifiers.state();
@@ -454,12 +487,132 @@ impl ApplicationHandler for WindowApp {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = Some((position.x as u32, position.y as u32));
+                let (px, py) = (position.x as u32, position.y as u32);
+                self.cursor_pos = Some((px, py));
+
+                let Some(renderer) = self.renderer.as_ref() else {
+                    return;
+                };
+                let (cell_w, cell_h) = renderer.cell_pitch();
+                let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+
+                if py < bar_h {
+                    return; // tab bar — no drag tracking
+                }
+                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                    return;
+                };
+                let shift = self.current_modifiers.shift_key();
+
+                let active = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active) else {
+                    return;
+                };
+
+                let mode_on = s.term().mode().intersects(
+                    alacritty_terminal::term::TermMode::MOUSE_REPORT_CLICK
+                        | alacritty_terminal::term::TermMode::MOUSE_DRAG
+                        | alacritty_terminal::term::TermMode::MOUSE_MOTION,
+                );
+                let sgr = s
+                    .term()
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::SGR_MOUSE);
+                let drag_tracking = s.term().mode().intersects(
+                    alacritty_terminal::term::TermMode::MOUSE_DRAG
+                        | alacritty_terminal::term::TermMode::MOUSE_MOTION,
+                );
+
+                if mode_on && drag_tracking && !shift {
+                    let bytes = crate::render::mouse_encoder::encode_drag(
+                        crate::render::mouse_encoder::Button::Left,
+                        point,
+                        sgr,
+                    );
+                    let _ = s.send_input(&bytes);
+                } else if s.selection.is_dragging() {
+                    let (sel, term) = s.split_borrow_mouse();
+                    sel.mouse_drag(point, term);
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
-                if state == ElementState::Released && button == MouseButton::Left {
-                    self.handle_left_click_release();
+                let Some((px, py)) = self.cursor_pos else {
+                    return;
+                };
+                // Resolve cell metrics.
+                let Some(renderer) = self.renderer.as_ref() else {
+                    return;
+                };
+                let (cell_w, cell_h) = renderer.cell_pitch();
+                let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+
+                // Tab bar passthrough: route Released-Left (Stage 6 contract —
+                // click to switch / close / new) to the existing handler. Press
+                // in the tab bar and any non-Left buttons in the tab bar are
+                // ignored (no-op).
+                if py < bar_h {
+                    if state == ElementState::Released && button == MouseButton::Left {
+                        self.handle_left_click_release();
+                    }
+                    return;
+                }
+
+                // Below the tab bar: cell-grid mouse routing.
+                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                    return;
+                };
+                let pressed = state == ElementState::Pressed;
+                let released = state == ElementState::Released;
+                let shift = self.current_modifiers.shift_key();
+
+                let active = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active) else {
+                    return;
+                };
+
+                let mode_on = s.term().mode().intersects(
+                    alacritty_terminal::term::TermMode::MOUSE_REPORT_CLICK
+                        | alacritty_terminal::term::TermMode::MOUSE_DRAG
+                        | alacritty_terminal::term::TermMode::MOUSE_MOTION,
+                );
+                let sgr = s
+                    .term()
+                    .mode()
+                    .contains(alacritty_terminal::term::TermMode::SGR_MOUSE);
+                let encoder_button = match button {
+                    MouseButton::Left => Some(crate::render::mouse_encoder::Button::Left),
+                    MouseButton::Middle => Some(crate::render::mouse_encoder::Button::Middle),
+                    MouseButton::Right => Some(crate::render::mouse_encoder::Button::Right),
+                    _ => None,
+                };
+
+                if mode_on && !shift {
+                    // Pass to PTY as encoded mouse event.
+                    if let Some(b) = encoder_button {
+                        let bytes = if pressed {
+                            crate::render::mouse_encoder::encode_press(b, point, sgr)
+                        } else if released {
+                            crate::render::mouse_encoder::encode_release(b, point, sgr)
+                        } else {
+                            return;
+                        };
+                        let _ = s.send_input(&bytes);
+                    }
+                    return;
+                }
+
+                // Selection path — only Left button creates / clears selection.
+                // Right and Middle buttons are no-ops in the selection world.
+                if button != MouseButton::Left {
+                    return;
+                }
+                if pressed {
+                    let now = std::time::Instant::now();
+                    let (sel, term) = s.split_borrow_mouse();
+                    sel.mouse_down(point, shift, term, now);
+                } else if released {
+                    s.selection.mouse_up();
                 }
             }
             _ => {}

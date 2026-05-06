@@ -311,6 +311,24 @@ impl PtySession {
         &self.term
     }
 
+    /// Split-borrow helper for mouse event routing. Returns a mutable reference
+    /// to the selection tracker and an immutable reference to the terminal grid
+    /// in a single call, avoiding the aliasing problem that arises when calling
+    /// `s.selection.mouse_down(point, shift, s.term(), now)` — that expression
+    /// would simultaneously borrow `s` mutably (for `selection`) and immutably
+    /// (for `term()`), which the borrow checker rejects.
+    ///
+    /// This is the standard Rust split-borrow idiom: both references are to
+    /// disjoint fields of `self`, so they are sound to hold simultaneously.
+    pub(crate) fn split_borrow_mouse(
+        &mut self,
+    ) -> (
+        &mut crate::render::selection::SelectionTracker,
+        &Term<VoidListener>,
+    ) {
+        (&mut self.selection, &self.term)
+    }
+
     /// Re-spawn the session in place. Kills the existing child (if alive),
     /// drops the old receiver, and replaces `*self` with a fresh `spawn`
     /// running `$SHELL` (fallback `bash`). Preserves the current PTY size
