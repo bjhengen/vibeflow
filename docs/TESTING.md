@@ -213,3 +213,81 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - Emoji font selection not configurable — many smiley-face emoji
   (U+1F600..) currently fall back to DejaVu Sans (mono) on Ubuntu rather
   than Noto Color Emoji; fontdb priority adjustment is Stage 9.
+
+## Stage 8 — clipboard + keyboard shortcuts + selection
+
+Run:
+
+```bash
+cd /home/bhengen/dev/vibeflow
+cargo build --bin vibeflow
+RUST_LOG=vibeflow=info ./target/debug/vibeflow
+```
+
+### Keyboard shortcuts
+
+- [ ] `Ctrl+Shift+T` opens a new tab with `$SHELL`. Tab bar shows two tabs.
+- [ ] `Super+T` (Cmd+T over VNC from Mac) also opens a new tab.
+- [ ] `Ctrl+Shift+W` closes the active tab. Continue closing until 1 tab remains; one more close leaves the window with no tabs.
+- [ ] `Ctrl+Shift+T` from the no-tabs state spawns a fresh tab.
+- [ ] `Ctrl+Tab` cycles forward; `Ctrl+Shift+Tab` cycles backward. Wraps at the ends.
+- [ ] `Super+Tab` and `Super+Shift+Tab` also cycle. (May be grabbed by the WM — note for Stage 9 if it's flaky.)
+- [ ] `Ctrl+C` at a shell prompt sends SIGINT (interrupts a `sleep 100`). Ctrl+C is NOT remapped to copy.
+- [ ] `Ctrl+V` at a shell prompt is `quoted-insert` (next char is literal — not paste).
+
+### Mouse selection
+
+- [ ] Drag from one cell to another → blue 40%-alpha highlight rendered between the two points.
+- [ ] Drag spanning multiple lines → highlight wraps around line ends.
+- [ ] Single-click somewhere → prior selection clears, no new selection rendered.
+- [ ] Double-click on a word → only that word highlights (snapped to whitespace + punctuation boundaries).
+- [ ] Triple-click on a line → entire line highlights.
+- [ ] Shift+click after an existing selection extends the end without losing the start.
+
+### Clipboard
+
+- [ ] Drag-select "(base) bhengen", press `Ctrl+Shift+C`. Paste into another GUI app on slmbeast (e.g., Firefox URL bar) — should arrive as text.
+- [ ] In Firefox, copy "hello world" with `Ctrl+C`. Switch back to vibeflow. Press `Ctrl+Shift+V` → "hello world" appears at the prompt.
+- [ ] Copy a multi-line `for` loop:
+   ```bash
+   for i in 1 2 3
+   do
+     echo $i
+   done
+   ```
+   from another app. Paste into vibeflow at a `bash` prompt with `Ctrl+Shift+V`. Bash should NOT execute each line separately — it should arrive as a single editable buffer (visible via the `>` continuation prompt). Pressing Enter at the end then runs the whole thing.
+- [ ] `Super+C` and `Super+V` also work (or are silently grabbed by WM — note if so).
+
+### Mouse mode passthrough
+
+- [ ] Run `vim` and `:set mouse=a`. Click in the buffer — vim's cursor moves to that location. (Mouse events reach vim.)
+- [ ] In `vim`, press and hold Shift while dragging — vibeflow should select the text *across vim's display*, ignoring vim's mouse mode. Release Shift, click without Shift — vim again sees the click.
+- [ ] In `htop`, click on a process row — htop should highlight it. (Mouse events reach htop.)
+- [ ] In `tmux`, mouse mode behavior unchanged from upstream tmux's expectations.
+
+### Restart dead session
+
+- [ ] In a tab, press `Ctrl+D`. Banner appears with "session died -- press Ctrl+Shift+R to retry".
+- [ ] Press `Ctrl+Shift+R`. Banner disappears, fresh `bash` prompt appears.
+- [ ] Press `Ctrl+Shift+R` on a *live* tab → no-op. Tab stays untouched.
+
+### Selection persistence
+
+- [ ] Drag-select in tab A. Press `Ctrl+Tab` to switch to tab B. Press `Ctrl+Shift+Tab` to come back to tab A — selection still highlighted.
+- [ ] Type a key in tab A — selection clears.
+- [ ] Resize the window — selection clears.
+
+### Cross-cutting
+
+- [ ] `vi` enters and exits cleanly with mouse=a; cursor blink continues correctly post-Stage-7.
+- [ ] Re-run with `WINIT_UNIX_BACKEND=x11` — all checks above still pass.
+
+**Known Stage 8 limitations (deferred to later stages):**
+
+- PRIMARY clipboard / middle-click paste is not wired (CLIPBOARD only). Stage 9.
+- Right-click does not open a context menu — Stage 9 / 10 (needs overlay rendering).
+- Block (column) selection (Alt+drag) — Stage 9.
+- Configurable shortcuts and selection color — Stage 9 (TOML config).
+- Selection in scrollback — Stage 10 (depends on scrollback rendering).
+- Selection that anchors to grid content (survives scroll in background tabs) — open-ended; revisit if it bites in practice.
+- Some smiley-face emoji (U+1F600..) still resolve to DejaVu Sans rather than Noto Color Emoji on Ubuntu; that's a font priority issue from Stage 7.5 deferred to Stage 9.
