@@ -282,7 +282,9 @@ impl WindowApp {
             Shortcut::Copy => self.handle_copy(),
             Shortcut::Paste => self.handle_paste(),
             Shortcut::RenameTab => {
-                // TODO: Implement tab rename UI in T13.
+                // Stage 9 Task 13 wires this to start_rename(); for now no-op
+                // so the match remains exhaustive.
+                tracing::trace!("RenameTab shortcut ignored (Task 13 wires it)");
             }
         }
     }
