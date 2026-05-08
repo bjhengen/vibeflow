@@ -239,12 +239,15 @@ impl PtySession {
                                     user_renamed = self.user_renamed,
                                     "OSC SetTitle received"
                                 );
-                                if !self.user_renamed {
+                                if !self.user_renamed && self.label.title != title {
                                     self.label.title = title;
-                                    // Subtitle stays tracker-driven; no
-                                    // refresh_default_subtitle() call here.
+                                    // The tab strip needs a redraw to pick up
+                                    // the new title; reuse TermUpdated so the
+                                    // existing redraw path fires.
+                                    events.push(SessionEvent::TermUpdated);
                                 }
-                                // else: silently dropped — user wins
+                                // else: silently dropped — either user-renamed
+                                // (rename wins) or title unchanged.
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
