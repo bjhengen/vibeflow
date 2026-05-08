@@ -351,6 +351,10 @@ fn apply_shortcuts(
 ) {
     let mut apply = |action: Shortcut, action_name: &str, specs: Option<Vec<String>>| {
         let Some(specs) = specs else { return };
+        // Empty list `[]` is an explicit "disable this action" — apply it.
+        // A non-empty list whose entries all fail to parse keeps the default
+        // (so a typo doesn't silently disable the action).
+        let user_intent_disable = specs.is_empty();
         let mut chords = Vec::new();
         for spec in specs {
             match parse_shortcut(&spec) {
@@ -362,8 +366,10 @@ fn apply_shortcuts(
                 }),
             }
         }
-        // Empty list disables the action entirely.
-        out.bindings.insert(action, chords);
+        if user_intent_disable || !chords.is_empty() {
+            out.bindings.insert(action, chords);
+        }
+        // else: every spec failed to parse → keep the default binding.
     };
     apply(Shortcut::NewTab, "new_tab", section.new_tab);
     apply(Shortcut::CloseTab, "close_tab", section.close_tab);
@@ -599,8 +605,25 @@ blink_ms = 250
             ConfigError::InvalidShortcut { action, .. } => assert_eq!(action, "new_tab"),
             other => panic!("expected InvalidShortcut, got {other:?}"),
         }
-        // The bad spec was dropped, BUT since we replaced the binding with an empty
-        // list, new_tab now has zero chords.
+        // Every spec failed to parse → fall back to the default binding
+        // (ctrl+shift+t and super+t). Otherwise a typo would silently disable
+        // the action.
+        assert_eq!(
+            cfg.shortcuts.bindings.get(&Shortcut::NewTab).map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn explicit_empty_shortcut_list_disables_action() {
+        // `new_tab = []` is an explicit "disable this action" — distinct from
+        // a typo (which keeps the default per the previous test).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[shortcuts]\nnew_tab = []\n").unwrap();
+
+        let (cfg, errs) = Config::load(&path);
+        assert!(errs.is_empty(), "errors: {errs:?}");
         assert_eq!(
             cfg.shortcuts.bindings.get(&Shortcut::NewTab).map(Vec::len),
             Some(0)

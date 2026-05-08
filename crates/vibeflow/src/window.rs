@@ -171,9 +171,13 @@ impl WindowApp {
         };
         let config_path = crate::config::default_path()
             .unwrap_or_else(|| std::path::PathBuf::from("./vibeflow-config.toml"));
-        let (_initial_config, initial_errors) = crate::config::Config::load(&config_path);
+        let (initial_config, initial_errors) = crate::config::Config::load(&config_path);
         let error_banner = crate::config::error_banner::ErrorBannerState::new(initial_errors);
-        let shortcut_table = crate::keymap::ShortcutTable::with_default_bindings();
+        // Build the shortcut table from the loaded config so user-bound chords
+        // are honored from the moment `new` returns. `apply_config` (in
+        // `resumed`) re-applies once the renderer exists; renderer-dependent
+        // settings (colors, blink, fonts) wait for that.
+        let shortcut_table = build_shortcut_table(&initial_config.shortcuts);
         Self {
             window: None,
             renderer: None,
