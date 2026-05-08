@@ -133,13 +133,18 @@ pub struct WindowApp {
     /// System clipboard handle for Ctrl+Shift+C / Ctrl+Shift+V. `None` on
     /// systems without a display server (CI, headless containers).
     clipboard: Option<crate::clipboard::Clipboard>,
+    /// Proxy for the file-watcher thread to ship `AppUserEvent` back to the
+    /// main thread. Cloned and handed to the watcher in `resumed`.
+    // Task 6 will clone and hand this to the watcher thread; unused until then.
+    #[allow(dead_code)]
+    proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>,
 }
 
 impl WindowApp {
     /// Build a `WindowApp` with no window and no tabs. Call
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>) -> Self {
         let clipboard = match crate::clipboard::Clipboard::new() {
             Ok(c) => Some(c),
             Err(e) => {
@@ -154,6 +159,7 @@ impl WindowApp {
             current_modifiers: ModifiersState::empty(),
             cursor_pos: None,
             clipboard,
+            proxy,
         }
     }
 
@@ -322,13 +328,7 @@ impl WindowApp {
     }
 }
 
-impl Default for WindowApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ApplicationHandler for WindowApp {
+impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             // resumed can fire more than once on some platforms (e.g. when the
@@ -668,6 +668,22 @@ impl ApplicationHandler for WindowApp {
         };
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
+    }
+
+    fn user_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        event: crate::config::AppUserEvent,
+    ) {
+        // Stage 9 Task 7 will distribute this to subscribers. For now: trace.
+        match &event {
+            crate::config::AppUserEvent::ConfigReloaded { errors, .. } => {
+                tracing::info!(error_count = errors.len(), "config reloaded (stub)");
+            }
+            crate::config::AppUserEvent::ConfigError(err) => {
+                tracing::warn!(?err, "config error (stub)");
+            }
+        }
     }
 }
 

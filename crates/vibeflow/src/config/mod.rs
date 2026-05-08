@@ -413,6 +413,21 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
     );
 }
 
+/// Events delivered to the main thread via `EventLoopProxy::send_event`. The
+/// only sender is the file-watcher thread (Task 6).
+#[derive(Debug, Clone)]
+pub enum AppUserEvent {
+    /// New `Config` (with all defaults applied) plus any errors encountered
+    /// during parse. `errors.is_empty()` means a clean reload.
+    ConfigReloaded {
+        config: Config,
+        errors: Vec<ConfigError>,
+    },
+    /// One-off error not tied to a successful reload (file removed at
+    /// runtime, IO error). Banner shows it; current `Config` is retained.
+    ConfigError(ConfigError),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
