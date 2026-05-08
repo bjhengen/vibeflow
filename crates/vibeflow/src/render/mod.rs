@@ -268,9 +268,13 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        let tab_rects = self
-            .tab_bar
-            .build_rects(app, &layout, &self.indicator_colors);
+        let tab_rects = self.tab_bar.build_rects(
+            app,
+            &layout,
+            &self.indicator_colors,
+            rename_state,
+            (cell_w, cell_h),
+        );
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {
                 build_selection_rects(

@@ -349,8 +349,14 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] Press Esc during rename → title reverts.
 - [ ] During rename, click on another tab → rename cancelled, that tab becomes active.
 - [ ] During rename, click in the cell area → rename cancelled.
-- [ ] After a user rename, run `printf '\x1b]0;new_title_from_shell\x07'` → the renamed tab is unaffected.
-- [ ] On an UN-renamed tab, set bash `PROMPT_COMMAND='printf "\e]0;%s\a" "$(pwd)"'` → the tab title updates to the cwd on each prompt.
+- [ ] After a user rename, in a **bash** shell (not dash) run
+  `printf '\x1b]0;new_title_from_shell\x07'` (note: bash builtin printf
+  interprets `\xNN`; dash does not — use `printf '\033]0;new_title\007'`
+  with octal there) → the renamed tab is unaffected.
+- [ ] On an UN-renamed tab, in bash run
+  `PROMPT_COMMAND='printf "\e]0;%s\a" "$(pwd)"'`
+  (no `set` keyword — that's a malformed bash command). Then press Enter at
+  least once → the tab title updates to the cwd on each prompt.
 - [ ] `Ctrl+Shift+R` on a (dead) renamed tab → fresh shell, title resets to `bash`.
 
 ### Arrow / nav keys

@@ -633,6 +633,8 @@ impl TabBarRenderer {
         app: &App,
         layout: &TabBarLayout,
         palette: &[[f32; 4]; 4],
+        rename_state: Option<&RenameInputState>,
+        cell_metrics: (u32, u32),
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
@@ -683,6 +685,33 @@ impl TabBarRenderer {
                 tab.close_button.h as f32,
                 [0.0, 0.0, 0.0, 0.3],
             ));
+
+            // Stage 9: rename overlay — subtle white tint + caret on the
+            // tab being edited.
+            if let Some(rs) = rename_state {
+                if rs.tab_idx == tab.idx {
+                    rects.push(RectInstance::new(
+                        tab.body.x as f32,
+                        tab.body.y as f32,
+                        tab.body.w as f32,
+                        tab.body.h as f32,
+                        [1.0, 1.0, 1.0, 0.10],
+                    ));
+                    let (cell_w, cell_h) = cell_metrics;
+                    let title_x_start =
+                        tab.body.x as f32 + (INDICATOR_STRIPE_WIDTH_PX as f32) + 6.0;
+                    let title_y = tab.body.y as f32 + 2.0;
+                    let chars_before = rs.buffer[..rs.cursor_pos].chars().count() as f32;
+                    let caret_x = title_x_start + chars_before * cell_w as f32;
+                    rects.push(RectInstance::new(
+                        caret_x,
+                        title_y,
+                        2.0,
+                        cell_h as f32,
+                        [1.0, 1.0, 1.0, 0.85],
+                    ));
+                }
+            }
         }
 
         // New-tab button background.

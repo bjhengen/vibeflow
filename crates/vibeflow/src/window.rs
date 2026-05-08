@@ -469,6 +469,13 @@ impl WindowApp {
                     rs.cursor_pos = rs.buffer.len();
                     RenameOutcome::None
                 }
+                Key::Named(NamedKey::Space) => {
+                    // winit routes spacebar through `Named(Space)`, not
+                    // `Character(" ")` — without this arm the space is dropped.
+                    rs.buffer.insert(rs.cursor_pos, ' ');
+                    rs.cursor_pos += 1;
+                    RenameOutcome::None
+                }
                 Key::Character(c) => {
                     let s = c.as_str();
                     rs.buffer.insert_str(rs.cursor_pos, s);

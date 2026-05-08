@@ -52,11 +52,12 @@ pub fn spawn(path: PathBuf, proxy: EventLoopProxy<AppUserEvent>) -> notify::Resu
                 match rx.recv_timeout(timeout) {
                     Ok(Ok(event)) => {
                         if event_concerns(&event, &path) {
-                            // Bump the debounce deadline.
-                            deadline = Some(Instant::now() + DEBOUNCE);
-                            // Special-case Remove: tell main thread immediately
-                            // (don't wait for debounce — file is already gone).
                             if matches!(event.kind, EventKind::Remove(_)) {
+                                // File removed — fire the error banner immediately
+                                // and CANCEL any pending debounced reload (which
+                                // would otherwise read defaults + empty errors
+                                // and clear the banner we just raised).
+                                deadline = None;
                                 let err = ConfigError::IoError(format!(
                                     "{} removed at runtime",
                                     path.display()
@@ -64,6 +65,10 @@ pub fn spawn(path: PathBuf, proxy: EventLoopProxy<AppUserEvent>) -> notify::Resu
                                 if proxy.send_event(AppUserEvent::ConfigError(err)).is_err() {
                                     return; // event loop dropped → exit thread
                                 }
+                            } else {
+                                // Create / Modify — bump the debounce deadline
+                                // and let the timeout branch fire the reload.
+                                deadline = Some(Instant::now() + DEBOUNCE);
                             }
                         }
                     }
