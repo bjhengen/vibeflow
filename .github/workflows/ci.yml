@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Opt runner-bundled JS actions (checkout, setup-node, rust-cache,
+  # rust-toolchain) into Node 24 ahead of GitHub's June 2026 forced upgrade.
+  # Silences the per-job "Node.js 20 actions are deprecated" warning.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   rust:
@@ -57,7 +61,11 @@ jobs:
           workspaces: "crates/vibeflow-protocol/fuzz"
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # NOT --locked: cargo-fuzz 0.13.x's bundled Cargo.lock pins
+        # rustix 0.36.5 (Dec 2022), which uses #[cfg_attr(rustc_attrs, …)]
+        # attributes that newer nightly rustc rejects. Letting the resolver
+        # pick a current rustix lets the install succeed.
+        run: cargo install cargo-fuzz
 
       - name: Run parse fuzzer for 60s
         working-directory: crates/vibeflow-protocol
@@ -72,10 +80,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use Node.js 20
+      - name: Use Node.js 22 (current LTS)
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: bindings/npm/package-lock.json
 
