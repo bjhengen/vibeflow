@@ -291,3 +291,115 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - Selection in scrollback — Stage 10 (depends on scrollback rendering).
 - Selection that anchors to grid content (survives scroll in background tabs) — open-ended; revisit if it bites in practice.
 - Some smiley-face emoji (U+1F600..) still resolve to DejaVu Sans rather than Noto Color Emoji on Ubuntu; that's a font priority issue from Stage 7.5 deferred to Stage 9.
+
+## Stage 9 — TOML config + bundled UX quick wins
+
+Run:
+
+```bash
+cd /home/bhengen/dev/vibeflow
+cargo build --bin vibeflow
+RUST_LOG=vibeflow=info ./target/debug/vibeflow
+```
+
+### Config — startup defaults (no file)
+
+- [ ] Cold-start with no `~/.config/vibeflow/config.toml` → vibeflow opens with default selection color, cursor blinks at 1Hz, all Stage 8 shortcuts work.
+
+### Config — partial file
+
+- [ ] Create `~/.config/vibeflow/config.toml`:
+   ```toml
+   [colors]
+   selection = "#ff0000ff"
+   ```
+   Save. Within ~250ms, the selection rect color changes to red on the next drag. (Drag-select to verify.)
+
+- [ ] Edit the file: `[cursor]` `blink_ms = 0`. Save. The cursor stops blinking (renders solid).
+
+- [ ] Edit the file: `blink_ms = 250`. Save. The cursor blinks twice as fast.
+
+### Config — error banner
+
+- [ ] Edit the file: `[cursor]` `blink_ms = "fast"` (invalid type). Save.
+   - A dark-red banner appears at the top of the cell area: `⚠ 1 config key ignored: cursor.blink_ms (or similar) — Esc to dismiss`.
+   - The cursor blink rate falls back to the previous value (or default).
+- [ ] Press Esc — banner dismisses.
+- [ ] Edit the file to fix the typo: `blink_ms = 500`. Save → banner re-clears (already dismissed; banner stays gone).
+- [ ] Add a NEW typo (`indicator_active = "not a color"`). Save → banner reappears with the new error.
+
+### Config — file deletion
+
+- [ ] With vibeflow open, `rm ~/.config/vibeflow/config.toml`. Banner: `⚠ 1 config key ignored: I/O: ... removed at runtime`. Current values retained.
+- [ ] Recreate the file with valid content. Banner clears, new values applied.
+
+### Custom shortcuts
+
+- [ ] Edit `[shortcuts]` `new_tab = ["ctrl+alt+t"]`. Save.
+- [ ] `Ctrl+Shift+T` no longer spawns a tab. `Ctrl+Alt+T` spawns one.
+- [ ] Restore the default. Save. `Ctrl+Shift+T` spawns again.
+
+### Tab rename
+
+- [ ] `Ctrl+Shift+E` → active tab's title becomes editable; cursor is at the end of the title; tab background slightly tinted.
+- [ ] Type "claude work". Backspace, type something else. Arrow keys move within the buffer. Home / End jump.
+- [ ] Press Enter → tab title is now "claude work". Subtitle still shows the activity state.
+- [ ] `F2` also opens rename.
+- [ ] Right-click on a different tab → its title becomes editable.
+- [ ] Press Esc during rename → title reverts.
+- [ ] During rename, click on another tab → rename cancelled, that tab becomes active.
+- [ ] During rename, click in the cell area → rename cancelled.
+- [ ] After a user rename, in a **bash** shell (not dash) run
+  `printf '\x1b]0;new_title_from_shell\x07'` → the renamed tab is unaffected
+  (the user-rename sets `PtySession.user_renamed = true`, suppressing all
+  subsequent OSC 0/2). Note: dash's printf doesn't support `\xNN`, use
+  octal `printf '\033]0;new_title\007'` there.
+- [ ] On an UN-renamed tab, run
+  `printf '\x1b]0;TEST123\x07'` → tab title flashes to `TEST123`. Most
+  Ubuntu/Debian bash setups have a system `PROMPT_COMMAND` that emits
+  `\e]0;${USER}@${HOSTNAME}: ${PWD/$HOME/~}\a` on every prompt, which
+  immediately overwrites your manual title. To see TEST123 stick, first
+  disable it: `PROMPT_COMMAND=`. To verify dynamic titling is wired via
+  the system PROMPT_COMMAND, simply `cd /tmp` and watch the tab title flip
+  to `/tmp`. Confirming via `RUST_LOG=vibeflow=debug` shows back-to-back
+  `OSC SetTitle received` lines — the second one (from bash) overwrites
+  the first within microseconds, before any redraw.
+- [ ] `Ctrl+Shift+R` on a (dead) renamed tab → fresh shell, title resets to `bash`.
+
+### Arrow / nav keys
+
+- [ ] At a `bash` prompt, press Up → previous command appears.
+- [ ] Press Down → next.
+- [ ] Type a long command, press Home → cursor jumps to start. End → end.
+- [ ] Run `less /etc/passwd`. PageUp / PageDown work as expected.
+
+### PRIMARY clipboard
+
+- [ ] Drag-select text in vibeflow. Without pressing Ctrl+Shift+C, middle-click in another vibeflow tab or another GUI app → text pastes.
+- [ ] In another GUI app, select-and-PRIMARY-copy "external text". Middle-click in vibeflow → "external text" arrives at the prompt.
+- [ ] Edit config: `[clipboard]` `primary = false`. Save. Drag-select in vibeflow → middle-click no longer pastes.
+- [ ] Restore `primary = true`.
+
+### Cross-cutting
+
+- [ ] Resize the window — selection clears (Stage 8 behavior preserved).
+- [ ] Open vim, `:set mouse=a` — mouse-mode passthrough still works (Stage 8).
+- [ ] `WINIT_UNIX_BACKEND=x11 ./target/debug/vibeflow` — all checks above still pass.
+
+**Known Stage 9 limitations (deferred):**
+
+- Font priority hot-reload only partially applies (`set_font_priorities` logs and clears the glyph cache; full FontSystem priority-chain reorder applies on next startup). Restart vibeflow to fully apply font priority changes.
+- Right-click context menu (Copy / Paste / etc) for the cell area — Stage 10 (needs overlay rendering).
+- Block (column) selection — Stage 10.
+- Selection in scrollback — Stage 10.
+- Shift / Ctrl-modifier arrow keys (Shift+Right for word-jump in editors, etc.) — Stage 10/11.
+- Bell behavior config — defer to Stage 10.
+- Inline rename caret rendering — buffer substitution renders the editing buffer, but no visible caret blink within the buffer; Stage 10 polish.
+
+### Tabs — disable shell-driven titles
+
+- [ ] Add to config: `[tabs]` `respect_osc_title = false`. Save.
+- [ ] In a fresh tab, run `cd /tmp` — tab title stays at `bash` instead of changing.
+- [ ] `printf '\x1b]0;TEST\x07'` — tab title still stays `bash`.
+- [ ] Ctrl+Shift+E rename still works — user rename overrides regardless.
+- [ ] Restore `respect_osc_title = true` (or delete the key). Tab titles resume tracking shell OSC 0/2.

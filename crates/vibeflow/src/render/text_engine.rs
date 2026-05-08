@@ -274,6 +274,26 @@ impl TextEngine {
         self.baseline_y
     }
 
+    /// Stage 9: receive new font priority order. Live-reload of cosmic-text's
+    /// `FontSystem` priority chain isn't directly supported by 0.12.1's API;
+    /// a config change that reorders priorities takes effect on next startup.
+    /// What we do now: log the new priority list and clear the glyph cache so
+    /// existing shaping is re-evaluated (in case the font on disk changed).
+    pub fn set_font_priorities(&mut self, priority: Vec<String>) {
+        tracing::info!(
+            ?priority,
+            "font priorities updated (full reorder applies on next startup)"
+        );
+        self.invalidate_glyph_cache();
+    }
+
+    /// Clear the cached glyph map. Subsequent `glyph_for` calls miss the cache
+    /// and re-shape. We intentionally do NOT clear the GPU atlas textures —
+    /// slots get reused as new glyphs come in.
+    pub fn invalidate_glyph_cache(&mut self) {
+        self.cache.clear();
+    }
+
     /// Rasterize a single character. Returns `Some` for any glyph the font
     /// stack can produce, `None` only if no fallback covers the codepoint.
     /// `RasterImage::kind` distinguishes mono (R8) from color (RGBA premultiplied).

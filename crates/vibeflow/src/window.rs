@@ -13,6 +13,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::app::App;
+use crate::render::tabs::RenameInputState;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
@@ -98,6 +99,16 @@ fn key_to_bytes(
         // through `Character(" ")` — so without this arm it falls into the
         // `_ => None` catch-all and the byte never reaches the PTY.
         Key::Named(NamedKey::Space) => Some(vec![b' ']),
+        Key::Named(NamedKey::ArrowUp) if modifiers.is_empty() => Some(b"\x1b[A".to_vec()),
+        Key::Named(NamedKey::ArrowDown) if modifiers.is_empty() => Some(b"\x1b[B".to_vec()),
+        Key::Named(NamedKey::ArrowRight) if modifiers.is_empty() => Some(b"\x1b[C".to_vec()),
+        Key::Named(NamedKey::ArrowLeft) if modifiers.is_empty() => Some(b"\x1b[D".to_vec()),
+        Key::Named(NamedKey::Home) if modifiers.is_empty() => Some(b"\x1b[H".to_vec()),
+        Key::Named(NamedKey::End) if modifiers.is_empty() => Some(b"\x1b[F".to_vec()),
+        Key::Named(NamedKey::PageUp) if modifiers.is_empty() => Some(b"\x1b[5~".to_vec()),
+        Key::Named(NamedKey::PageDown) if modifiers.is_empty() => Some(b"\x1b[6~".to_vec()),
+        Key::Named(NamedKey::Insert) if modifiers.is_empty() => Some(b"\x1b[2~".to_vec()),
+        Key::Named(NamedKey::Delete) if modifiers.is_empty() => Some(b"\x1b[3~".to_vec()),
         // Anything else → Stage 8.
         _ => None,
     }
@@ -133,13 +144,24 @@ pub struct WindowApp {
     /// System clipboard handle for Ctrl+Shift+C / Ctrl+Shift+V. `None` on
     /// systems without a display server (CI, headless containers).
     clipboard: Option<crate::clipboard::Clipboard>,
+    /// Proxy for the file-watcher thread to ship `AppUserEvent` back to the
+    /// main thread. Cloned and handed to the watcher in `resumed`.
+    proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>,
+    /// Active shortcut table. Replaces the static Stage 8 lookup.
+    shortcut_table: crate::keymap::ShortcutTable,
+    /// Banner state for config errors (Stage 9). Empty until first reload reports errors.
+    error_banner: crate::config::error_banner::ErrorBannerState,
+    /// Path to the config file. Stored so the watcher can be respawned if needed.
+    config_path: std::path::PathBuf,
+    /// Stage 9: in-progress inline rename of a tab title. None when not renaming.
+    rename_state: Option<RenameInputState>,
 }
 
 impl WindowApp {
     /// Build a `WindowApp` with no window and no tabs. Call
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>) -> Self {
         let clipboard = match crate::clipboard::Clipboard::new() {
             Ok(c) => Some(c),
             Err(e) => {
@@ -147,6 +169,15 @@ impl WindowApp {
                 None
             }
         };
+        let config_path = crate::config::default_path()
+            .unwrap_or_else(|| std::path::PathBuf::from("./vibeflow-config.toml"));
+        let (initial_config, initial_errors) = crate::config::Config::load(&config_path);
+        let error_banner = crate::config::error_banner::ErrorBannerState::new(initial_errors);
+        // Build the shortcut table from the loaded config so user-bound chords
+        // are honored from the moment `new` returns. `apply_config` (in
+        // `resumed`) re-applies once the renderer exists; renderer-dependent
+        // settings (colors, blink, fonts) wait for that.
+        let shortcut_table = build_shortcut_table(&initial_config.shortcuts);
         Self {
             window: None,
             renderer: None,
@@ -154,6 +185,11 @@ impl WindowApp {
             current_modifiers: ModifiersState::empty(),
             cursor_pos: None,
             clipboard,
+            proxy,
+            shortcut_table,
+            error_banner,
+            config_path,
+            rename_state: None,
         }
     }
 
@@ -275,6 +311,9 @@ impl WindowApp {
             }
             Shortcut::Copy => self.handle_copy(),
             Shortcut::Paste => self.handle_paste(),
+            Shortcut::RenameTab => {
+                self.start_rename(self.app.active());
+            }
         }
     }
 
@@ -292,6 +331,36 @@ impl WindowApp {
         if let Err(e) = clipboard.copy(&text) {
             tracing::warn!("copy failed: {e}");
         }
+    }
+
+    /// Distribute a newly-loaded config to all subscribers.
+    fn apply_config(&mut self, config: &crate::config::Config) {
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_selection_color(config.colors.selection);
+            r.set_indicator_colors([
+                config.colors.indicator_active,
+                config.colors.indicator_working,
+                config.colors.indicator_waiting,
+                config.colors.indicator_inactive,
+            ]);
+            r.set_cursor_blink_ms(config.cursor.blink_ms);
+            r.set_font_priorities(config.fonts.priority.clone());
+        }
+        // Rebuild the shortcut table from the bindings.
+        self.shortcut_table = build_shortcut_table(&config.shortcuts);
+        if let Some(c) = self.clipboard.as_mut() {
+            c.set_primary_enabled(config.clipboard.primary);
+        }
+        // Propagate `respect_osc_title` + `title_strip_prefix` to all current
+        // tabs and remember them so future `App::new_tab` spawns inherit.
+        let respect = config.tabs.respect_osc_title;
+        let prefix = config.tabs.title_strip_prefix.clone();
+        for s in self.app.tabs_mut().iter_mut() {
+            s.respect_osc_title = respect;
+            s.title_strip_prefix = prefix.clone();
+        }
+        self.app.set_default_respect_osc_title(respect);
+        self.app.set_default_title_strip_prefix(prefix);
     }
 
     fn handle_paste(&mut self) {
@@ -317,15 +386,124 @@ impl WindowApp {
             let _ = s.send_input(text.as_bytes());
         }
     }
-}
 
-impl Default for WindowApp {
-    fn default() -> Self {
-        Self::new()
+    fn start_rename(&mut self, tab_idx: usize) {
+        let title = match self.app.tabs().get(tab_idx) {
+            Some(s) => s.label().title.clone(),
+            None => return,
+        };
+        self.rename_state = Some(RenameInputState {
+            tab_idx,
+            cursor_pos: title.len(),
+            buffer: title.clone(),
+            original: title,
+        });
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn commit_rename(&mut self) {
+        let Some(rs) = self.rename_state.take() else {
+            return;
+        };
+        if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
+            s.set_title(rs.buffer);
+            s.user_renamed = true;
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn cancel_rename(&mut self) {
+        let Some(rs) = self.rename_state.take() else {
+            return;
+        };
+        if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
+            s.set_title(rs.original);
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn handle_rename_keyboard(&mut self, key: &winit::keyboard::Key) {
+        use winit::keyboard::{Key, NamedKey};
+
+        enum RenameOutcome {
+            None,
+            Commit,
+            Cancel,
+        }
+
+        let outcome = {
+            let Some(rs) = self.rename_state.as_mut() else {
+                return;
+            };
+            match key {
+                Key::Named(NamedKey::Enter) => RenameOutcome::Commit,
+                Key::Named(NamedKey::Escape) => RenameOutcome::Cancel,
+                Key::Named(NamedKey::Backspace) => {
+                    if rs.cursor_pos > 0 {
+                        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+                        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
+                        rs.cursor_pos = new_pos;
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if rs.cursor_pos < rs.buffer.len() {
+                        let new_end = next_grapheme(&rs.buffer, rs.cursor_pos);
+                        rs.buffer.replace_range(rs.cursor_pos..new_end, "");
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if rs.cursor_pos > 0 {
+                        rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if rs.cursor_pos < rs.buffer.len() {
+                        rs.cursor_pos = next_grapheme(&rs.buffer, rs.cursor_pos);
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::Home) => {
+                    rs.cursor_pos = 0;
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::End) => {
+                    rs.cursor_pos = rs.buffer.len();
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::Space) => {
+                    // winit routes spacebar through `Named(Space)`, not
+                    // `Character(" ")` — without this arm the space is dropped.
+                    rs.buffer.insert(rs.cursor_pos, ' ');
+                    rs.cursor_pos += 1;
+                    RenameOutcome::None
+                }
+                Key::Character(c) => {
+                    let s = c.as_str();
+                    rs.buffer.insert_str(rs.cursor_pos, s);
+                    rs.cursor_pos += s.len();
+                    RenameOutcome::None
+                }
+                _ => RenameOutcome::None,
+            }
+        };
+        match outcome {
+            RenameOutcome::Commit => self.commit_rename(),
+            RenameOutcome::Cancel => self.cancel_rename(),
+            RenameOutcome::None => {}
+        }
     }
 }
 
-impl ApplicationHandler for WindowApp {
+impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             // resumed can fire more than once on some platforms (e.g. when the
@@ -354,6 +532,18 @@ impl ApplicationHandler for WindowApp {
         };
         self.window = Some(window);
         self.renderer = Some(renderer);
+
+        // Apply initial config now that renderer is built.
+        let (config, errors) = crate::config::Config::load(&self.config_path);
+        self.apply_config(&config);
+        self.error_banner.update(errors);
+
+        // Start the file watcher.
+        let proxy = self.proxy.clone();
+        let path = self.config_path.clone();
+        if let Err(e) = crate::config::watcher::spawn(path, proxy) {
+            tracing::warn!(error = %e, "config watcher failed to start");
+        }
 
         if let Err(e) = self.spawn_first_tab() {
             tracing::error!(error = ?e, "failed to spawn first tab");
@@ -396,7 +586,12 @@ impl ApplicationHandler for WindowApp {
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
                 };
-                match renderer.render(term, &self.app) {
+                match renderer.render(
+                    term,
+                    &self.app,
+                    &self.error_banner,
+                    self.rename_state.as_ref(),
+                ) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         // Surface needs to be re-created with current config.
@@ -455,10 +650,33 @@ impl ApplicationHandler for WindowApp {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                // Stage 9: while renaming a tab, capture all keystrokes.
+                if event.state == ElementState::Pressed && self.rename_state.is_some() {
+                    self.handle_rename_keyboard(&event.logical_key);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
+                // Esc dismisses the config-error banner (Stage 9) before any
+                // other handling so the Escape byte is not forwarded to the PTY
+                // while the banner is visible.
+                if matches!(
+                    event.logical_key,
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                ) && self.error_banner.visible()
+                {
+                    self.error_banner.dismiss();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 // Shortcut dispatch FIRST. If the combo matches, suppress the
                 // literal byte fallthrough.
-                if let Some(shortcut) =
-                    crate::keymap::match_shortcut(&event.logical_key, self.current_modifiers)
+                if let Some(shortcut) = self
+                    .shortcut_table
+                    .lookup(&event.logical_key, self.current_modifiers)
                 {
                     self.handle_shortcut(shortcut);
                     return;
@@ -559,7 +777,32 @@ impl ApplicationHandler for WindowApp {
                 // in the tab bar and any non-Left buttons in the tab bar are
                 // ignored (no-op).
                 if py < bar_h {
+                    // Stage 9: right-click on a tab body opens rename.
+                    if state == ElementState::Released && button == MouseButton::Right {
+                        if let Some(renderer) = self.renderer.as_ref() {
+                            let (window_w, _) = renderer.surface_size();
+                            let (_, cell_h) = renderer.cell_pitch();
+                            let layout = crate::render::tabs::TabBarLayout::compute(
+                                window_w,
+                                cell_h,
+                                self.app.tabs().len(),
+                            );
+                            if let crate::render::tabs::TabBarHit::TabBody(idx) =
+                                layout.hit_test(px, py)
+                            {
+                                self.start_rename(idx);
+                            }
+                        }
+                        return;
+                    }
+                    // Existing Stage 8 release-left handler (preserve behavior):
                     if state == ElementState::Released && button == MouseButton::Left {
+                        // Stage 9: clicking on a different tab while renaming cancels.
+                        if self.rename_state.is_some() {
+                            // We don't know which tab was clicked yet; cancel anyway —
+                            // the existing handler will switch active tab.
+                            self.cancel_rename();
+                        }
                         self.handle_left_click_release();
                     }
                     return;
@@ -572,6 +815,12 @@ impl ApplicationHandler for WindowApp {
                 let pressed = state == ElementState::Pressed;
                 let released = state == ElementState::Released;
                 let shift = self.current_modifiers.shift_key();
+
+                // Stage 9: click in cell area cancels in-progress rename.
+                if pressed && self.rename_state.is_some() {
+                    self.cancel_rename();
+                    // Fall through to selection / mouse-mode logic.
+                }
 
                 let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
@@ -593,6 +842,26 @@ impl ApplicationHandler for WindowApp {
                     MouseButton::Right => Some(crate::render::mouse_encoder::Button::Right),
                     _ => None,
                 };
+
+                // Stage 9: middle-click in NON-mouse-mode pastes PRIMARY.
+                if button == MouseButton::Middle && released && !mode_on {
+                    let bracketed = s
+                        .term()
+                        .mode()
+                        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+                    if let Some(clipboard) = self.clipboard.as_mut() {
+                        if let Some(text) = clipboard.paste_primary() {
+                            if bracketed {
+                                let _ = s.send_input(b"\x1b[200~");
+                                let _ = s.send_input(text.as_bytes());
+                                let _ = s.send_input(b"\x1b[201~");
+                            } else {
+                                let _ = s.send_input(text.as_bytes());
+                            }
+                        }
+                    }
+                    return;
+                }
 
                 if mode_on && !shift {
                     // If a selection drag was started before mouse mode engaged,
@@ -625,6 +894,17 @@ impl ApplicationHandler for WindowApp {
                     sel.mouse_down(point, shift, term, now);
                 } else if released {
                     s.selection.mouse_up();
+                    // Stage 9: if a finalized selection exists AND PRIMARY is
+                    // enabled, auto-copy to PRIMARY (X11 middle-click semantic).
+                    // CLIPBOARD is unaffected — Ctrl+Shift+C still copies there.
+                    if let Some(text) = s.selection.text(s.term()) {
+                        if let Some(clipboard) = self.clipboard.as_mut() {
+                            #[cfg(target_os = "linux")]
+                            if clipboard.primary_enabled() {
+                                let _ = clipboard.copy_primary(&text);
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -666,6 +946,57 @@ impl ApplicationHandler for WindowApp {
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
     }
+
+    fn user_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        event: crate::config::AppUserEvent,
+    ) {
+        match event {
+            crate::config::AppUserEvent::ConfigReloaded { config, errors } => {
+                tracing::info!(error_count = errors.len(), "config reloaded");
+                self.apply_config(&config);
+                self.error_banner.update(errors);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            crate::config::AppUserEvent::ConfigError(err) => {
+                tracing::warn!(?err, "config error");
+                self.error_banner.update(vec![err]);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+}
+
+fn prev_grapheme(s: &str, pos: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    s.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .rfind(|&i| i < pos)
+        .unwrap_or(0)
+}
+
+fn next_grapheme(s: &str, pos: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    s.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .find(|&i| i > pos)
+        .unwrap_or(s.len())
+}
+
+fn build_shortcut_table(
+    bindings: &crate::config::ShortcutBindings,
+) -> crate::keymap::ShortcutTable {
+    // For now, when the user supplies a config, replace the default table
+    // wholesale. The default still applies if a Shortcut variant has no
+    // entry in `bindings`.
+    let mut table = crate::keymap::ShortcutTable::with_default_bindings();
+    table.replace_from_bindings(bindings);
+    table
 }
 
 #[cfg(test)]
@@ -828,6 +1159,200 @@ mod tests {
             "real font metrics should produce different grid dims than the \
              Stage-4 placeholder 8×16 pitch — if these are equal, window.rs \
              is still using the placeholders"
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_up_emits_csi_a() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[A".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_down_emits_csi_b() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowDown),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[B".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_right_emits_csi_c() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowRight),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[C".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_left_emits_csi_d() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowLeft),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[D".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_home_emits_csi_h() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Home),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[H".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_end_emits_csi_f() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::End),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[F".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_page_up_emits_csi_5_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::PageUp),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[5~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_page_down_emits_csi_6_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::PageDown),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[6~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_insert_emits_csi_2_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Insert),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[2~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_delete_emits_csi_3_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Delete),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[3~".to_vec())
+        );
+    }
+
+    fn rename_state_init(buffer: &str, cursor: usize) -> crate::render::tabs::RenameInputState {
+        crate::render::tabs::RenameInputState {
+            tab_idx: 0,
+            buffer: buffer.to_string(),
+            cursor_pos: cursor,
+            original: buffer.to_string(),
+        }
+    }
+
+    #[test]
+    fn rename_backspace_deletes_grapheme() {
+        let mut rs = rename_state_init("hello", 5);
+        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
+        rs.cursor_pos = new_pos;
+        assert_eq!(rs.buffer, "hell");
+        assert_eq!(rs.cursor_pos, 4);
+    }
+
+    #[test]
+    fn rename_backspace_handles_multibyte() {
+        let mut rs = rename_state_init("café", 5);
+        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
+        rs.cursor_pos = new_pos;
+        assert_eq!(rs.buffer, "caf");
+        assert_eq!(rs.cursor_pos, 3);
+    }
+
+    #[test]
+    fn rename_arrow_left_moves_by_grapheme() {
+        let mut rs = rename_state_init("abc", 3);
+        rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        assert_eq!(rs.cursor_pos, 2);
+    }
+
+    #[test]
+    fn rename_home_jumps_to_zero() {
+        let mut rs = rename_state_init("abc", 2);
+        rs.cursor_pos = 0;
+        assert_eq!(rs.cursor_pos, 0);
+    }
+
+    #[test]
+    fn rename_end_jumps_to_len() {
+        let mut rs = rename_state_init("abc", 0);
+        rs.cursor_pos = rs.buffer.len();
+        assert_eq!(rs.cursor_pos, 3);
+    }
+
+    #[test]
+    fn rename_insert_at_cursor() {
+        let mut rs = rename_state_init("ab", 1);
+        rs.buffer.insert(rs.cursor_pos, 'X');
+        rs.cursor_pos += 1;
+        assert_eq!(rs.buffer, "aXb");
+        assert_eq!(rs.cursor_pos, 2);
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_up_with_ctrl_returns_none() {
+        // Ctrl+ArrowUp is reserved for word-jump in Stage 10+. Until then,
+        // we return None so the byte path doesn't accidentally pick up the
+        // plain `\x1b[A` for a modified chord.
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                ElementState::Pressed,
+                ModifiersState::CONTROL
+            ),
+            None
         );
     }
 }

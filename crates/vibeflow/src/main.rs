@@ -19,12 +19,15 @@ fn main() -> Result<()> {
         .with(fmt::layer().with_target(false))
         .init();
 
-    let event_loop = EventLoop::new().context("create winit EventLoop")?;
+    let event_loop = EventLoop::<vibeflow::config::AppUserEvent>::with_user_event()
+        .build()
+        .context("create winit EventLoop")?;
     // The control flow is set per-iteration in `WindowApp::about_to_wait`
     // (a 100 ms `WaitUntil` so tracker timeouts fire). The initial value
     // doesn't matter — the first `about_to_wait` overrides it.
 
-    let mut app = WindowApp::new();
+    let proxy = event_loop.create_proxy();
+    let mut app = WindowApp::new(proxy);
     event_loop
         .run_app(&mut app)
         .context("run winit event loop")?;

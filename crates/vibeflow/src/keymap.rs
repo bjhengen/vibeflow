@@ -1,17 +1,14 @@
-//! Keyboard shortcut dispatch. Single source of truth for the
-//! Ctrl+Shift+... and Super+... shortcut table.
-//!
-//! `match_shortcut` consumes a winit logical key + modifier set and returns
-//! `Some(Shortcut)` if the combo matches one of vibeflow's shortcuts;
-//! otherwise `None`, in which case the caller should fall through to the
-//! ordinary typed-input path (so a literal `T` keystroke still reaches the
-//! PTY when no Ctrl+Shift / Super modifier is held).
+//! Keyboard shortcut dispatch. Stage 8 hard-coded the modifier+key → action
+//! match; Stage 9 makes the table data-driven via `ShortcutTable`, populated
+//! from `Config.shortcuts`. The default table reproduces Stage 8's bindings
+//! exactly so behavior without a config file is unchanged.
+
+use std::collections::HashMap;
 
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-/// Discrete shortcut actions vibeflow's `window.rs` dispatches. Stage 9 will
-/// extend this enum with config-driven entries; for now it's hard-coded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Discrete shortcut actions vibeflow's `window.rs` dispatches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shortcut {
     NewTab,
     CloseTab,
@@ -20,64 +17,219 @@ pub enum Shortcut {
     RestartTab,
     Copy,
     Paste,
+    /// Stage 9: open the inline rename input on the active tab.
+    RenameTab,
 }
 
-/// Match a winit key event against the shortcut table. Returns `None` if the
-/// modifier combo doesn't match any shortcut — the caller should then fall
-/// through to typed-input dispatch.
-///
-/// Matching rule:
-/// * `Ctrl+Shift+Key` is the primary form.
-/// * `Super+Key` (no Shift required, except for `Tab` directionals) is an
-///   alias — gives Mac users via VNC the muscle-memory of `Cmd+...`.
-/// * `Alt` and other non-listed modifiers must be UNSET. Pressing
-///   `Ctrl+Shift+Alt+T` is NOT a new-tab shortcut — it falls through.
-#[must_use]
-pub fn match_shortcut(key: &Key, modifiers: ModifiersState) -> Option<Shortcut> {
-    let ctrl = modifiers.control_key();
-    let shift = modifiers.shift_key();
-    let alt = modifiers.alt_key();
-    let supr = modifiers.super_key();
+/// Keyed lookup table. Constructed via `ShortcutTable::with_default_bindings()`
+/// for the built-in bindings; Task 7 adds replacement from a `Config.shortcuts`
+/// at runtime.
+#[derive(Debug, Clone, Default)]
+pub struct ShortcutTable {
+    /// (modifiers, key-discriminant) -> action. Multiple chord entries can
+    /// map to the same action.
+    by_chord: HashMap<ChordKey, Shortcut>,
+}
 
-    // Reject any combo with Alt set — we don't bind Alt-anything in Stage 8.
-    if alt {
-        return None;
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChordKey {
+    modifiers_bits: u32,
+    key: ChordKeyDisc,
+}
 
-    // The two valid modifier shapes for the non-Tab shortcuts:
-    //   * Ctrl+Shift  (standard Linux terminal binding)
-    //   * Super alone (Mac-via-VNC alias)
-    // Tab is the exception: prev-tab needs Shift either way.
-    let ctrl_shift = ctrl && shift && !supr;
-    let super_only = supr && !ctrl && !shift;
-    let super_shift = supr && shift && !ctrl;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ChordKeyDisc {
+    /// ASCII lowercase letter.
+    Char(char),
+    Tab,
+    Function(u8),
+}
 
-    match key {
-        Key::Character(c) if ctrl_shift || super_only => match c.as_str() {
-            "T" | "t" => Some(Shortcut::NewTab),
-            "W" | "w" => Some(Shortcut::CloseTab),
-            "R" | "r" => Some(Shortcut::RestartTab),
-            "C" | "c" => Some(Shortcut::Copy),
-            "V" | "v" => Some(Shortcut::Paste),
-            _ => None,
-        },
-        Key::Named(NamedKey::Tab) => {
-            // Ctrl+Tab → next; Ctrl+Shift+Tab → prev.
-            // Super+Tab → next; Super+Shift+Tab → prev.
-            if ctrl && !shift && !supr {
-                Some(Shortcut::NextTab)
-            } else if ctrl && shift && !supr {
-                Some(Shortcut::PrevTab)
-            } else if supr && !shift && !ctrl {
-                Some(Shortcut::NextTab)
-            } else if super_shift {
-                Some(Shortcut::PrevTab)
-            } else {
-                None
+impl ShortcutTable {
+    /// Default Stage 8 bindings — what users get without a config file.
+    #[must_use]
+    pub fn with_default_bindings() -> Self {
+        let pairs: &[(Shortcut, &[(ModifiersState, ChordKeyDisc)])] = &[
+            (
+                Shortcut::NewTab,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Char('t'),
+                    ),
+                    (ModifiersState::SUPER, ChordKeyDisc::Char('t')),
+                ],
+            ),
+            (
+                Shortcut::CloseTab,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Char('w'),
+                    ),
+                    (ModifiersState::SUPER, ChordKeyDisc::Char('w')),
+                ],
+            ),
+            (
+                Shortcut::NextTab,
+                &[
+                    (ModifiersState::CONTROL, ChordKeyDisc::Tab),
+                    (ModifiersState::SUPER, ChordKeyDisc::Tab),
+                ],
+            ),
+            (
+                Shortcut::PrevTab,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Tab,
+                    ),
+                    (
+                        ModifiersState::SUPER.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Tab,
+                    ),
+                ],
+            ),
+            (
+                Shortcut::RestartTab,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Char('r'),
+                    ),
+                    (ModifiersState::SUPER, ChordKeyDisc::Char('r')),
+                ],
+            ),
+            (
+                Shortcut::Copy,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Char('c'),
+                    ),
+                    (ModifiersState::SUPER, ChordKeyDisc::Char('c')),
+                ],
+            ),
+            (
+                Shortcut::Paste,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Char('v'),
+                    ),
+                    (ModifiersState::SUPER, ChordKeyDisc::Char('v')),
+                ],
+            ),
+            (
+                Shortcut::RenameTab,
+                &[
+                    (
+                        ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                        ChordKeyDisc::Char('e'),
+                    ),
+                    (ModifiersState::empty(), ChordKeyDisc::Function(2)),
+                ],
+            ),
+        ];
+        let mut by_chord = HashMap::new();
+        for (action, chords) in pairs {
+            for (mods, key) in *chords {
+                by_chord.insert(
+                    ChordKey {
+                        modifiers_bits: mods.bits(),
+                        key: *key,
+                    },
+                    *action,
+                );
             }
         }
-        _ => None,
+        Self { by_chord }
     }
+
+    /// Lookup the action triggered by a winit key + modifier set, or `None`
+    /// if no chord matches.
+    #[must_use]
+    pub fn lookup(&self, key: &Key, modifiers: ModifiersState) -> Option<Shortcut> {
+        let disc = match key {
+            Key::Character(c) => {
+                let s = c.as_str();
+                let mut chars = s.chars();
+                let first = chars.next()?;
+                if chars.next().is_some() || !first.is_ascii() {
+                    return None;
+                }
+                ChordKeyDisc::Char(first.to_ascii_lowercase())
+            }
+            Key::Named(NamedKey::Tab) => ChordKeyDisc::Tab,
+            Key::Named(NamedKey::F1) => ChordKeyDisc::Function(1),
+            Key::Named(NamedKey::F2) => ChordKeyDisc::Function(2),
+            Key::Named(NamedKey::F3) => ChordKeyDisc::Function(3),
+            Key::Named(NamedKey::F4) => ChordKeyDisc::Function(4),
+            Key::Named(NamedKey::F5) => ChordKeyDisc::Function(5),
+            Key::Named(NamedKey::F6) => ChordKeyDisc::Function(6),
+            Key::Named(NamedKey::F7) => ChordKeyDisc::Function(7),
+            Key::Named(NamedKey::F8) => ChordKeyDisc::Function(8),
+            Key::Named(NamedKey::F9) => ChordKeyDisc::Function(9),
+            Key::Named(NamedKey::F10) => ChordKeyDisc::Function(10),
+            Key::Named(NamedKey::F11) => ChordKeyDisc::Function(11),
+            Key::Named(NamedKey::F12) => ChordKeyDisc::Function(12),
+            _ => return None,
+        };
+        // Use ALL FOUR modifier bits (Ctrl, Shift, Alt, Super). Default
+        // bindings have alt = false, so existing tests still pass — no
+        // entry in the table matches an Alt-modified event unless the user
+        // explicitly bound one.
+        let mods_bits = (modifiers
+            & (ModifiersState::CONTROL
+                | ModifiersState::SHIFT
+                | ModifiersState::ALT
+                | ModifiersState::SUPER))
+            .bits();
+        self.by_chord
+            .get(&ChordKey {
+                modifiers_bits: mods_bits,
+                key: disc,
+            })
+            .copied()
+    }
+
+    /// Replace this table's entries from a `ShortcutBindings` map (sourced
+    /// from `Config.shortcuts`). Each action's chord list in `bindings`
+    /// REPLACES the default chord list for that action. Unset actions keep
+    /// the defaults.
+    pub fn replace_from_bindings(&mut self, bindings: &crate::config::ShortcutBindings) {
+        use crate::config::KeyMatch;
+        let actions_to_replace: std::collections::HashSet<Shortcut> =
+            bindings.bindings.keys().copied().collect();
+        self.by_chord
+            .retain(|_, action| !actions_to_replace.contains(action));
+        for (action, chords) in &bindings.bindings {
+            for chord in chords {
+                let disc = match &chord.key {
+                    KeyMatch::Char(c) => ChordKeyDisc::Char(c.to_ascii_lowercase()),
+                    KeyMatch::Tab => ChordKeyDisc::Tab,
+                    KeyMatch::Function(n) => ChordKeyDisc::Function(*n),
+                };
+                self.by_chord.insert(
+                    ChordKey {
+                        modifiers_bits: chord.modifiers.bits(),
+                        key: disc,
+                    },
+                    *action,
+                );
+            }
+        }
+    }
+}
+
+/// Backward-compat free function for callers that haven't been migrated to
+/// `ShortcutTable::lookup` yet. Uses the default bindings.
+#[must_use]
+pub fn match_shortcut(key: &Key, modifiers: ModifiersState) -> Option<Shortcut> {
+    static DEFAULT: std::sync::OnceLock<ShortcutTable> = std::sync::OnceLock::new();
+    DEFAULT
+        .get_or_init(ShortcutTable::with_default_bindings)
+        .lookup(key, modifiers)
 }
 
 #[cfg(test)]
@@ -106,7 +258,7 @@ mod tests {
         m
     }
 
-    // Ctrl+Shift form
+    // ===== Existing 17 tests (preserved verbatim from Stage 8) =====
 
     #[test]
     fn ctrl_shift_t_is_new_tab() {
@@ -118,8 +270,6 @@ mod tests {
 
     #[test]
     fn ctrl_shift_lowercase_t_is_new_tab() {
-        // winit may deliver lowercase or uppercase depending on Shift state;
-        // accept both so layout differences don't bite us.
         assert_eq!(
             match_shortcut(&ch("t"), mods(true, true, false, false)),
             Some(Shortcut::NewTab)
@@ -174,8 +324,6 @@ mod tests {
         );
     }
 
-    // Super-alias form
-
     #[test]
     fn super_t_is_new_tab() {
         assert_eq!(
@@ -208,8 +356,6 @@ mod tests {
         );
     }
 
-    // Negative cases
-
     #[test]
     fn plain_t_is_none() {
         assert_eq!(
@@ -220,7 +366,6 @@ mod tests {
 
     #[test]
     fn ctrl_t_without_shift_is_none() {
-        // Ctrl+T alone is not a vibeflow shortcut; bash uses it for transpose-chars.
         assert_eq!(
             match_shortcut(&ch("T"), mods(true, false, false, false)),
             None
@@ -229,7 +374,6 @@ mod tests {
 
     #[test]
     fn ctrl_shift_alt_t_is_none() {
-        // Alt set → reject. Don't false-positive on Ctrl+Shift+Alt+T.
         assert_eq!(
             match_shortcut(&ch("T"), mods(true, true, true, false)),
             None
@@ -238,7 +382,6 @@ mod tests {
 
     #[test]
     fn ctrl_shift_x_is_none() {
-        // Unbound character with the right modifiers still returns None.
         assert_eq!(
             match_shortcut(&ch("X"), mods(true, true, false, false)),
             None
@@ -247,10 +390,88 @@ mod tests {
 
     #[test]
     fn super_with_ctrl_is_none() {
-        // Super+Ctrl combo is ambiguous; reject to keep the table boring.
         assert_eq!(
             match_shortcut(&ch("T"), mods(true, false, false, true)),
             None
+        );
+    }
+
+    // ===== New Stage 9 tests =====
+
+    #[test]
+    fn ctrl_shift_e_is_rename_tab() {
+        assert_eq!(
+            match_shortcut(&ch("e"), mods(true, true, false, false)),
+            Some(Shortcut::RenameTab)
+        );
+    }
+
+    #[test]
+    fn f2_is_rename_tab() {
+        assert_eq!(
+            match_shortcut(&Key::Named(NamedKey::F2), mods(false, false, false, false)),
+            Some(Shortcut::RenameTab)
+        );
+    }
+
+    #[test]
+    fn f1_is_none_by_default() {
+        assert_eq!(
+            match_shortcut(&Key::Named(NamedKey::F1), mods(false, false, false, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn shortcut_table_default_has_all_actions() {
+        let t = ShortcutTable::with_default_bindings();
+        // 8 distinct actions × 2 chord aliases = 16 entries.
+        assert_eq!(t.by_chord.len(), 16);
+    }
+
+    #[test]
+    fn shortcut_table_lookup_alt_chord_not_in_default_table() {
+        let t = ShortcutTable::with_default_bindings();
+        // Ctrl+Shift+Alt+T isn't in the default table.
+        assert_eq!(
+            t.lookup(
+                &ch("t"),
+                ModifiersState::CONTROL | ModifiersState::SHIFT | ModifiersState::ALT
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn replace_from_bindings_overrides_defaults() {
+        use crate::config::{KeyChord, KeyMatch, ShortcutBindings};
+        use std::collections::HashMap;
+
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            Shortcut::NewTab,
+            vec![KeyChord {
+                modifiers: ModifiersState::CONTROL | ModifiersState::ALT,
+                key: KeyMatch::Char('t'),
+            }],
+        );
+        let user = ShortcutBindings { bindings };
+
+        let mut table = ShortcutTable::with_default_bindings();
+        table.replace_from_bindings(&user);
+
+        // The default ctrl+shift+t should be GONE...
+        assert_eq!(table.lookup(&ch("t"), mods(true, true, false, false)), None);
+        // ...and ctrl+alt+t SHOULD now trigger NewTab (post-Alt-rejection-lift).
+        assert_eq!(
+            table.lookup(&ch("t"), mods(true, false, true, false)),
+            Some(Shortcut::NewTab)
+        );
+
+        // Other actions still work — Copy default unchanged.
+        assert_eq!(
+            table.lookup(&ch("c"), mods(true, true, false, false)),
+            Some(Shortcut::Copy)
         );
     }
 }

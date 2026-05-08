@@ -89,7 +89,7 @@ pub struct PtySession {
     /// Reader thread handle. Owned by the session; joined when `Drop` runs.
     reader_thread: Option<JoinHandle<()>>,
     /// Per-session OSC parser.
-    dispatcher: OscDispatcher,
+    pub(crate) dispatcher: OscDispatcher,
     /// Per-session VT/ANSI parser. Drives `term` when fed via `Processor::advance`.
     parser: Processor,
     /// Per-session terminal grid (alacritty_terminal). Source of truth for
@@ -108,6 +108,18 @@ pub struct PtySession {
     bell_pending: bool,
     /// Per-tab mouse-driven cell selection. Stage 8.
     pub selection: crate::render::selection::SelectionTracker,
+    /// True once the user has manually renamed via Ctrl+Shift+E or
+    /// right-click. Sticky for the life of this session — subsequent
+    /// OSC 0 / OSC 2 are ignored. Cleared on `restart()` (which does `*self = new_session`).
+    pub user_renamed: bool,
+    /// Mirror of `Config.tabs.respect_osc_title`. When false, OSC 0/2 from
+    /// the shell is silently dropped regardless of `user_renamed`. WindowApp
+    /// keeps this in sync via apply_config + new-tab spawn.
+    pub respect_osc_title: bool,
+    /// Mirror of `Config.tabs.title_strip_prefix`. If non-empty, this
+    /// prefix is stripped from the front of every accepted OSC 0/2 title
+    /// before it lands on `label.title`.
+    pub title_strip_prefix: String,
 }
 
 impl PtySession {
@@ -162,6 +174,9 @@ impl PtySession {
             label,
             bell_pending: false,
             selection: crate::render::selection::SelectionTracker::new(),
+            user_renamed: false,
+            respect_osc_title: true,
+            title_strip_prefix: String::new(),
         })
     }
 
@@ -181,6 +196,13 @@ impl PtySession {
     /// templates like `default_title_from = "cwd"`.
     pub fn set_label(&mut self, label: TabLabel) {
         self.label = label;
+    }
+
+    /// Replace only the title (line 1) of the label, preserving the current
+    /// subtitle. Used by the interactive rename UI which doesn't touch the
+    /// activity-driven subtitle.
+    pub fn set_title(&mut self, title: String) {
+        self.label.title = title;
     }
 
     /// Recompute the default subtitle from the current tracker state. Called
@@ -220,6 +242,30 @@ impl PtySession {
                                     self.refresh_default_subtitle();
                                     events.push(SessionEvent::StateChanged(self.tracker.state()));
                                 }
+                            }
+                            DispatchEvent::SetTitle(title) => {
+                                tracing::debug!(
+                                    title = %title,
+                                    user_renamed = self.user_renamed,
+                                    respect_osc_title = self.respect_osc_title,
+                                    "OSC SetTitle received"
+                                );
+                                if self.respect_osc_title && !self.user_renamed {
+                                    let display = if !self.title_strip_prefix.is_empty() {
+                                        title
+                                            .strip_prefix(&self.title_strip_prefix)
+                                            .map(str::to_owned)
+                                            .unwrap_or(title)
+                                    } else {
+                                        title
+                                    };
+                                    if self.label.title != display {
+                                        self.label.title = display;
+                                        events.push(SessionEvent::TermUpdated);
+                                    }
+                                }
+                                // else: silently dropped — config disabled OSC
+                                // titles, or user-renamed wins.
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
@@ -354,6 +400,11 @@ impl PtySession {
             // PtySize uses u16 for rows/cols. Re-apply to the new master.
             let _ = new_session.resize(s.rows, s.cols);
         }
+        // Preserve the OSC-title policy across restart (a deliberate config
+        // override shouldn't be wiped just because the user hit Ctrl+Shift+R).
+        // user_renamed is intentionally NOT preserved — the new shell is fresh.
+        new_session.respect_osc_title = self.respect_osc_title;
+        new_session.title_strip_prefix = std::mem::take(&mut self.title_strip_prefix);
         *self = new_session;
         Ok(())
     }
@@ -736,5 +787,98 @@ mod tests {
         // Drop the session — its Drop impl (or the kill-on-drop the
         // child handle has) cleans up the spawned shell.
         drop(s);
+    }
+
+    #[test]
+    fn osc_0_updates_title_when_not_user_renamed() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        // Feed the OSC sequence directly to the dispatcher to simulate it arriving
+        // through the PTY. Handle the SetTitle event directly in the test.
+        for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                if !s.user_renamed {
+                    s.label.title = title;
+                }
+            }
+        }
+        assert_eq!(s.label().title, "new_title");
+    }
+
+    #[test]
+    fn osc_0_dropped_when_user_renamed() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.user_renamed = true;
+        for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                if !s.user_renamed {
+                    s.label.title = title;
+                }
+            }
+        }
+        assert_eq!(s.label().title, "sleep"); // unchanged from default
+    }
+
+    #[test]
+    fn osc_0_strips_prefix_when_present() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.title_strip_prefix = "user@host: ".to_string();
+        for ev in s.dispatcher.feed(b"\x1b]0;user@host: ~/dev\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                let display = title
+                    .strip_prefix(&s.title_strip_prefix)
+                    .map(str::to_owned)
+                    .unwrap_or(title);
+                s.label.title = display;
+            }
+        }
+        assert_eq!(s.label().title, "~/dev");
+    }
+
+    #[test]
+    fn osc_0_passes_through_when_prefix_doesnt_match() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.title_strip_prefix = "user@host: ".to_string();
+        for ev in s.dispatcher.feed(b"\x1b]0;vim - foo.txt\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                let display = title
+                    .strip_prefix(&s.title_strip_prefix)
+                    .map(str::to_owned)
+                    .unwrap_or(title);
+                s.label.title = display;
+            }
+        }
+        assert_eq!(s.label().title, "vim - foo.txt");
+    }
+
+    #[test]
+    fn osc_0_dropped_when_respect_osc_title_false() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.respect_osc_title = false;
+        for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                if s.respect_osc_title && !s.user_renamed {
+                    s.label.title = title;
+                }
+            }
+        }
+        assert_eq!(s.label().title, "sleep");
+    }
+
+    #[test]
+    fn restart_resets_user_renamed() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.user_renamed = true;
+        s.set_label(TabLabel {
+            title: "user_set".to_string(),
+            subtitle: "custom".to_string(),
+        });
+        s.restart().expect("restart");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!s.user_renamed, "restart must clear user_renamed");
+        assert_ne!(
+            s.label().title,
+            "user_set",
+            "restart must clear user-set title"
+        );
     }
 }

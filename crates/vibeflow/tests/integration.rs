@@ -35,6 +35,12 @@ fn feed_and_track(
                     let changed = tracker.on_input(TrackerInput::Prompt(marker), now);
                     (tracker.state(), changed)
                 }
+                DispatchEvent::SetTitle(_title) => {
+                    // OSC 0/2 window-title updates don't drive tracker state; the
+                    // integration test just observes the tracker state unchanged.
+                    let _ = _title;
+                    (tracker.state(), false)
+                }
                 DispatchEvent::PassThrough(bytes) => {
                     // Real PTY/terminal-grid path (Stage 3+) would forward bytes
                     // here. For Stage 2, observing output through the tracker
@@ -125,11 +131,12 @@ fn unknown_osc_passes_through_without_disturbing_tracker_state() {
     let now = Instant::now();
 
     // Set tracker to Working via an explicit AI frame so we can observe that
-    // an unknown OSC (window-title) doesn't change it.
+    // OSC 0 (window-title) doesn't change the tracker state.
     feed_and_track(&mut d, &mut tr, b"\x1b]1338;state=working\x07", now);
     assert_eq!(tr.state(), TabState::Working);
 
-    // OSC 0 (window-title) is unknown — passes through, drives OutputObserved.
+    // OSC 0 (window-title) is recognised in Stage 9 but doesn't drive tracker
+    // state — the title update is a UI concern (Stage 9+), not a tracker event.
     let states = feed_and_track(
         &mut d,
         &mut tr,

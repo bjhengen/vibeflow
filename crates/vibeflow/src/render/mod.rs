@@ -17,14 +17,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use winit::window::Window;
 
-const SELECTION_COLOR: [f32; 4] = [0.4, 0.6, 1.0, 0.4];
-
 fn build_selection_rects(
     selection: &crate::render::selection::SelectionTracker,
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
     cell_w: u32,
     cell_h: u32,
     bar_height_px: u32,
+    selection_color: [f32; 4],
 ) -> Vec<crate::render::tabs::RectInstance> {
     selection
         .cells(term)
@@ -37,7 +36,7 @@ fn build_selection_rects(
                 (p.line.0 as u32 * cell_h + bar_height_px) as f32,
                 cell_w as f32,
                 cell_h as f32,
-                SELECTION_COLOR,
+                selection_color,
             ))
         })
         .collect()
@@ -80,6 +79,11 @@ pub struct Renderer {
     cursor: crate::render::cursor::CursorBlink,
     /// Bell flash state.
     bell: crate::render::bell::BellFlash,
+    /// Stage 9: configurable selection-rect color. Defaults to Stage 8's hardcoded value.
+    selection_color: [f32; 4],
+    /// Stage 9: configurable indicator-stripe palette. Order: [active_done, working, waiting, inactive_idle].
+    /// `TabState::Active` always renders transparent (hardcoded).
+    indicator_colors: [[f32; 4]; 4],
 }
 
 impl Renderer {
@@ -170,6 +174,7 @@ impl Renderer {
         let tab_bar = crate::render::tabs::TabBarRenderer::new();
         let cursor = crate::render::cursor::CursorBlink::new();
         let bell = crate::render::bell::BellFlash::new();
+        let defaults = crate::config::Config::default_values();
 
         Ok(Self {
             _window: window,
@@ -183,6 +188,16 @@ impl Renderer {
             tab_bar,
             cursor,
             bell,
+            // Initial palette comes from `Config::default_values` so the
+            // pre-`apply_config` frame matches what the user sees once their
+            // config (or its defaults) lands. Single source of truth.
+            selection_color: defaults.colors.selection,
+            indicator_colors: [
+                defaults.colors.indicator_active,
+                defaults.colors.indicator_working,
+                defaults.colors.indicator_waiting,
+                defaults.colors.indicator_inactive,
+            ],
         })
     }
 
@@ -205,6 +220,8 @@ impl Renderer {
         &mut self,
         term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
         app: &crate::app::App,
+        error_banner: &crate::config::error_banner::ErrorBannerState,
+        rename_state: Option<&crate::render::tabs::RenameInputState>,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
@@ -251,7 +268,13 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        let tab_rects = self.tab_bar.build_rects(app, &layout);
+        let tab_rects = self.tab_bar.build_rects(
+            app,
+            &layout,
+            &self.indicator_colors,
+            rename_state,
+            (cell_w, cell_h),
+        );
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {
                 build_selection_rects(
@@ -260,6 +283,7 @@ impl Renderer {
                     cell_w,
                     cell_h,
                     layout.bar_height_px,
+                    self.selection_color,
                 )
             } else {
                 Vec::new()
@@ -267,9 +291,41 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        let tab_glyphs = self
-            .tab_bar
-            .build_glyphs(app, &layout, &mut self.text_engine);
+        let tab_glyphs = self.tab_bar.build_glyphs(
+            app,
+            &layout,
+            &mut self.text_engine,
+            &self.indicator_colors,
+            rename_state,
+        );
+
+        // Stage 9 config-error banner. Left-aligned at x=8, dark-red bg.
+        let config_banner_h = (cell_h as f32) * 1.5;
+        let config_banner_bg: [f32; 4] = [0.40, 0.10, 0.10, 0.85];
+        let config_banner_fg: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+        let (config_banner_rect, config_banner_glyphs) = if error_banner.visible() {
+            let rect = crate::render::tabs::RectInstance::new(
+                0.0,
+                layout.bar_height_px as f32,
+                surface_size.0 as f32,
+                config_banner_h,
+                config_banner_bg,
+            );
+            let text = error_banner.display_text();
+            let glyphs = crate::render::quad::build_config_banner_instances(
+                &text,
+                &mut self.text_engine,
+                cell_w,
+                cell_h,
+                layout.bar_height_px,
+                config_banner_fg,
+                config_banner_bg,
+            );
+            (Some(rect), glyphs)
+        } else {
+            (None, Vec::new())
+        };
+
         let banner_quads = banner_glyph_count.map(|count| {
             crate::render::quad::build_banner_instances(
                 BANNER_TEXT,
@@ -315,14 +371,18 @@ impl Renderer {
         let cell_count = cell_instances.len() as u32;
         let tab_glyph_offset = cell_count;
         let tab_glyph_count = tab_glyphs.len() as u32;
-        let banner_glyph_offset = tab_glyph_offset + tab_glyph_count;
+        let config_banner_glyph_offset = tab_glyph_offset + tab_glyph_count;
+        let config_banner_glyph_count = config_banner_glyphs.len() as u32;
+        let banner_glyph_offset = config_banner_glyph_offset + config_banner_glyph_count;
         let banner_glyph_count = banner_quads.as_ref().map_or(0, |v| v.len()) as u32;
         let total_quads = banner_glyph_offset + banner_glyph_count;
 
         let tab_rect_count = tab_rects.len() as u32;
         let selection_rect_offset = tab_rect_count;
         let selection_rect_count = selection_rects.len() as u32;
-        let banner_rect_offset = selection_rect_offset + selection_rect_count;
+        let config_banner_rect_offset = selection_rect_offset + selection_rect_count;
+        let config_banner_rect_count = u32::from(config_banner_rect.is_some());
+        let banner_rect_offset = config_banner_rect_offset + config_banner_rect_count;
         let banner_rect_count = u32::from(banner_rect.is_some());
         let bell_rect_offset = banner_rect_offset + banner_rect_count;
         let bell_rect_count = u32::from(bell_rect.is_some());
@@ -331,6 +391,7 @@ impl Renderer {
         let mut all_quads = Vec::with_capacity(total_quads as usize);
         all_quads.extend_from_slice(&cell_instances);
         all_quads.extend_from_slice(&tab_glyphs);
+        all_quads.extend_from_slice(&config_banner_glyphs);
         if let Some(b) = &banner_quads {
             all_quads.extend_from_slice(b);
         }
@@ -338,6 +399,9 @@ impl Renderer {
         let mut all_rects = Vec::with_capacity(total_rects as usize);
         all_rects.extend_from_slice(&tab_rects);
         all_rects.extend_from_slice(&selection_rects);
+        if let Some(r) = config_banner_rect {
+            all_rects.push(r);
+        }
         if let Some(r) = banner_rect {
             all_rects.push(r);
         }
@@ -407,12 +471,20 @@ impl Renderer {
 
             // ---- Tab bar text pass ----
             self.quad_pipeline
-                .draw_range(&mut pass, tab_glyph_offset..banner_glyph_offset);
+                .draw_range(&mut pass, tab_glyph_offset..config_banner_glyph_offset);
 
             // ---- Selection highlight rects ----
             if selection_rect_count > 0 {
                 self.tab_bar_pipeline
-                    .draw_range(&mut pass, selection_rect_offset..banner_rect_offset);
+                    .draw_range(&mut pass, selection_rect_offset..config_banner_rect_offset);
+            }
+
+            // ---- Stage 9 config-error banner ----
+            if config_banner_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, config_banner_rect_offset..banner_rect_offset);
+                self.quad_pipeline
+                    .draw_range(&mut pass, config_banner_glyph_offset..banner_glyph_offset);
             }
 
             // ---- Dead-tab banner ----
@@ -460,5 +532,25 @@ impl Renderer {
     /// white-tint fade.
     pub fn note_bell(&mut self) {
         self.bell.note(std::time::Instant::now());
+    }
+
+    /// Update the selection-rect color (live).
+    pub fn set_selection_color(&mut self, c: [f32; 4]) {
+        self.selection_color = c;
+    }
+
+    /// Update the indicator-stripe color palette (live).
+    pub fn set_indicator_colors(&mut self, c: [[f32; 4]; 4]) {
+        self.indicator_colors = c;
+    }
+
+    /// Update the cursor blink period in milliseconds (live). 0 disables blinking.
+    pub fn set_cursor_blink_ms(&mut self, ms: u64) {
+        self.cursor.set_blink_ms(ms);
+    }
+
+    /// Update the font priority order (takes effect on next startup).
+    pub fn set_font_priorities(&mut self, priority: Vec<String>) {
+        self.text_engine.set_font_priorities(priority);
     }
 }

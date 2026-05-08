@@ -76,6 +76,25 @@ pub enum TabBarHit {
     None,
 }
 
+/// State for an in-progress inline tab rename. Owned by `WindowApp`; passed
+/// by reference into `push_text_glyphs` so the renamed tab renders the
+/// editable buffer + caret instead of the static label title.
+///
+/// Defined in `render::tabs` (not `window`) to avoid a circular module
+/// dependency: `window` already imports `render::tabs`, so `render::tabs`
+/// cannot import from `window`.
+#[derive(Debug, Clone)]
+pub struct RenameInputState {
+    /// Index in `app.tabs()` of the tab being renamed.
+    pub tab_idx: usize,
+    /// User's typed text so far.
+    pub buffer: String,
+    /// Byte index in `buffer` for cursor position.
+    pub cursor_pos: usize,
+    /// Original title before rename, for Esc-cancel restore.
+    pub original: String,
+}
+
 impl TabBarLayout {
     /// Compute layout for `tab_count` tabs in a `window_width_px`-wide window.
     /// `cell_h_px` comes from the atlas — this is what bounds the bar height.
@@ -253,9 +272,39 @@ mod tests {
         assert!(max > 0.95, "expected max near 1.0, got {}", max);
     }
 
+    fn default_palette() -> [[f32; 4]; 4] {
+        [
+            [
+                0x5f as f32 / 255.0,
+                0xff as f32 / 255.0,
+                0x9f as f32 / 255.0,
+                1.0,
+            ],
+            [
+                0x5f as f32 / 255.0,
+                0xb4 as f32 / 255.0,
+                0xff as f32 / 255.0,
+                1.0,
+            ],
+            [
+                0xff as f32 / 255.0,
+                0xbd as f32 / 255.0,
+                0x2e as f32 / 255.0,
+                1.0,
+            ],
+            [
+                0x45 as f32 / 255.0,
+                0x45 as f32 / 255.0,
+                0x4f as f32 / 255.0,
+                1.0,
+            ],
+        ]
+    }
+
     #[test]
     fn indicator_color_is_amber_for_waiting() {
-        let c = indicator_color(TabState::Waiting);
+        let palette = default_palette();
+        let c = indicator_color(TabState::Waiting, &palette);
         // 0xff = 1.0, 0xbd ≈ 0.74, 0x2e ≈ 0.18.
         assert!((c[0] - 1.0).abs() < 0.01);
         assert!((c[1] - 0.74).abs() < 0.05);
@@ -264,13 +313,18 @@ mod tests {
 
     #[test]
     fn indicator_color_is_transparent_for_active() {
-        assert_eq!(indicator_color(TabState::Active), [0.0, 0.0, 0.0, 0.0]);
+        let palette = default_palette();
+        assert_eq!(
+            indicator_color(TabState::Active, &palette),
+            [0.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
     fn subtitle_color_returns_amber_for_waiting() {
+        let palette = default_palette();
         let fallback = [0.0, 0.0, 0.0, 1.0];
-        let c = subtitle_color(TabState::Waiting, fallback);
+        let c = subtitle_color(TabState::Waiting, fallback, &palette);
         // Same as indicator_color(Waiting) but alpha forced to 1.0.
         assert!((c[0] - 1.0).abs() < 0.01);
         assert!((c[1] - 0.74).abs() < 0.05);
@@ -280,8 +334,9 @@ mod tests {
 
     #[test]
     fn subtitle_color_falls_back_to_title_for_active() {
+        let palette = default_palette();
         let fallback = [0.5, 0.6, 0.7, 1.0];
-        let c = subtitle_color(TabState::Active, fallback);
+        let c = subtitle_color(TabState::Active, fallback, &palette);
         assert_eq!(c, fallback);
     }
 }
@@ -488,42 +543,26 @@ impl TabBarPipeline {
     }
 }
 
-/// Notice-indicator colors. The amber/blue/gray come from the design spec's
-/// `[theme.indicator]` defaults; they'll be configurable in Stage 9.
-fn indicator_color(state: TabState) -> [f32; 4] {
+/// Notice-indicator colors. Palette maps TabState to colors as follows:
+/// - `TabState::Active` always returns transparent (hardcoded).
+/// - `TabState::Done` → `palette[0]` (active/success — green by default).
+/// - `TabState::Working` → `palette[1]` (blue by default).
+/// - `TabState::Waiting` → `palette[2]` (amber by default).
+/// - `TabState::Idle` → `palette[3]` (gray by default).
+fn indicator_color(state: TabState, palette: &[[f32; 4]; 4]) -> [f32; 4] {
     match state {
-        TabState::Waiting => [
-            0xff as f32 / 255.0,
-            0xbd as f32 / 255.0,
-            0x2e as f32 / 255.0,
-            1.0,
-        ], // amber
-        TabState::Working => [
-            0x5f as f32 / 255.0,
-            0xb4 as f32 / 255.0,
-            0xff as f32 / 255.0,
-            1.0,
-        ], // blue
-        TabState::Idle => [
-            0x45 as f32 / 255.0,
-            0x45 as f32 / 255.0,
-            0x4f as f32 / 255.0,
-            1.0,
-        ], // gray
-        TabState::Done => [
-            0x5f as f32 / 255.0,
-            0xff as f32 / 255.0,
-            0x9f as f32 / 255.0,
-            1.0,
-        ], // greenish
-        TabState::Active => [0.0, 0.0, 0.0, 0.0], // no stripe for the default state
+        TabState::Active => [0.0, 0.0, 0.0, 0.0],
+        TabState::Done => palette[0],
+        TabState::Working => palette[1],
+        TabState::Waiting => palette[2],
+        TabState::Idle => palette[3],
     }
 }
 
 /// Subtitle text color: tracker-state-tinted for non-`Active` states,
 /// falls back to the title fg for `Active`.
-fn subtitle_color(state: TabState, fallback_fg: [f32; 4]) -> [f32; 4] {
-    let mut c = indicator_color(state);
+fn subtitle_color(state: TabState, fallback_fg: [f32; 4], palette: &[[f32; 4]; 4]) -> [f32; 4] {
+    let mut c = indicator_color(state, palette);
     if c[3] == 0.0 {
         return fallback_fg;
     }
@@ -589,7 +628,14 @@ impl TabBarRenderer {
 
     /// Build the RectInstance list (tab backgrounds + indicator stripes + close
     /// buttons + new-tab button) for the current `App` state.
-    pub fn build_rects(&self, app: &App, layout: &TabBarLayout) -> Vec<RectInstance> {
+    pub fn build_rects(
+        &self,
+        app: &App,
+        layout: &TabBarLayout,
+        palette: &[[f32; 4]; 4],
+        rename_state: Option<&RenameInputState>,
+        cell_metrics: (u32, u32),
+    ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
         let active_idx = app.active();
@@ -616,7 +662,7 @@ impl TabBarRenderer {
                 None => continue,
             };
             let state = session.state();
-            let mut color = indicator_color(state);
+            let mut color = indicator_color(state, palette);
             if state == TabState::Waiting {
                 color[3] = pulse; // sine-modulated alpha
             }
@@ -639,6 +685,33 @@ impl TabBarRenderer {
                 tab.close_button.h as f32,
                 [0.0, 0.0, 0.0, 0.3],
             ));
+
+            // Stage 9: rename overlay — subtle white tint + caret on the
+            // tab being edited.
+            if let Some(rs) = rename_state {
+                if rs.tab_idx == tab.idx {
+                    rects.push(RectInstance::new(
+                        tab.body.x as f32,
+                        tab.body.y as f32,
+                        tab.body.w as f32,
+                        tab.body.h as f32,
+                        [1.0, 1.0, 1.0, 0.10],
+                    ));
+                    let (cell_w, cell_h) = cell_metrics;
+                    let title_x_start =
+                        tab.body.x as f32 + (INDICATOR_STRIPE_WIDTH_PX as f32) + 6.0;
+                    let title_y = tab.body.y as f32 + 2.0;
+                    let chars_before = rs.buffer[..rs.cursor_pos].chars().count() as f32;
+                    let caret_x = title_x_start + chars_before * cell_w as f32;
+                    rects.push(RectInstance::new(
+                        caret_x,
+                        title_y,
+                        2.0,
+                        cell_h as f32,
+                        [1.0, 1.0, 1.0, 0.85],
+                    ));
+                }
+            }
         }
 
         // New-tab button background.
@@ -654,12 +727,16 @@ impl TabBarRenderer {
     }
 
     /// Build the QuadInstance list for tab titles + subtitles + `+` / `×`
-    /// button glyphs.
+    /// button glyphs. `rename_state` is `Some` while an inline rename is in
+    /// progress — the renamed tab renders its editable buffer instead of the
+    /// static label title.
     pub fn build_glyphs(
         &self,
         app: &App,
         layout: &TabBarLayout,
         text_engine: &mut crate::render::text_engine::TextEngine,
+        palette: &[[f32; 4]; 4],
+        rename_state: Option<&RenameInputState>,
     ) -> Vec<crate::render::quad::QuadInstance> {
         let mut glyphs = Vec::new();
         let active_idx = app.active();
@@ -678,13 +755,23 @@ impl TabBarRenderer {
             };
             let label = session.label();
 
-            // Title on line 1 (top of tab body).
+            // Title on line 1 (top of tab body). While renaming, substitute the
+            // editable buffer for the renamed tab's title.
+            let title_to_render: &str = if let Some(rs) = rename_state {
+                if rs.tab_idx == tab.idx {
+                    &rs.buffer
+                } else {
+                    &label.title
+                }
+            } else {
+                &label.title
+            };
             let title_x_start = tab.body.x as f32 + (INDICATOR_STRIPE_WIDTH_PX as f32) + 6.0;
             let title_y = tab.body.y as f32 + 2.0;
             push_text_glyphs(
                 &mut glyphs,
                 text_engine,
-                &label.title,
+                title_to_render,
                 (title_x_start, title_y),
                 cell_w_f,
                 fg,
@@ -701,7 +788,7 @@ impl TabBarRenderer {
                 &label.subtitle,
                 (subtitle_x_start, subtitle_y),
                 cell_w_f,
-                subtitle_color(session.state(), fg),
+                subtitle_color(session.state(), fg, palette),
                 bg,
                 tab.body.x + tab.body.w - tab.close_button.w - 4,
             );

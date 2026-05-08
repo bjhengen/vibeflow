@@ -531,6 +531,48 @@ pub fn build_banner_instances(
     out
 }
 
+/// Build glyphs for the Stage 9 config-error banner. Unlike the dead-tab
+/// banner (centered, fixed amber/black), this is left-aligned at x=8 with
+/// caller-provided fg/bg colors.
+pub fn build_config_banner_instances(
+    text: &str,
+    text_engine: &mut TextEngine,
+    cell_w: u32,
+    cell_h: u32,
+    bar_height_px: u32,
+    fg_color: [f32; 4],
+    bg_color: [f32; 4],
+) -> Vec<QuadInstance> {
+    let baseline_y = text_engine.baseline_y() as f32;
+    let banner_y = bar_height_px as f32;
+    let banner_h = (cell_h as f32) * 1.5;
+    let text_y = banner_y + (banner_h - cell_h as f32) / 2.0;
+
+    let mut out = Vec::with_capacity(text.chars().count());
+    let mut x = 8.0_f32;
+    for c in text.chars() {
+        if let Some(glyph) = text_engine.glyph_for(c) {
+            if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
+                out.push(QuadInstance::new(
+                    x + glyph.bearing_x as f32,
+                    text_y + baseline_y - glyph.bearing_y as f32,
+                    glyph.atlas_w as f32,
+                    glyph.atlas_h as f32,
+                    glyph.atlas_x as f32,
+                    glyph.atlas_y as f32,
+                    glyph.atlas_w as f32,
+                    glyph.atlas_h as f32,
+                    fg_color,
+                    bg_color,
+                    KIND_MONO,
+                ));
+            }
+        }
+        x += cell_w as f32;
+    }
+    out
+}
+
 /// Returns `true` if a cell with the given flags should be skipped entirely
 /// during cell-instance building (no bg, no glyph). Covers both
 /// `WIDE_CHAR_SPACER` (trailing spacer after a wide char) and

@@ -21,18 +21,24 @@ name = "vibeflow"
 path = "src/main.rs"
 
 [dependencies]
-vibeflow-protocol = { path = "../vibeflow-protocol", version = "0.1" }
-portable-pty = "0.8"
-winit = "0.30"
-wgpu = "0.20"
-pollster = "0.3"
+alacritty_terminal = "0.24"
 anyhow = "1"
 arboard = "3.6"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-alacritty_terminal = "0.24"
-cosmic-text = "0.12"
 bytemuck = { version = "1", features = ["derive"] }
+cosmic-text = "0.12"
+dirs = "5"
+notify = "6"
+pollster = "0.3"
+portable-pty = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+unicode-segmentation = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+vibeflow-protocol = { path = "../vibeflow-protocol", version = "0.1" }
+wgpu = "0.20"
+winit = "0.30"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"
