@@ -275,6 +275,9 @@ impl WindowApp {
             }
             Shortcut::Copy => self.handle_copy(),
             Shortcut::Paste => self.handle_paste(),
+            Shortcut::RenameTab => {
+                // TODO: Implement tab rename UI in T13.
+            }
         }
     }
 

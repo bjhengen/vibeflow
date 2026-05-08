@@ -40,3 +40,4 @@ winit = "0.30"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

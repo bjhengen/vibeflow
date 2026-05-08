@@ -3028,6 +3028,7 @@ dependencies = [
  "portable-pty",
  "proptest",
  "serde",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-subscriber",

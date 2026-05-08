@@ -11,7 +11,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Discrete shortcut actions vibeflow's `window.rs` dispatches. Stage 9 will
 /// extend this enum with config-driven entries; for now it's hard-coded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shortcut {
     NewTab,
     CloseTab,
@@ -20,6 +20,7 @@ pub enum Shortcut {
     RestartTab,
     Copy,
     Paste,
+    RenameTab,
 }
 
 /// Match a winit key event against the shortcut table. Returns `None` if the
