@@ -188,6 +188,13 @@ impl PtySession {
         self.label = label;
     }
 
+    /// Replace only the title (line 1) of the label, preserving the current
+    /// subtitle. Used by the interactive rename UI which doesn't touch the
+    /// activity-driven subtitle.
+    pub fn set_title(&mut self, title: String) {
+        self.label.title = title;
+    }
+
     /// Recompute the default subtitle from the current tracker state. Called
     /// internally on every state transition. Public so `App` (or future
     /// config layers) can refresh the label when policy changes; most users

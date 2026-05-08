@@ -241,6 +241,7 @@ impl Renderer {
         term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
         app: &crate::app::App,
         error_banner: &crate::config::error_banner::ErrorBannerState,
+        rename_state: Option<&crate::render::tabs::RenameInputState>,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
@@ -306,9 +307,13 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        let tab_glyphs =
-            self.tab_bar
-                .build_glyphs(app, &layout, &mut self.text_engine, &self.indicator_colors);
+        let tab_glyphs = self.tab_bar.build_glyphs(
+            app,
+            &layout,
+            &mut self.text_engine,
+            &self.indicator_colors,
+            rename_state,
+        );
 
         // Stage 9 config-error banner. Left-aligned at x=8, dark-red bg.
         let config_banner_h = (cell_h as f32) * 1.5;

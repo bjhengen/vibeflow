@@ -76,6 +76,25 @@ pub enum TabBarHit {
     None,
 }
 
+/// State for an in-progress inline tab rename. Owned by `WindowApp`; passed
+/// by reference into `push_text_glyphs` so the renamed tab renders the
+/// editable buffer + caret instead of the static label title.
+///
+/// Defined in `render::tabs` (not `window`) to avoid a circular module
+/// dependency: `window` already imports `render::tabs`, so `render::tabs`
+/// cannot import from `window`.
+#[derive(Debug, Clone)]
+pub struct RenameInputState {
+    /// Index in `app.tabs()` of the tab being renamed.
+    pub tab_idx: usize,
+    /// User's typed text so far.
+    pub buffer: String,
+    /// Byte index in `buffer` for cursor position.
+    pub cursor_pos: usize,
+    /// Original title before rename, for Esc-cancel restore.
+    pub original: String,
+}
+
 impl TabBarLayout {
     /// Compute layout for `tab_count` tabs in a `window_width_px`-wide window.
     /// `cell_h_px` comes from the atlas — this is what bounds the bar height.
@@ -679,13 +698,16 @@ impl TabBarRenderer {
     }
 
     /// Build the QuadInstance list for tab titles + subtitles + `+` / `×`
-    /// button glyphs.
+    /// button glyphs. `rename_state` is `Some` while an inline rename is in
+    /// progress — the renamed tab renders its editable buffer instead of the
+    /// static label title.
     pub fn build_glyphs(
         &self,
         app: &App,
         layout: &TabBarLayout,
         text_engine: &mut crate::render::text_engine::TextEngine,
         palette: &[[f32; 4]; 4],
+        rename_state: Option<&RenameInputState>,
     ) -> Vec<crate::render::quad::QuadInstance> {
         let mut glyphs = Vec::new();
         let active_idx = app.active();
@@ -704,13 +726,23 @@ impl TabBarRenderer {
             };
             let label = session.label();
 
-            // Title on line 1 (top of tab body).
+            // Title on line 1 (top of tab body). While renaming, substitute the
+            // editable buffer for the renamed tab's title.
+            let title_to_render: &str = if let Some(rs) = rename_state {
+                if rs.tab_idx == tab.idx {
+                    &rs.buffer
+                } else {
+                    &label.title
+                }
+            } else {
+                &label.title
+            };
             let title_x_start = tab.body.x as f32 + (INDICATOR_STRIPE_WIDTH_PX as f32) + 6.0;
             let title_y = tab.body.y as f32 + 2.0;
             push_text_glyphs(
                 &mut glyphs,
                 text_engine,
-                &label.title,
+                title_to_render,
                 (title_x_start, title_y),
                 cell_w_f,
                 fg,

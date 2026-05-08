@@ -33,6 +33,7 @@ portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
+unicode-segmentation = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 vibeflow-protocol = { path = "../vibeflow-protocol", version = "0.1" }
 wgpu = "0.20"

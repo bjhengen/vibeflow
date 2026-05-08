@@ -13,6 +13,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::app::App;
+use crate::render::tabs::RenameInputState;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
@@ -152,6 +153,8 @@ pub struct WindowApp {
     error_banner: crate::config::error_banner::ErrorBannerState,
     /// Path to the config file. Stored so the watcher can be respawned if needed.
     config_path: std::path::PathBuf,
+    /// Stage 9: in-progress inline rename of a tab title. None when not renaming.
+    rename_state: Option<RenameInputState>,
 }
 
 impl WindowApp {
@@ -182,6 +185,7 @@ impl WindowApp {
             shortcut_table,
             error_banner,
             config_path,
+            rename_state: None,
         }
     }
 
@@ -304,9 +308,7 @@ impl WindowApp {
             Shortcut::Copy => self.handle_copy(),
             Shortcut::Paste => self.handle_paste(),
             Shortcut::RenameTab => {
-                // Stage 9 Task 13 wires this to start_rename(); for now no-op
-                // so the match remains exhaustive.
-                tracing::trace!("RenameTab shortcut ignored (Task 13 wires it)");
+                self.start_rename(self.app.active());
             }
         }
     }
@@ -368,6 +370,114 @@ impl WindowApp {
             let _ = s.send_input(b"\x1b[201~");
         } else {
             let _ = s.send_input(text.as_bytes());
+        }
+    }
+
+    fn start_rename(&mut self, tab_idx: usize) {
+        let title = match self.app.tabs().get(tab_idx) {
+            Some(s) => s.label().title.clone(),
+            None => return,
+        };
+        self.rename_state = Some(RenameInputState {
+            tab_idx,
+            cursor_pos: title.len(),
+            buffer: title.clone(),
+            original: title,
+        });
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn commit_rename(&mut self) {
+        let Some(rs) = self.rename_state.take() else {
+            return;
+        };
+        if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
+            s.set_title(rs.buffer);
+            s.user_renamed = true;
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn cancel_rename(&mut self) {
+        let Some(rs) = self.rename_state.take() else {
+            return;
+        };
+        if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
+            s.set_title(rs.original);
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn handle_rename_keyboard(&mut self, key: &winit::keyboard::Key) {
+        use winit::keyboard::{Key, NamedKey};
+
+        enum RenameOutcome {
+            None,
+            Commit,
+            Cancel,
+        }
+
+        let outcome = {
+            let Some(rs) = self.rename_state.as_mut() else {
+                return;
+            };
+            match key {
+                Key::Named(NamedKey::Enter) => RenameOutcome::Commit,
+                Key::Named(NamedKey::Escape) => RenameOutcome::Cancel,
+                Key::Named(NamedKey::Backspace) => {
+                    if rs.cursor_pos > 0 {
+                        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+                        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
+                        rs.cursor_pos = new_pos;
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::Delete) => {
+                    if rs.cursor_pos < rs.buffer.len() {
+                        let new_end = next_grapheme(&rs.buffer, rs.cursor_pos);
+                        rs.buffer.replace_range(rs.cursor_pos..new_end, "");
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::ArrowLeft) => {
+                    if rs.cursor_pos > 0 {
+                        rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    if rs.cursor_pos < rs.buffer.len() {
+                        rs.cursor_pos = next_grapheme(&rs.buffer, rs.cursor_pos);
+                    }
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::Home) => {
+                    rs.cursor_pos = 0;
+                    RenameOutcome::None
+                }
+                Key::Named(NamedKey::End) => {
+                    rs.cursor_pos = rs.buffer.len();
+                    RenameOutcome::None
+                }
+                Key::Character(c) => {
+                    let s = c.as_str();
+                    rs.buffer.insert_str(rs.cursor_pos, s);
+                    rs.cursor_pos += s.len();
+                    RenameOutcome::None
+                }
+                _ => RenameOutcome::None,
+            }
+        };
+        match outcome {
+            RenameOutcome::Commit => self.commit_rename(),
+            RenameOutcome::Cancel => self.cancel_rename(),
+            RenameOutcome::None => {}
         }
     }
 }
@@ -455,7 +565,12 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
                 };
-                match renderer.render(term, &self.app, &self.error_banner) {
+                match renderer.render(
+                    term,
+                    &self.app,
+                    &self.error_banner,
+                    self.rename_state.as_ref(),
+                ) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         // Surface needs to be re-created with current config.
@@ -512,6 +627,14 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     "key event"
                 );
                 if event.state != ElementState::Pressed {
+                    return;
+                }
+                // Stage 9: while renaming a tab, capture all keystrokes.
+                if event.state == ElementState::Pressed && self.rename_state.is_some() {
+                    self.handle_rename_keyboard(&event.logical_key);
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 // Esc dismisses the config-error banner (Stage 9) before any
@@ -633,7 +756,32 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // in the tab bar and any non-Left buttons in the tab bar are
                 // ignored (no-op).
                 if py < bar_h {
+                    // Stage 9: right-click on a tab body opens rename.
+                    if state == ElementState::Released && button == MouseButton::Right {
+                        if let Some(renderer) = self.renderer.as_ref() {
+                            let (window_w, _) = renderer.surface_size();
+                            let (_, cell_h) = renderer.cell_pitch();
+                            let layout = crate::render::tabs::TabBarLayout::compute(
+                                window_w,
+                                cell_h,
+                                self.app.tabs().len(),
+                            );
+                            if let crate::render::tabs::TabBarHit::TabBody(idx) =
+                                layout.hit_test(px, py)
+                            {
+                                self.start_rename(idx);
+                            }
+                        }
+                        return;
+                    }
+                    // Existing Stage 8 release-left handler (preserve behavior):
                     if state == ElementState::Released && button == MouseButton::Left {
+                        // Stage 9: clicking on a different tab while renaming cancels.
+                        if self.rename_state.is_some() {
+                            // We don't know which tab was clicked yet; cancel anyway —
+                            // the existing handler will switch active tab.
+                            self.cancel_rename();
+                        }
                         self.handle_left_click_release();
                     }
                     return;
@@ -646,6 +794,12 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let pressed = state == ElementState::Pressed;
                 let released = state == ElementState::Released;
                 let shift = self.current_modifiers.shift_key();
+
+                // Stage 9: click in cell area cancels in-progress rename.
+                if pressed && self.rename_state.is_some() {
+                    self.cancel_rename();
+                    // Fall through to selection / mouse-mode logic.
+                }
 
                 let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
@@ -795,6 +949,22 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             }
         }
     }
+}
+
+fn prev_grapheme(s: &str, pos: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    s.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .rfind(|&i| i < pos)
+        .unwrap_or(0)
+}
+
+fn next_grapheme(s: &str, pos: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    s.grapheme_indices(true)
+        .map(|(i, _)| i)
+        .find(|&i| i > pos)
+        .unwrap_or(s.len())
 }
 
 fn build_shortcut_table(
@@ -1089,6 +1259,65 @@ mod tests {
             ),
             Some(b"\x1b[3~".to_vec())
         );
+    }
+
+    fn rename_state_init(buffer: &str, cursor: usize) -> crate::render::tabs::RenameInputState {
+        crate::render::tabs::RenameInputState {
+            tab_idx: 0,
+            buffer: buffer.to_string(),
+            cursor_pos: cursor,
+            original: buffer.to_string(),
+        }
+    }
+
+    #[test]
+    fn rename_backspace_deletes_grapheme() {
+        let mut rs = rename_state_init("hello", 5);
+        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
+        rs.cursor_pos = new_pos;
+        assert_eq!(rs.buffer, "hell");
+        assert_eq!(rs.cursor_pos, 4);
+    }
+
+    #[test]
+    fn rename_backspace_handles_multibyte() {
+        let mut rs = rename_state_init("café", 5);
+        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
+        rs.cursor_pos = new_pos;
+        assert_eq!(rs.buffer, "caf");
+        assert_eq!(rs.cursor_pos, 3);
+    }
+
+    #[test]
+    fn rename_arrow_left_moves_by_grapheme() {
+        let mut rs = rename_state_init("abc", 3);
+        rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        assert_eq!(rs.cursor_pos, 2);
+    }
+
+    #[test]
+    fn rename_home_jumps_to_zero() {
+        let mut rs = rename_state_init("abc", 2);
+        rs.cursor_pos = 0;
+        assert_eq!(rs.cursor_pos, 0);
+    }
+
+    #[test]
+    fn rename_end_jumps_to_len() {
+        let mut rs = rename_state_init("abc", 0);
+        rs.cursor_pos = rs.buffer.len();
+        assert_eq!(rs.cursor_pos, 3);
+    }
+
+    #[test]
+    fn rename_insert_at_cursor() {
+        let mut rs = rename_state_init("ab", 1);
+        rs.buffer.insert(rs.cursor_pos, 'X');
+        rs.cursor_pos += 1;
+        assert_eq!(rs.buffer, "aXb");
+        assert_eq!(rs.cursor_pos, 2);
     }
 
     #[test]
