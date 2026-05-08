@@ -253,9 +253,39 @@ mod tests {
         assert!(max > 0.95, "expected max near 1.0, got {}", max);
     }
 
+    fn default_palette() -> [[f32; 4]; 4] {
+        [
+            [
+                0x5f as f32 / 255.0,
+                0xff as f32 / 255.0,
+                0x9f as f32 / 255.0,
+                1.0,
+            ],
+            [
+                0x5f as f32 / 255.0,
+                0xb4 as f32 / 255.0,
+                0xff as f32 / 255.0,
+                1.0,
+            ],
+            [
+                0xff as f32 / 255.0,
+                0xbd as f32 / 255.0,
+                0x2e as f32 / 255.0,
+                1.0,
+            ],
+            [
+                0x45 as f32 / 255.0,
+                0x45 as f32 / 255.0,
+                0x4f as f32 / 255.0,
+                1.0,
+            ],
+        ]
+    }
+
     #[test]
     fn indicator_color_is_amber_for_waiting() {
-        let c = indicator_color(TabState::Waiting);
+        let palette = default_palette();
+        let c = indicator_color(TabState::Waiting, &palette);
         // 0xff = 1.0, 0xbd ≈ 0.74, 0x2e ≈ 0.18.
         assert!((c[0] - 1.0).abs() < 0.01);
         assert!((c[1] - 0.74).abs() < 0.05);
@@ -264,13 +294,18 @@ mod tests {
 
     #[test]
     fn indicator_color_is_transparent_for_active() {
-        assert_eq!(indicator_color(TabState::Active), [0.0, 0.0, 0.0, 0.0]);
+        let palette = default_palette();
+        assert_eq!(
+            indicator_color(TabState::Active, &palette),
+            [0.0, 0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
     fn subtitle_color_returns_amber_for_waiting() {
+        let palette = default_palette();
         let fallback = [0.0, 0.0, 0.0, 1.0];
-        let c = subtitle_color(TabState::Waiting, fallback);
+        let c = subtitle_color(TabState::Waiting, fallback, &palette);
         // Same as indicator_color(Waiting) but alpha forced to 1.0.
         assert!((c[0] - 1.0).abs() < 0.01);
         assert!((c[1] - 0.74).abs() < 0.05);
@@ -280,8 +315,9 @@ mod tests {
 
     #[test]
     fn subtitle_color_falls_back_to_title_for_active() {
+        let palette = default_palette();
         let fallback = [0.5, 0.6, 0.7, 1.0];
-        let c = subtitle_color(TabState::Active, fallback);
+        let c = subtitle_color(TabState::Active, fallback, &palette);
         assert_eq!(c, fallback);
     }
 }
@@ -488,42 +524,26 @@ impl TabBarPipeline {
     }
 }
 
-/// Notice-indicator colors. The amber/blue/gray come from the design spec's
-/// `[theme.indicator]` defaults; they'll be configurable in Stage 9.
-fn indicator_color(state: TabState) -> [f32; 4] {
+/// Notice-indicator colors. Palette maps TabState to colors as follows:
+/// - `TabState::Active` always returns transparent (hardcoded).
+/// - `TabState::Done` → `palette[0]` (active/success — green by default).
+/// - `TabState::Working` → `palette[1]` (blue by default).
+/// - `TabState::Waiting` → `palette[2]` (amber by default).
+/// - `TabState::Idle` → `palette[3]` (gray by default).
+fn indicator_color(state: TabState, palette: &[[f32; 4]; 4]) -> [f32; 4] {
     match state {
-        TabState::Waiting => [
-            0xff as f32 / 255.0,
-            0xbd as f32 / 255.0,
-            0x2e as f32 / 255.0,
-            1.0,
-        ], // amber
-        TabState::Working => [
-            0x5f as f32 / 255.0,
-            0xb4 as f32 / 255.0,
-            0xff as f32 / 255.0,
-            1.0,
-        ], // blue
-        TabState::Idle => [
-            0x45 as f32 / 255.0,
-            0x45 as f32 / 255.0,
-            0x4f as f32 / 255.0,
-            1.0,
-        ], // gray
-        TabState::Done => [
-            0x5f as f32 / 255.0,
-            0xff as f32 / 255.0,
-            0x9f as f32 / 255.0,
-            1.0,
-        ], // greenish
-        TabState::Active => [0.0, 0.0, 0.0, 0.0], // no stripe for the default state
+        TabState::Active => [0.0, 0.0, 0.0, 0.0],
+        TabState::Done => palette[0],
+        TabState::Working => palette[1],
+        TabState::Waiting => palette[2],
+        TabState::Idle => palette[3],
     }
 }
 
 /// Subtitle text color: tracker-state-tinted for non-`Active` states,
 /// falls back to the title fg for `Active`.
-fn subtitle_color(state: TabState, fallback_fg: [f32; 4]) -> [f32; 4] {
-    let mut c = indicator_color(state);
+fn subtitle_color(state: TabState, fallback_fg: [f32; 4], palette: &[[f32; 4]; 4]) -> [f32; 4] {
+    let mut c = indicator_color(state, palette);
     if c[3] == 0.0 {
         return fallback_fg;
     }
@@ -589,7 +609,12 @@ impl TabBarRenderer {
 
     /// Build the RectInstance list (tab backgrounds + indicator stripes + close
     /// buttons + new-tab button) for the current `App` state.
-    pub fn build_rects(&self, app: &App, layout: &TabBarLayout) -> Vec<RectInstance> {
+    pub fn build_rects(
+        &self,
+        app: &App,
+        layout: &TabBarLayout,
+        palette: &[[f32; 4]; 4],
+    ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
         let active_idx = app.active();
@@ -616,7 +641,7 @@ impl TabBarRenderer {
                 None => continue,
             };
             let state = session.state();
-            let mut color = indicator_color(state);
+            let mut color = indicator_color(state, palette);
             if state == TabState::Waiting {
                 color[3] = pulse; // sine-modulated alpha
             }
@@ -660,6 +685,7 @@ impl TabBarRenderer {
         app: &App,
         layout: &TabBarLayout,
         text_engine: &mut crate::render::text_engine::TextEngine,
+        palette: &[[f32; 4]; 4],
     ) -> Vec<crate::render::quad::QuadInstance> {
         let mut glyphs = Vec::new();
         let active_idx = app.active();
@@ -701,7 +727,7 @@ impl TabBarRenderer {
                 &label.subtitle,
                 (subtitle_x_start, subtitle_y),
                 cell_w_f,
-                subtitle_color(session.state(), fg),
+                subtitle_color(session.state(), fg, palette),
                 bg,
                 tab.body.x + tab.body.w - tab.close_button.w - 4,
             );

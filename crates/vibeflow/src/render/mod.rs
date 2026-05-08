@@ -17,14 +17,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use winit::window::Window;
 
-const SELECTION_COLOR: [f32; 4] = [0.4, 0.6, 1.0, 0.4];
-
 fn build_selection_rects(
     selection: &crate::render::selection::SelectionTracker,
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
     cell_w: u32,
     cell_h: u32,
     bar_height_px: u32,
+    selection_color: [f32; 4],
 ) -> Vec<crate::render::tabs::RectInstance> {
     selection
         .cells(term)
@@ -37,7 +36,7 @@ fn build_selection_rects(
                 (p.line.0 as u32 * cell_h + bar_height_px) as f32,
                 cell_w as f32,
                 cell_h as f32,
-                SELECTION_COLOR,
+                selection_color,
             ))
         })
         .collect()
@@ -80,6 +79,11 @@ pub struct Renderer {
     cursor: crate::render::cursor::CursorBlink,
     /// Bell flash state.
     bell: crate::render::bell::BellFlash,
+    /// Stage 9: configurable selection-rect color. Defaults to Stage 8's hardcoded value.
+    selection_color: [f32; 4],
+    /// Stage 9: configurable indicator-stripe palette. Order: [active_done, working, waiting, inactive_idle].
+    /// `TabState::Active` always renders transparent (hardcoded).
+    indicator_colors: [[f32; 4]; 4],
 }
 
 impl Renderer {
@@ -183,6 +187,37 @@ impl Renderer {
             tab_bar,
             cursor,
             bell,
+            selection_color: [0.4, 0.6, 1.0, 0.4],
+            indicator_colors: [
+                // active/Done: green
+                [
+                    0x5f as f32 / 255.0,
+                    0xff as f32 / 255.0,
+                    0x9f as f32 / 255.0,
+                    1.0,
+                ],
+                // working: blue
+                [
+                    0x5f as f32 / 255.0,
+                    0xb4 as f32 / 255.0,
+                    0xff as f32 / 255.0,
+                    1.0,
+                ],
+                // waiting: amber
+                [
+                    0xff as f32 / 255.0,
+                    0xbd as f32 / 255.0,
+                    0x2e as f32 / 255.0,
+                    1.0,
+                ],
+                // inactive/Idle: gray
+                [
+                    0x45 as f32 / 255.0,
+                    0x45 as f32 / 255.0,
+                    0x4f as f32 / 255.0,
+                    1.0,
+                ],
+            ],
         })
     }
 
@@ -251,7 +286,9 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        let tab_rects = self.tab_bar.build_rects(app, &layout);
+        let tab_rects = self
+            .tab_bar
+            .build_rects(app, &layout, &self.indicator_colors);
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {
                 build_selection_rects(
@@ -260,6 +297,7 @@ impl Renderer {
                     cell_w,
                     cell_h,
                     layout.bar_height_px,
+                    self.selection_color,
                 )
             } else {
                 Vec::new()
@@ -267,9 +305,9 @@ impl Renderer {
         } else {
             Vec::new()
         };
-        let tab_glyphs = self
-            .tab_bar
-            .build_glyphs(app, &layout, &mut self.text_engine);
+        let tab_glyphs =
+            self.tab_bar
+                .build_glyphs(app, &layout, &mut self.text_engine, &self.indicator_colors);
         let banner_quads = banner_glyph_count.map(|count| {
             crate::render::quad::build_banner_instances(
                 BANNER_TEXT,
@@ -462,23 +500,23 @@ impl Renderer {
         self.bell.note(std::time::Instant::now());
     }
 
-    /// Stage 9 stub. Task 8 wires this to the selection-rect uniform.
-    pub fn set_selection_color(&mut self, _c: [f32; 4]) {
-        // Task 8
+    /// Update the selection-rect color (live).
+    pub fn set_selection_color(&mut self, c: [f32; 4]) {
+        self.selection_color = c;
     }
 
-    /// Stage 9 stub. Task 8 wires this.
-    pub fn set_indicator_colors(&mut self, _c: [[f32; 4]; 4]) {
-        // Task 8
+    /// Update the indicator-stripe color palette (live).
+    pub fn set_indicator_colors(&mut self, c: [[f32; 4]; 4]) {
+        self.indicator_colors = c;
     }
 
-    /// Stage 9 stub. Task 8 wires this.
-    pub fn set_cursor_blink_ms(&mut self, _ms: u64) {
-        // Task 8
+    /// Update the cursor blink period in milliseconds (live). 0 disables blinking.
+    pub fn set_cursor_blink_ms(&mut self, ms: u64) {
+        self.cursor.set_blink_ms(ms);
     }
 
-    /// Stage 9 stub. Task 8 wires this.
-    pub fn set_font_priorities(&mut self, _p: Vec<String>) {
-        // Task 8
+    /// Update the font priority order (takes effect on next startup).
+    pub fn set_font_priorities(&mut self, priority: Vec<String>) {
+        self.text_engine.set_font_priorities(priority);
     }
 }
