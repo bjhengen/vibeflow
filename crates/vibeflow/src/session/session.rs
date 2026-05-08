@@ -234,6 +234,11 @@ impl PtySession {
                                 }
                             }
                             DispatchEvent::SetTitle(title) => {
+                                tracing::debug!(
+                                    title = %title,
+                                    user_renamed = self.user_renamed,
+                                    "OSC SetTitle received"
+                                );
                                 if !self.user_renamed {
                                     self.label.title = title;
                                     // Subtitle stays tracker-driven; no
