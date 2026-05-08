@@ -174,6 +174,7 @@ impl Renderer {
         let tab_bar = crate::render::tabs::TabBarRenderer::new();
         let cursor = crate::render::cursor::CursorBlink::new();
         let bell = crate::render::bell::BellFlash::new();
+        let defaults = crate::config::Config::default_values();
 
         Ok(Self {
             _window: window,
@@ -187,36 +188,15 @@ impl Renderer {
             tab_bar,
             cursor,
             bell,
-            selection_color: [0.4, 0.6, 1.0, 0.4],
+            // Initial palette comes from `Config::default_values` so the
+            // pre-`apply_config` frame matches what the user sees once their
+            // config (or its defaults) lands. Single source of truth.
+            selection_color: defaults.colors.selection,
             indicator_colors: [
-                // active/Done: green
-                [
-                    0x5f as f32 / 255.0,
-                    0xff as f32 / 255.0,
-                    0x9f as f32 / 255.0,
-                    1.0,
-                ],
-                // working: blue
-                [
-                    0x5f as f32 / 255.0,
-                    0xb4 as f32 / 255.0,
-                    0xff as f32 / 255.0,
-                    1.0,
-                ],
-                // waiting: amber
-                [
-                    0xff as f32 / 255.0,
-                    0xbd as f32 / 255.0,
-                    0x2e as f32 / 255.0,
-                    1.0,
-                ],
-                // inactive/Idle: gray
-                [
-                    0x45 as f32 / 255.0,
-                    0x45 as f32 / 255.0,
-                    0x4f as f32 / 255.0,
-                    1.0,
-                ],
+                defaults.colors.indicator_active,
+                defaults.colors.indicator_working,
+                defaults.colors.indicator_waiting,
+                defaults.colors.indicator_inactive,
             ],
         })
     }
