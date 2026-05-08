@@ -350,13 +350,20 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] During rename, click on another tab → rename cancelled, that tab becomes active.
 - [ ] During rename, click in the cell area → rename cancelled.
 - [ ] After a user rename, in a **bash** shell (not dash) run
-  `printf '\x1b]0;new_title_from_shell\x07'` (note: bash builtin printf
-  interprets `\xNN`; dash does not — use `printf '\033]0;new_title\007'`
-  with octal there) → the renamed tab is unaffected.
-- [ ] On an UN-renamed tab, in bash run
-  `PROMPT_COMMAND='printf "\e]0;%s\a" "$(pwd)"'`
-  (no `set` keyword — that's a malformed bash command). Then press Enter at
-  least once → the tab title updates to the cwd on each prompt.
+  `printf '\x1b]0;new_title_from_shell\x07'` → the renamed tab is unaffected
+  (the user-rename sets `PtySession.user_renamed = true`, suppressing all
+  subsequent OSC 0/2). Note: dash's printf doesn't support `\xNN`, use
+  octal `printf '\033]0;new_title\007'` there.
+- [ ] On an UN-renamed tab, run
+  `printf '\x1b]0;TEST123\x07'` → tab title flashes to `TEST123`. Most
+  Ubuntu/Debian bash setups have a system `PROMPT_COMMAND` that emits
+  `\e]0;${USER}@${HOSTNAME}: ${PWD/$HOME/~}\a` on every prompt, which
+  immediately overwrites your manual title. To see TEST123 stick, first
+  disable it: `PROMPT_COMMAND=`. To verify dynamic titling is wired via
+  the system PROMPT_COMMAND, simply `cd /tmp` and watch the tab title flip
+  to `/tmp`. Confirming via `RUST_LOG=vibeflow=debug` shows back-to-back
+  `OSC SetTitle received` lines — the second one (from bash) overwrites
+  the first within microseconds, before any redraw.
 - [ ] `Ctrl+Shift+R` on a (dead) renamed tab → fresh shell, title resets to `bash`.
 
 ### Arrow / nav keys
