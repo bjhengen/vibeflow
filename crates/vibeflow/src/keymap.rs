@@ -21,9 +21,9 @@ pub enum Shortcut {
     RenameTab,
 }
 
-/// Keyed lookup table. Constructed via `ShortcutTable::default()` for the
-/// built-in bindings, or from a `Config.shortcuts` via
-/// `ShortcutTable::from_bindings`.
+/// Keyed lookup table. Constructed via `ShortcutTable::with_default_bindings()`
+/// for the built-in bindings; Task 7 adds replacement from a `Config.shortcuts`
+/// at runtime.
 #[derive(Debug, Clone, Default)]
 pub struct ShortcutTable {
     /// (modifiers, key-discriminant) -> action. Multiple chord entries can
