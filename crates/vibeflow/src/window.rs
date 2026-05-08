@@ -658,6 +658,26 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     _ => None,
                 };
 
+                // Stage 9: middle-click in NON-mouse-mode pastes PRIMARY.
+                if button == MouseButton::Middle && released && !mode_on {
+                    let bracketed = s
+                        .term()
+                        .mode()
+                        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+                    if let Some(clipboard) = self.clipboard.as_mut() {
+                        if let Some(text) = clipboard.paste_primary() {
+                            if bracketed {
+                                let _ = s.send_input(b"\x1b[200~");
+                                let _ = s.send_input(text.as_bytes());
+                                let _ = s.send_input(b"\x1b[201~");
+                            } else {
+                                let _ = s.send_input(text.as_bytes());
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 if mode_on && !shift {
                     // If a selection drag was started before mouse mode engaged,
                     // discard it so it doesn't haunt us when mouse mode toggles back off.
@@ -689,6 +709,17 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     sel.mouse_down(point, shift, term, now);
                 } else if released {
                     s.selection.mouse_up();
+                    // Stage 9: if a finalized selection exists AND PRIMARY is
+                    // enabled, auto-copy to PRIMARY (X11 middle-click semantic).
+                    // CLIPBOARD is unaffected — Ctrl+Shift+C still copies there.
+                    if let Some(text) = s.selection.text(s.term()) {
+                        if let Some(clipboard) = self.clipboard.as_mut() {
+                            #[cfg(target_os = "linux")]
+                            if clipboard.primary_enabled() {
+                                let _ = clipboard.copy_primary(&text);
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
