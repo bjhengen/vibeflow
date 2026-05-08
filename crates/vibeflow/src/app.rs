@@ -20,6 +20,9 @@ pub struct App {
     /// `PtySession` at spawn time so freshly-opened tabs honor the current
     /// config without WindowApp having to re-walk after each spawn.
     default_respect_osc_title: bool,
+    /// Mirror of `Config.tabs.title_strip_prefix`. Same lifecycle as
+    /// `default_respect_osc_title`.
+    default_title_strip_prefix: String,
 }
 
 impl App {
@@ -31,6 +34,7 @@ impl App {
             active: 0,
             tracker_config: default_tracker_config(),
             default_respect_osc_title: true,
+            default_title_strip_prefix: String::new(),
         }
     }
 
@@ -38,6 +42,11 @@ impl App {
     /// `WindowApp::apply_config` calls this whenever the TOML config reloads.
     pub fn set_default_respect_osc_title(&mut self, respect: bool) {
         self.default_respect_osc_title = respect;
+    }
+
+    /// Update the default OSC-title prefix-strip applied to subsequently-spawned tabs.
+    pub fn set_default_title_strip_prefix(&mut self, prefix: String) {
+        self.default_title_strip_prefix = prefix;
     }
 
     /// Spawn a new tab. Returns the index of the new tab in [`Self::tabs`]. The new
@@ -48,6 +57,7 @@ impl App {
     pub fn new_tab(&mut self, argv: &[&str]) -> std::io::Result<usize> {
         let mut session = PtySession::spawn(argv, self.tracker_config)?;
         session.respect_osc_title = self.default_respect_osc_title;
+        session.title_strip_prefix = self.default_title_strip_prefix.clone();
         self.tabs.push(session);
         let idx = self.tabs.len() - 1;
         self.active = idx;

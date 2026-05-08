@@ -116,6 +116,10 @@ pub struct PtySession {
     /// the shell is silently dropped regardless of `user_renamed`. WindowApp
     /// keeps this in sync via apply_config + new-tab spawn.
     pub respect_osc_title: bool,
+    /// Mirror of `Config.tabs.title_strip_prefix`. If non-empty, this
+    /// prefix is stripped from the front of every accepted OSC 0/2 title
+    /// before it lands on `label.title`.
+    pub title_strip_prefix: String,
 }
 
 impl PtySession {
@@ -172,6 +176,7 @@ impl PtySession {
             selection: crate::render::selection::SelectionTracker::new(),
             user_renamed: false,
             respect_osc_title: true,
+            title_strip_prefix: String::new(),
         })
     }
 
@@ -245,15 +250,22 @@ impl PtySession {
                                     respect_osc_title = self.respect_osc_title,
                                     "OSC SetTitle received"
                                 );
-                                if self.respect_osc_title
-                                    && !self.user_renamed
-                                    && self.label.title != title
-                                {
-                                    self.label.title = title;
-                                    events.push(SessionEvent::TermUpdated);
+                                if self.respect_osc_title && !self.user_renamed {
+                                    let display = if !self.title_strip_prefix.is_empty() {
+                                        title
+                                            .strip_prefix(&self.title_strip_prefix)
+                                            .map(str::to_owned)
+                                            .unwrap_or(title)
+                                    } else {
+                                        title
+                                    };
+                                    if self.label.title != display {
+                                        self.label.title = display;
+                                        events.push(SessionEvent::TermUpdated);
+                                    }
                                 }
                                 // else: silently dropped — config disabled OSC
-                                // titles, or user-renamed wins, or unchanged.
+                                // titles, or user-renamed wins.
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
@@ -392,6 +404,7 @@ impl PtySession {
         // override shouldn't be wiped just because the user hit Ctrl+Shift+R).
         // user_renamed is intentionally NOT preserved — the new shell is fresh.
         new_session.respect_osc_title = self.respect_osc_title;
+        new_session.title_strip_prefix = std::mem::take(&mut self.title_strip_prefix);
         *self = new_session;
         Ok(())
     }
@@ -803,6 +816,38 @@ mod tests {
             }
         }
         assert_eq!(s.label().title, "sleep"); // unchanged from default
+    }
+
+    #[test]
+    fn osc_0_strips_prefix_when_present() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.title_strip_prefix = "user@host: ".to_string();
+        for ev in s.dispatcher.feed(b"\x1b]0;user@host: ~/dev\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                let display = title
+                    .strip_prefix(&s.title_strip_prefix)
+                    .map(str::to_owned)
+                    .unwrap_or(title);
+                s.label.title = display;
+            }
+        }
+        assert_eq!(s.label().title, "~/dev");
+    }
+
+    #[test]
+    fn osc_0_passes_through_when_prefix_doesnt_match() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.title_strip_prefix = "user@host: ".to_string();
+        for ev in s.dispatcher.feed(b"\x1b]0;vim - foo.txt\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                let display = title
+                    .strip_prefix(&s.title_strip_prefix)
+                    .map(str::to_owned)
+                    .unwrap_or(title);
+                s.label.title = display;
+            }
+        }
+        assert_eq!(s.label().title, "vim - foo.txt");
     }
 
     #[test]

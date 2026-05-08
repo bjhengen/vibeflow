@@ -73,11 +73,14 @@ pub struct ClipboardConfig {
     pub primary: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TabsConfig {
     /// When false, OSC 0/2 from shells is silently ignored. Tab titles stay
     /// at the spawned shell name until the user renames manually. Default `true`.
     pub respect_osc_title: bool,
+    /// Strip this prefix from any incoming OSC 0/2 title before displaying.
+    /// Empty = no stripping. Default empty.
+    pub title_strip_prefix: String,
 }
 
 /// One thing that went wrong during config load.
@@ -156,6 +159,7 @@ impl Config {
             clipboard: ClipboardConfig { primary: true },
             tabs: TabsConfig {
                 respect_osc_title: true,
+                title_strip_prefix: String::new(),
             },
         }
     }
@@ -224,6 +228,9 @@ impl Config {
         if let Some(t) = file.tabs {
             if let Some(b) = t.respect_osc_title {
                 defaults.tabs.respect_osc_title = b;
+            }
+            if let Some(p) = t.title_strip_prefix {
+                defaults.tabs.title_strip_prefix = p;
             }
         }
 
@@ -660,6 +667,20 @@ blink_ms = 250
         let (cfg, errs) = Config::load(&path);
         assert!(errs.is_empty(), "errors: {errs:?}");
         assert!(!cfg.tabs.respect_osc_title);
+    }
+
+    #[test]
+    fn load_tabs_title_strip_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[tabs]\ntitle_strip_prefix = \"bhengen@SLMBeast: \"\n",
+        )
+        .unwrap();
+        let (cfg, errs) = Config::load(&path);
+        assert!(errs.is_empty(), "errors: {errs:?}");
+        assert_eq!(cfg.tabs.title_strip_prefix, "bhengen@SLMBeast: ");
     }
 
     #[test]

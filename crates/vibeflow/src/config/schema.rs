@@ -79,6 +79,11 @@ pub struct TabsSection {
     /// at the spawned shell name (e.g. `bash`) until the user renames them
     /// via Ctrl+Shift+E. Default true (preserves prior behavior).
     pub respect_osc_title: Option<bool>,
+    /// If a shell-emitted title starts with this string, strip it before
+    /// displaying. Useful when bash's PS1 prepends a constant
+    /// `user@host: ` that crowds the tab strip. Titles that don't start
+    /// with this prefix are unchanged. Default empty (no stripping).
+    pub title_strip_prefix: Option<String>,
 }
 
 #[cfg(test)]
