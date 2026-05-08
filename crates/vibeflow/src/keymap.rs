@@ -147,13 +147,9 @@ impl ShortcutTable {
     }
 
     /// Lookup the action triggered by a winit key + modifier set, or `None`
-    /// if no chord matches. Reject any combo with `Alt` set — vibeflow does
-    /// not bind any `Alt+...` chord.
+    /// if no chord matches.
     #[must_use]
     pub fn lookup(&self, key: &Key, modifiers: ModifiersState) -> Option<Shortcut> {
-        if modifiers.alt_key() {
-            return None;
-        }
         let disc = match key {
             Key::Character(c) => {
                 let s = c.as_str();
@@ -179,9 +175,15 @@ impl ShortcutTable {
             Key::Named(NamedKey::F12) => ChordKeyDisc::Function(12),
             _ => return None,
         };
-        // Strip Alt (already rejected above) but keep Ctrl/Shift/Super.
+        // Use ALL FOUR modifier bits (Ctrl, Shift, Alt, Super). Default
+        // bindings have alt = false, so existing tests still pass — no
+        // entry in the table matches an Alt-modified event unless the user
+        // explicitly bound one.
         let mods_bits = (modifiers
-            & (ModifiersState::CONTROL | ModifiersState::SHIFT | ModifiersState::SUPER))
+            & (ModifiersState::CONTROL
+                | ModifiersState::SHIFT
+                | ModifiersState::ALT
+                | ModifiersState::SUPER))
             .bits();
         self.by_chord
             .get(&ChordKey {
@@ -189,6 +191,34 @@ impl ShortcutTable {
                 key: disc,
             })
             .copied()
+    }
+
+    /// Replace this table's entries from a `ShortcutBindings` map (sourced
+    /// from `Config.shortcuts`). Each action's chord list in `bindings`
+    /// REPLACES the default chord list for that action. Unset actions keep
+    /// the defaults.
+    pub fn replace_from_bindings(&mut self, bindings: &crate::config::ShortcutBindings) {
+        use crate::config::KeyMatch;
+        let actions_to_replace: std::collections::HashSet<Shortcut> =
+            bindings.bindings.keys().copied().collect();
+        self.by_chord
+            .retain(|_, action| !actions_to_replace.contains(action));
+        for (action, chords) in &bindings.bindings {
+            for chord in chords {
+                let disc = match &chord.key {
+                    KeyMatch::Char(c) => ChordKeyDisc::Char(c.to_ascii_lowercase()),
+                    KeyMatch::Tab => ChordKeyDisc::Tab,
+                    KeyMatch::Function(n) => ChordKeyDisc::Function(*n),
+                };
+                self.by_chord.insert(
+                    ChordKey {
+                        modifiers_bits: chord.modifiers.bits(),
+                        key: disc,
+                    },
+                    *action,
+                );
+            }
+        }
     }
 }
 
@@ -400,16 +430,48 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_table_lookup_strips_alt_aware() {
+    fn shortcut_table_lookup_alt_chord_not_in_default_table() {
         let t = ShortcutTable::with_default_bindings();
-        let alt_only = ModifiersState::ALT;
-        // Alt set => None always.
+        // Ctrl+Shift+Alt+T isn't in the default table.
         assert_eq!(
             t.lookup(
                 &ch("t"),
-                ModifiersState::CONTROL | ModifiersState::SHIFT | alt_only
+                ModifiersState::CONTROL | ModifiersState::SHIFT | ModifiersState::ALT
             ),
             None
+        );
+    }
+
+    #[test]
+    fn replace_from_bindings_overrides_defaults() {
+        use crate::config::{KeyChord, KeyMatch, ShortcutBindings};
+        use std::collections::HashMap;
+
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            Shortcut::NewTab,
+            vec![KeyChord {
+                modifiers: ModifiersState::CONTROL | ModifiersState::ALT,
+                key: KeyMatch::Char('t'),
+            }],
+        );
+        let user = ShortcutBindings { bindings };
+
+        let mut table = ShortcutTable::with_default_bindings();
+        table.replace_from_bindings(&user);
+
+        // The default ctrl+shift+t should be GONE...
+        assert_eq!(table.lookup(&ch("t"), mods(true, true, false, false)), None);
+        // ...and ctrl+alt+t SHOULD now trigger NewTab (post-Alt-rejection-lift).
+        assert_eq!(
+            table.lookup(&ch("t"), mods(true, false, true, false)),
+            Some(Shortcut::NewTab)
+        );
+
+        // Other actions still work — Copy default unchanged.
+        assert_eq!(
+            table.lookup(&ch("c"), mods(true, true, false, false)),
+            Some(Shortcut::Copy)
         );
     }
 }

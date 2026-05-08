@@ -461,4 +461,24 @@ impl Renderer {
     pub fn note_bell(&mut self) {
         self.bell.note(std::time::Instant::now());
     }
+
+    /// Stage 9 stub. Task 8 wires this to the selection-rect uniform.
+    pub fn set_selection_color(&mut self, _c: [f32; 4]) {
+        // Task 8
+    }
+
+    /// Stage 9 stub. Task 8 wires this.
+    pub fn set_indicator_colors(&mut self, _c: [[f32; 4]; 4]) {
+        // Task 8
+    }
+
+    /// Stage 9 stub. Task 8 wires this.
+    pub fn set_cursor_blink_ms(&mut self, _ms: u64) {
+        // Task 8
+    }
+
+    /// Stage 9 stub. Task 8 wires this.
+    pub fn set_font_priorities(&mut self, _p: Vec<String>) {
+        // Task 8
+    }
 }

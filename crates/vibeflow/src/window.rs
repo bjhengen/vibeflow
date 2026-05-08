@@ -135,9 +135,13 @@ pub struct WindowApp {
     clipboard: Option<crate::clipboard::Clipboard>,
     /// Proxy for the file-watcher thread to ship `AppUserEvent` back to the
     /// main thread. Cloned and handed to the watcher in `resumed`.
-    // Task 6 will clone and hand this to the watcher thread; unused until then.
-    #[allow(dead_code)]
     proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>,
+    /// Active shortcut table. Replaces the static Stage 8 lookup.
+    shortcut_table: crate::keymap::ShortcutTable,
+    /// Banner state for config errors (Stage 9). Empty until first reload reports errors.
+    error_banner: crate::config::error_banner::ErrorBannerState,
+    /// Path to the config file. Stored so the watcher can be respawned if needed.
+    config_path: std::path::PathBuf,
 }
 
 impl WindowApp {
@@ -152,6 +156,11 @@ impl WindowApp {
                 None
             }
         };
+        let config_path = crate::config::default_path()
+            .unwrap_or_else(|| std::path::PathBuf::from("./vibeflow-config.toml"));
+        let (_initial_config, initial_errors) = crate::config::Config::load(&config_path);
+        let error_banner = crate::config::error_banner::ErrorBannerState::new(initial_errors);
+        let shortcut_table = crate::keymap::ShortcutTable::with_default_bindings();
         Self {
             window: None,
             renderer: None,
@@ -160,6 +169,9 @@ impl WindowApp {
             cursor_pos: None,
             clipboard,
             proxy,
+            shortcut_table,
+            error_banner,
+            config_path,
         }
     }
 
@@ -305,6 +317,26 @@ impl WindowApp {
         }
     }
 
+    /// Distribute a newly-loaded config to all subscribers.
+    fn apply_config(&mut self, config: &crate::config::Config) {
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_selection_color(config.colors.selection);
+            r.set_indicator_colors([
+                config.colors.indicator_active,
+                config.colors.indicator_working,
+                config.colors.indicator_waiting,
+                config.colors.indicator_inactive,
+            ]);
+            r.set_cursor_blink_ms(config.cursor.blink_ms);
+            r.set_font_priorities(config.fonts.priority.clone());
+        }
+        // Rebuild the shortcut table from the bindings.
+        self.shortcut_table = build_shortcut_table(&config.shortcuts);
+        if let Some(c) = self.clipboard.as_mut() {
+            c.set_primary_enabled(config.clipboard.primary);
+        }
+    }
+
     fn handle_paste(&mut self) {
         let Some(clipboard) = self.clipboard.as_mut() else {
             return;
@@ -359,6 +391,18 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         };
         self.window = Some(window);
         self.renderer = Some(renderer);
+
+        // Apply initial config now that renderer is built.
+        let (config, errors) = crate::config::Config::load(&self.config_path);
+        self.apply_config(&config);
+        self.error_banner.update(errors);
+
+        // Start the file watcher.
+        let proxy = self.proxy.clone();
+        let path = self.config_path.clone();
+        if let Err(e) = crate::config::watcher::spawn(path, proxy) {
+            tracing::warn!(error = %e, "config watcher failed to start");
+        }
 
         if let Err(e) = self.spawn_first_tab() {
             tracing::error!(error = ?e, "failed to spawn first tab");
@@ -462,8 +506,9 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 }
                 // Shortcut dispatch FIRST. If the combo matches, suppress the
                 // literal byte fallthrough.
-                if let Some(shortcut) =
-                    crate::keymap::match_shortcut(&event.logical_key, self.current_modifiers)
+                if let Some(shortcut) = self
+                    .shortcut_table
+                    .lookup(&event.logical_key, self.current_modifiers)
                 {
                     self.handle_shortcut(shortcut);
                     return;
@@ -677,16 +722,35 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         _event_loop: &winit::event_loop::ActiveEventLoop,
         event: crate::config::AppUserEvent,
     ) {
-        // Stage 9 Task 7 will distribute this to subscribers. For now: trace.
-        match &event {
-            crate::config::AppUserEvent::ConfigReloaded { errors, .. } => {
-                tracing::info!(error_count = errors.len(), "config reloaded (stub)");
+        match event {
+            crate::config::AppUserEvent::ConfigReloaded { config, errors } => {
+                tracing::info!(error_count = errors.len(), "config reloaded");
+                self.apply_config(&config);
+                self.error_banner.update(errors);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
             crate::config::AppUserEvent::ConfigError(err) => {
-                tracing::warn!(?err, "config error (stub)");
+                tracing::warn!(?err, "config error");
+                self.error_banner.update(vec![err]);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
         }
     }
+}
+
+fn build_shortcut_table(
+    bindings: &crate::config::ShortcutBindings,
+) -> crate::keymap::ShortcutTable {
+    // For now, when the user supplies a config, replace the default table
+    // wholesale. The default still applies if a Shortcut variant has no
+    // entry in `bindings`.
+    let mut table = crate::keymap::ShortcutTable::with_default_bindings();
+    table.replace_from_bindings(bindings);
+    table
 }
 
 #[cfg(test)]

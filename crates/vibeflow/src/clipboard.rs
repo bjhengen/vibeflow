@@ -44,6 +44,11 @@ impl Clipboard {
     pub fn paste(&mut self) -> Option<String> {
         self.inner.get_text().ok()
     }
+
+    /// Stage 9 stub. Task 10 wires PRIMARY-clipboard support.
+    pub fn set_primary_enabled(&mut self, _enabled: bool) {
+        // Task 10
+    }
 }
 
 #[cfg(test)]
