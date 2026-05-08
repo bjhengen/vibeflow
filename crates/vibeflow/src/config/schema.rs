@@ -14,6 +14,7 @@ pub struct ConfigFile {
     pub cursor: Option<CursorSection>,
     pub fonts: Option<FontsSection>,
     pub clipboard: Option<ClipboardSection>,
+    pub tabs: Option<TabsSection>,
 }
 
 /// `[shortcuts]` table. Each known action key (e.g. `new_tab`, `copy`) maps
@@ -67,6 +68,17 @@ pub struct FontsSection {
 #[serde(default, deny_unknown_fields)]
 pub struct ClipboardSection {
     pub primary: Option<bool>,
+}
+
+/// `[tabs]` table. Stage 9 polish: control whether shell-emitted
+/// OSC 0/2 title sequences are honored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TabsSection {
+    /// When false, OSC 0/2 from shells is silently ignored — tab titles stay
+    /// at the spawned shell name (e.g. `bash`) until the user renames them
+    /// via Ctrl+Shift+E. Default true (preserves prior behavior).
+    pub respect_osc_title: Option<bool>,
 }
 
 #[cfg(test)]

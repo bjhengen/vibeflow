@@ -351,6 +351,13 @@ impl WindowApp {
         if let Some(c) = self.clipboard.as_mut() {
             c.set_primary_enabled(config.clipboard.primary);
         }
+        // Propagate `respect_osc_title` to all current tabs and remember it
+        // so future `App::new_tab` spawns inherit the same value.
+        let respect = config.tabs.respect_osc_title;
+        for s in self.app.tabs_mut().iter_mut() {
+            s.respect_osc_title = respect;
+        }
+        self.app.set_default_respect_osc_title(respect);
     }
 
     fn handle_paste(&mut self) {

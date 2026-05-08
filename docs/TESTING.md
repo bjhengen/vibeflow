@@ -395,3 +395,11 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - Shift / Ctrl-modifier arrow keys (Shift+Right for word-jump in editors, etc.) — Stage 10/11.
 - Bell behavior config — defer to Stage 10.
 - Inline rename caret rendering — buffer substitution renders the editing buffer, but no visible caret blink within the buffer; Stage 10 polish.
+
+### Tabs — disable shell-driven titles
+
+- [ ] Add to config: `[tabs]` `respect_osc_title = false`. Save.
+- [ ] In a fresh tab, run `cd /tmp` — tab title stays at `bash` instead of changing.
+- [ ] `printf '\x1b]0;TEST\x07'` — tab title still stays `bash`.
+- [ ] Ctrl+Shift+E rename still works — user rename overrides regardless.
+- [ ] Restore `respect_osc_title = true` (or delete the key). Tab titles resume tracking shell OSC 0/2.

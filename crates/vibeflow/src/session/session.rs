@@ -112,6 +112,10 @@ pub struct PtySession {
     /// right-click. Sticky for the life of this session — subsequent
     /// OSC 0 / OSC 2 are ignored. Cleared on `restart()` (which does `*self = new_session`).
     pub user_renamed: bool,
+    /// Mirror of `Config.tabs.respect_osc_title`. When false, OSC 0/2 from
+    /// the shell is silently dropped regardless of `user_renamed`. WindowApp
+    /// keeps this in sync via apply_config + new-tab spawn.
+    pub respect_osc_title: bool,
 }
 
 impl PtySession {
@@ -167,6 +171,7 @@ impl PtySession {
             bell_pending: false,
             selection: crate::render::selection::SelectionTracker::new(),
             user_renamed: false,
+            respect_osc_title: true,
         })
     }
 
@@ -237,17 +242,18 @@ impl PtySession {
                                 tracing::debug!(
                                     title = %title,
                                     user_renamed = self.user_renamed,
+                                    respect_osc_title = self.respect_osc_title,
                                     "OSC SetTitle received"
                                 );
-                                if !self.user_renamed && self.label.title != title {
+                                if self.respect_osc_title
+                                    && !self.user_renamed
+                                    && self.label.title != title
+                                {
                                     self.label.title = title;
-                                    // The tab strip needs a redraw to pick up
-                                    // the new title; reuse TermUpdated so the
-                                    // existing redraw path fires.
                                     events.push(SessionEvent::TermUpdated);
                                 }
-                                // else: silently dropped — either user-renamed
-                                // (rename wins) or title unchanged.
+                                // else: silently dropped — config disabled OSC
+                                // titles, or user-renamed wins, or unchanged.
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
@@ -382,6 +388,10 @@ impl PtySession {
             // PtySize uses u16 for rows/cols. Re-apply to the new master.
             let _ = new_session.resize(s.rows, s.cols);
         }
+        // Preserve the OSC-title policy across restart (a deliberate config
+        // override shouldn't be wiped just because the user hit Ctrl+Shift+R).
+        // user_renamed is intentionally NOT preserved — the new shell is fresh.
+        new_session.respect_osc_title = self.respect_osc_title;
         *self = new_session;
         Ok(())
     }
@@ -793,6 +803,20 @@ mod tests {
             }
         }
         assert_eq!(s.label().title, "sleep"); // unchanged from default
+    }
+
+    #[test]
+    fn osc_0_dropped_when_respect_osc_title_false() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.respect_osc_title = false;
+        for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                if s.respect_osc_title && !s.user_renamed {
+                    s.label.title = title;
+                }
+            }
+        }
+        assert_eq!(s.label().title, "sleep");
     }
 
     #[test]

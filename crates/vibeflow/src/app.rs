@@ -16,6 +16,10 @@ pub struct App {
     tabs: Vec<PtySession>,
     active: usize,
     tracker_config: TrackerConfig,
+    /// Mirror of `Config.tabs.respect_osc_title`. Applied to every new
+    /// `PtySession` at spawn time so freshly-opened tabs honor the current
+    /// config without WindowApp having to re-walk after each spawn.
+    default_respect_osc_title: bool,
 }
 
 impl App {
@@ -26,7 +30,14 @@ impl App {
             tabs: Vec::new(),
             active: 0,
             tracker_config: default_tracker_config(),
+            default_respect_osc_title: true,
         }
+    }
+
+    /// Update the default OSC-title policy applied to subsequently-spawned tabs.
+    /// `WindowApp::apply_config` calls this whenever the TOML config reloads.
+    pub fn set_default_respect_osc_title(&mut self, respect: bool) {
+        self.default_respect_osc_title = respect;
     }
 
     /// Spawn a new tab. Returns the index of the new tab in [`Self::tabs`]. The new
@@ -35,7 +46,8 @@ impl App {
     /// # Errors
     /// Propagates any failure from [`PtySession::spawn`].
     pub fn new_tab(&mut self, argv: &[&str]) -> std::io::Result<usize> {
-        let session = PtySession::spawn(argv, self.tracker_config)?;
+        let mut session = PtySession::spawn(argv, self.tracker_config)?;
+        session.respect_osc_title = self.default_respect_osc_title;
         self.tabs.push(session);
         let idx = self.tabs.len() - 1;
         self.active = idx;

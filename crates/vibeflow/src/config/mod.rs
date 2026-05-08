@@ -22,6 +22,7 @@ pub struct Config {
     pub cursor: CursorConfig,
     pub fonts: FontsConfig,
     pub clipboard: ClipboardConfig,
+    pub tabs: TabsConfig,
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -70,6 +71,13 @@ pub struct FontsConfig {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipboardConfig {
     pub primary: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabsConfig {
+    /// When false, OSC 0/2 from shells is silently ignored. Tab titles stay
+    /// at the spawned shell name until the user renames manually. Default `true`.
+    pub respect_osc_title: bool,
 }
 
 /// One thing that went wrong during config load.
@@ -146,6 +154,9 @@ impl Config {
                 ],
             },
             clipboard: ClipboardConfig { primary: true },
+            tabs: TabsConfig {
+                respect_osc_title: true,
+            },
         }
     }
 
@@ -208,6 +219,11 @@ impl Config {
         if let Some(cb) = file.clipboard {
             if let Some(p) = cb.primary {
                 defaults.clipboard.primary = p;
+            }
+        }
+        if let Some(t) = file.tabs {
+            if let Some(b) = t.respect_osc_title {
+                defaults.tabs.respect_osc_title = b;
             }
         }
 
@@ -628,6 +644,22 @@ blink_ms = 250
             cfg.shortcuts.bindings.get(&Shortcut::NewTab).map(Vec::len),
             Some(0)
         );
+    }
+
+    #[test]
+    fn default_tabs_respect_osc_title_is_true() {
+        let cfg = Config::default_values();
+        assert!(cfg.tabs.respect_osc_title);
+    }
+
+    #[test]
+    fn load_tabs_respect_osc_title_false_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[tabs]\nrespect_osc_title = false\n").unwrap();
+        let (cfg, errs) = Config::load(&path);
+        assert!(errs.is_empty(), "errors: {errs:?}");
+        assert!(!cfg.tabs.respect_osc_title);
     }
 
     #[test]
