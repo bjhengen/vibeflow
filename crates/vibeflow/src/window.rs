@@ -98,6 +98,16 @@ fn key_to_bytes(
         // through `Character(" ")` — so without this arm it falls into the
         // `_ => None` catch-all and the byte never reaches the PTY.
         Key::Named(NamedKey::Space) => Some(vec![b' ']),
+        Key::Named(NamedKey::ArrowUp) if modifiers.is_empty() => Some(b"\x1b[A".to_vec()),
+        Key::Named(NamedKey::ArrowDown) if modifiers.is_empty() => Some(b"\x1b[B".to_vec()),
+        Key::Named(NamedKey::ArrowRight) if modifiers.is_empty() => Some(b"\x1b[C".to_vec()),
+        Key::Named(NamedKey::ArrowLeft) if modifiers.is_empty() => Some(b"\x1b[D".to_vec()),
+        Key::Named(NamedKey::Home) if modifiers.is_empty() => Some(b"\x1b[H".to_vec()),
+        Key::Named(NamedKey::End) if modifiers.is_empty() => Some(b"\x1b[F".to_vec()),
+        Key::Named(NamedKey::PageUp) if modifiers.is_empty() => Some(b"\x1b[5~".to_vec()),
+        Key::Named(NamedKey::PageDown) if modifiers.is_empty() => Some(b"\x1b[6~".to_vec()),
+        Key::Named(NamedKey::Insert) if modifiers.is_empty() => Some(b"\x1b[2~".to_vec()),
+        Key::Named(NamedKey::Delete) if modifiers.is_empty() => Some(b"\x1b[3~".to_vec()),
         // Anything else → Stage 8.
         _ => None,
     }
@@ -958,6 +968,141 @@ mod tests {
             "real font metrics should produce different grid dims than the \
              Stage-4 placeholder 8×16 pitch — if these are equal, window.rs \
              is still using the placeholders"
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_up_emits_csi_a() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[A".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_down_emits_csi_b() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowDown),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[B".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_right_emits_csi_c() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowRight),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[C".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_left_emits_csi_d() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowLeft),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[D".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_home_emits_csi_h() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Home),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[H".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_end_emits_csi_f() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::End),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[F".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_page_up_emits_csi_5_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::PageUp),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[5~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_page_down_emits_csi_6_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::PageDown),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[6~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_insert_emits_csi_2_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Insert),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[2~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_delete_emits_csi_3_tilde() {
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::Delete),
+                ElementState::Pressed,
+                ModifiersState::empty()
+            ),
+            Some(b"\x1b[3~".to_vec())
+        );
+    }
+
+    #[test]
+    fn key_to_bytes_arrow_up_with_ctrl_returns_none() {
+        // Ctrl+ArrowUp is reserved for word-jump in Stage 10+. Until then,
+        // we return None so the byte path doesn't accidentally pick up the
+        // plain `\x1b[A` for a modified chord.
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                ElementState::Pressed,
+                ModifiersState::CONTROL
+            ),
+            None
         );
     }
 }
