@@ -1067,9 +1067,23 @@ pub fn new(proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>
 }
 ```
 
-- [ ] **Step 3: Implement `ApplicationHandler::user_event` (stub)**
+- [ ] **Step 3: Change the `ApplicationHandler` impl signature + implement `user_event` (stub)**
 
-Add to the `impl ApplicationHandler for WindowApp` block (Stage 8 left this method unimplemented; the trait provides a default no-op, but we want to log + acknowledge the event):
+`winit-0.30.13`'s `ApplicationHandler` is `trait ApplicationHandler<T: 'static = ()>`. Stage 8 used the default `T = ()` — the impl line currently reads `impl ApplicationHandler for WindowApp`. Once we add `AppUserEvent`, that becomes `impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp`. Without this typing the build will fail because the user_event method signature won't match the (still-default-`()`-typed) trait.
+
+Update the impl line in `window.rs`:
+
+```rust
+// Was:
+//   impl ApplicationHandler for WindowApp { ... }
+// Becomes:
+impl winit::application::ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
+    // ... existing methods (resumed, window_event, about_to_wait) UNCHANGED
+    // Add the user_event stub below.
+}
+```
+
+Then add to that block:
 
 ```rust
     fn user_event(
@@ -1534,6 +1548,24 @@ mod tests {
 }
 ```
 
+- [ ] **Step 1.5: Add a no-op `RenameTab` arm in `WindowApp::handle_shortcut`**
+
+`window.rs::handle_shortcut` is currently an EXHAUSTIVE match over the `Shortcut` variants (no `_ =>` catch-all). Adding `Shortcut::RenameTab` as a new variant in this task makes the match non-exhaustive — the build fails with "non-exhaustive patterns: `Shortcut::RenameTab` not covered" until something handles it.
+
+Add a temporary no-op arm. Task 13 fills it in with `self.start_rename(...)`:
+
+Open `crates/vibeflow/src/window.rs`. In `WindowApp::handle_shortcut`, alongside the existing arms:
+
+```rust
+            Shortcut::RenameTab => {
+                // Stage 9 Task 13 wires this to start_rename(); for now no-op
+                // so the match remains exhaustive.
+                tracing::trace!("RenameTab shortcut ignored (Task 13 wires it)");
+            }
+```
+
+This keeps Task 4 self-contained — no need to wait for Task 13 to compile.
+
 - [ ] **Step 2: Verify**
 
 ```bash
@@ -1877,7 +1909,7 @@ mod tests {
         let ev = Event {
             kind: EventKind::Modify(notify::event::ModifyKind::Any),
             paths: vec![target.clone()],
-            attrs: notify::event::EventAttributes::default(),
+            attrs: notify::event::EventAttributes::new(),
         };
         assert!(event_concerns(&ev, &target));
     }
@@ -1889,7 +1921,7 @@ mod tests {
         let ev = Event {
             kind: EventKind::Modify(notify::event::ModifyKind::Any),
             paths: vec![other],
-            attrs: notify::event::EventAttributes::default(),
+            attrs: notify::event::EventAttributes::new(),
         };
         assert!(!event_concerns(&ev, &target));
     }
@@ -1900,7 +1932,7 @@ mod tests {
         let ev = Event {
             kind: EventKind::Access(notify::event::AccessKind::Read),
             paths: vec![target.clone()],
-            attrs: notify::event::EventAttributes::default(),
+            attrs: notify::event::EventAttributes::new(),
         };
         assert!(!event_concerns(&ev, &target));
     }
@@ -2266,25 +2298,47 @@ Fill in the stub setters from Task 7 with real behavior. `set_font_priorities` r
 
 - [ ] **Step 1: `cursor.rs::set_blink_ms`**
 
-Open `crates/vibeflow/src/render/cursor.rs`. Find the cursor-blink timing constant (Stage 7 hardcoded ~500ms toggle). Replace the constant with a configurable field:
+The actual struct in `crates/vibeflow/src/render/cursor.rs` is `pub struct CursorBlink` (NOT `Cursor`). The current Stage 7 code has a module-level `pub const BLINK_PERIOD_MS: u128 = 500;` and a `visible(now: Instant) -> bool` method that uses it. Stage 9 replaces the const with a per-instance field so live config-reload can change blink rate without rebuilding the renderer.
+
+Add a `blink_ms` field to `CursorBlink` and a setter:
 
 ```rust
-pub struct Cursor {
-    // ... existing fields
-    blink_ms: u64,    // 500 default; 0 disables blink
+pub struct CursorBlink {
+    // ... existing fields (the `last_input_at` etc. — read the existing struct)
+    /// Milliseconds per full blink cycle. 0 disables blink (cursor renders solid).
+    blink_ms: u64,
 }
 
-impl Cursor {
+impl CursorBlink {
+    pub fn new() -> Self {
+        Self {
+            // ... existing initializers
+            blink_ms: BLINK_PERIOD_MS as u64,    // matches Stage 7 default
+        }
+    }
+
     pub fn set_blink_ms(&mut self, ms: u64) {
         self.blink_ms = ms;
     }
-    // Update the existing `blink_phase` (or whatever the timing function is)
-    // to use `self.blink_ms` instead of the hardcoded const. If
-    // `self.blink_ms == 0`, return "always visible" (cursor solid).
+
+    pub fn visible(&self, now: Instant) -> bool {
+        if self.blink_ms == 0 {
+            return true;    // 0 = no blink, always visible
+        }
+        // Existing computation from Stage 7 — replace `BLINK_PERIOD_MS` with
+        // `self.blink_ms as u128` in the body.
+        // Stage 7 body looked something like:
+        //   let elapsed_ms = now.duration_since(self.last_input_at).as_millis();
+        //   (elapsed_ms / BLINK_PERIOD_MS) % 2 == 0
+        // becomes:
+        //   (elapsed_ms / (self.blink_ms as u128)) % 2 == 0
+    }
 }
 ```
 
-Read the existing cursor.rs to find the exact computation that uses the 500ms hardcode. Adapt.
+The `pub const BLINK_PERIOD_MS` can stay (used as the default initializer in `new()`), or be removed if you prefer. Either is fine; preserving it keeps backward-compat tests stable.
+
+Read the existing `cursor.rs` to confirm the exact `visible` body and adapt.
 
 - [ ] **Step 2: `text_engine.rs::set_font_priorities`**
 
@@ -2327,17 +2381,15 @@ impl TextEngine {
         self.invalidate_glyph_cache();
     }
 
-    /// Clear all cached glyph atlas entries. Called by `set_font_priorities`
-    /// when the FontSystem changes; subsequent rasterize calls miss the cache
-    /// and re-shape.
+    /// Clear the cached glyph map. Called by `set_font_priorities` when the
+    /// FontSystem changes; subsequent `glyph_for` calls miss the cache and
+    /// re-shape.
+    ///
+    /// We intentionally do NOT clear the atlas textures themselves — atlas
+    /// slots are reused as new glyphs come in, and clearing the wgpu texture
+    /// would force a flicker on the next frame.
     pub fn invalidate_glyph_cache(&mut self) {
-        // Implementation: clear whatever HashMap or Vec the glyph cache lives in.
-        // Read existing glyph_cache field name from the file.
-        // self.glyph_cache.clear();
-        // self.mono_atlas.clear();   // NOTE: clearing the atlas may need to also
-        //                            //       reset the wgpu texture; verify.
-        // Simplest: reset the cache map; the atlas itself can stay (its slots
-        // get reused as new glyphs come in).
+        self.cache.clear();
     }
 }
 ```
@@ -2457,7 +2509,44 @@ For Task 9, pass an empty banner from `WindowApp::draw_redraw` (Task 7 hooked th
 
 - [ ] **Step 2: Build the banner rect + glyphs**
 
-In `Renderer::render`, after `selection_rects` is built (Task 8 / Stage 8) and before the existing dead-tab banner block, add:
+`TextEngine` does NOT have a `shape_line` / `shape_str` method — the existing API is `glyph_for(c: char) -> Option<GlyphRef>` (per-char). The Stage 7 tab-title path also iterates char-by-char. We follow that pattern.
+
+Add a free helper near the top of `render/mod.rs` (or in a new `render/banner.rs` if you prefer the separation):
+
+```rust
+/// Build glyph instances for a single line of banner text. Iterates char-by-
+/// char via `TextEngine::glyph_for` (the existing primitive) and lays them
+/// out left-to-right at `cell_w`-pixel pitch starting at `(start_x, start_y)`.
+fn build_banner_glyphs(
+    text: &str,
+    start_x: f32,
+    start_y: f32,
+    text_engine: &mut crate::render::text_engine::TextEngine,
+    fg_color: [f32; 4],
+    bg_color: [f32; 4],
+) -> Vec<crate::render::quad::QuadInstance> {
+    let (cell_w, _cell_h) = text_engine.cell_metrics();
+    let mut out = Vec::with_capacity(text.chars().count());
+    for (i, ch) in text.chars().enumerate() {
+        let Some(glyph) = text_engine.glyph_for(ch) else { continue };
+        let x = start_x + (i as u32 * cell_w) as f32;
+        out.push(crate::render::quad::QuadInstance::new_text(
+            x,
+            start_y,
+            cell_w as f32,
+            text_engine.cell_metrics().1 as f32,
+            &glyph,
+            fg_color,
+            bg_color,
+        ));
+    }
+    out
+}
+```
+
+The exact `QuadInstance` constructor name (`new_text` vs `new` vs another) depends on the existing API — read `render/quad.rs` for the actual signature; the existing tab-title path in `render/tabs.rs::push_text_glyphs` shows the pattern. Adapt.
+
+Then in `Renderer::render`, after `selection_rects` is built and before the existing dead-tab banner block, add:
 
 ```rust
         // Stage 9 config-error banner.
@@ -2472,13 +2561,14 @@ In `Renderer::render`, after `selection_rects` is built (Task 8 / Stage 8) and b
                 banner_height,
                 [0.40, 0.10, 0.10, 0.85],  // dark-red, 85% alpha
             );
-            // Glyph layout: render the banner text at (8.0, bar_h + 4.0).
             let text = error_banner.display_text();
-            let glyphs = self.text_engine.shape_line(
+            let glyphs = build_banner_glyphs(
                 &text,
-                (8.0, bar_h + 4.0),
-                surface_w - 16.0,
-                [1.0, 1.0, 1.0, 1.0],   // white text
+                8.0,
+                bar_h + 4.0,
+                &mut self.text_engine,
+                [1.0, 1.0, 1.0, 1.0],            // white fg
+                [0.40, 0.10, 0.10, 0.85],        // matches rect bg
             );
             (Some(rect), glyphs)
         } else {
@@ -2486,7 +2576,7 @@ In `Renderer::render`, after `selection_rects` is built (Task 8 / Stage 8) and b
         };
 ```
 
-NOTE: `text_engine.shape_line` (or whatever the existing method is called for shaping a single line) needs to be present. In Stage 7 it would have been used for tab titles / banner text. Reuse the same path. If not present as a public method, add a thin wrapper.
+If the banner text is wider than `surface_w - 16.0`, glyphs that fall off the right edge still render but get clipped by the wgpu scissor — for v1 that's acceptable; ellipsis truncation can be a Stage 10 polish.
 
 - [ ] **Step 3: Update offset bookkeeping**
 
@@ -2866,37 +2956,82 @@ pub enum DispatchEvent {
 }
 ```
 
-Find the OSC body dispatch (likely in a `flush_osc_body` or similar fn — look for where `1338;` or `133;` are matched). Add new arms for OSC 0 and OSC 2:
+Open `crates/vibeflow/src/session/osc.rs` and find the existing `fn handle_osc(body: &[u8]) -> OscOutcome` (around line 245). The structure is:
 
 ```rust
-        // OSC 0: set both window + icon title. We treat it as "set title".
-        if let Some(rest) = body.strip_prefix(b"0;") {
-            let title = String::from_utf8_lossy(rest).to_string();
-            let truncated = if title.len() > 1024 {
-                title.chars().take(1024).collect()
-            } else {
-                title
-            };
-            return Some(DispatchEvent::SetTitle(truncated));
-        }
-        // OSC 2: set window title only. Same handling.
-        if let Some(rest) = body.strip_prefix(b"2;") {
-            let title = String::from_utf8_lossy(rest).to_string();
-            let truncated = if title.len() > 1024 {
-                title.chars().take(1024).collect()
-            } else {
-                title
-            };
-            return Some(DispatchEvent::SetTitle(truncated));
-        }
-        // OSC 1: icon name only — silently ignore.
-        if body.starts_with(b"1;") {
-            return None;
-        }
-        // ... existing OSC 1338 / 133 handling continues below
+fn handle_osc(body: &[u8]) -> OscOutcome {
+    let Some(body_str) = std::str::from_utf8(body).ok() else {
+        return OscOutcome::Forward;
+    };
+    let (id, params) = body_str.split_once(';').unwrap_or((body_str, ""));
+    match id {
+        "1338" => { ... }
+        "133" => { ... }
+        _ => OscOutcome::Forward,
+    }
+}
 ```
 
-The exact integration point depends on the existing OSC dispatch structure. Read `osc.rs` to find where the body string is split into `<cmd>;<args>`.
+Add `"0" | "2"` and `"1"` arms in the `match id { ... }` block, BEFORE the catch-all `_ => OscOutcome::Forward,`:
+
+```rust
+        "0" | "2" => {
+            // OSC 0 sets both window + icon title; OSC 2 sets only window
+            // title. We don't distinguish icon from title — both update
+            // `TabLabel.title` via DispatchEvent::SetTitle. xterm caps title
+            // length at ~1024 chars; we follow that convention.
+            let title: String = if params.chars().count() > 1024 {
+                params.chars().take(1024).collect()
+            } else {
+                params.to_string()
+            };
+            OscOutcome::Event(DispatchEvent::SetTitle(title))
+        }
+        "1" => OscOutcome::Drop, // icon name only — silently ignore
+```
+
+CRITICAL: The existing test `dispatcher_passes_through_unknown_osc_intact` (around line 478 in `osc.rs`) uses `\x1b]0;hello world\x07` as its "unknown OSC" example. After this Step 1, OSC 0 is no longer unknown — it produces `SetTitle("hello world")` instead of `PassThrough(...)`. Update that test to use a genuinely unrecognized ID before this step compiles. See Step 1.5 below.
+
+- [ ] **Step 1.5: Update the pre-existing `dispatcher_passes_through_unknown_osc_intact` test**
+
+In `crates/vibeflow/src/session/osc.rs`, find the test (around line 478):
+
+```rust
+    #[test]
+    fn dispatcher_passes_through_unknown_osc_intact() {
+        // OSC 0 is the iTerm/xterm window-title sequence. We don't recognise
+        // it, so the original bytes (ESC ] 0;<title> BEL) must reach the
+        // terminal grid unchanged.
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]0;hello world\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::PassThrough(
+                b"\x1b]0;hello world\x07".to_vec()
+            )]
+        );
+    }
+```
+
+Replace the body to use OSC 999 (genuinely unrecognized):
+
+```rust
+    #[test]
+    fn dispatcher_passes_through_unknown_osc_intact() {
+        // Use a genuinely unrecognised OSC ID. Stage 9 added OSC 0/2 as the
+        // window-title sequence so they're no longer unknown — pick 999.
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]999;garbage\x07");
+        assert_eq!(
+            events,
+            vec![DispatchEvent::PassThrough(
+                b"\x1b]999;garbage\x07".to_vec()
+            )]
+        );
+    }
+```
+
+The semantic test (unrecognized OSC IDs reach the grid unchanged) is preserved; only the example ID changes. The `dispatcher_passes_unknown_osc_with_st_terminator_intact` test uses OSC 7 (`\x1b]7;file://example\x1b\\`) which remains unknown — leave it untouched.
 
 - [ ] **Step 2: Add OSC 0/2 unit tests**
 
@@ -3027,12 +3162,14 @@ Append to `mod tests` in `session.rs`:
         let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default())
             .expect("spawn");
         s.user_renamed = true;
-        s.label.title = "user_set".to_string();
+        s.set_title("user_set".to_string());
         s.restart().expect("restart");
         std::thread::sleep(std::time::Duration::from_millis(100));
-        assert!(!s.user_renamed);
-        // Title also reset to argv0 default.
-        assert_eq!(s.label().title, "sleep");
+        // restart() does *self = PtySession::spawn(...) using $SHELL (fallback "bash"),
+        // NOT "sleep" — the original argv is not preserved across restart.
+        // We assert: (a) user_renamed is reset (b) the user-set title is gone.
+        assert!(!s.user_renamed, "restart must clear user_renamed");
+        assert_ne!(s.label().title, "user_set", "restart must clear user-set title");
     }
 ```
 
@@ -3253,12 +3390,23 @@ git commit -m "feat(window): arrow + navigation keys → xterm ANSI sequences (T
 
 `RenameInputState` on `WindowApp`. Keyboard captured while renaming. Right-click on a tab body triggers rename. Tab render override draws the editable buffer + caret.
 
-- [ ] **Step 1: Add `RenameInputState` to `WindowApp`**
+- [ ] **Step 1: Add `RenameInputState` to `render/tabs.rs`** (NOT `window.rs` — see note below)
 
-Open `crates/vibeflow/src/window.rs`. Add the type (above `pub struct WindowApp`):
+`RenameInputState` is consumed by both `window.rs` (which owns the state) AND `render/tabs.rs` (which renders the buffer + caret in `push_text_glyphs`). If we put the type in `window.rs`, `render/tabs.rs` would need to import from `window.rs` — but `window.rs` already imports from `render::tabs`, so the import would be circular and won't compile.
+
+Define the type alongside the other rendering types in `render/tabs.rs`:
+
+Open `crates/vibeflow/src/render/tabs.rs`. Add the struct (alongside `RectInstance`, `TabBarLayout`, `TabBarHit`):
 
 ```rust
-/// State for an in-progress inline tab rename. None when not renaming.
+/// State for an in-progress inline tab rename. Owned by `WindowApp`; passed
+/// by reference into `push_text_glyphs` so the renamed tab renders the
+/// editable buffer + caret instead of the static label title.
+///
+/// Defined in `render::tabs` (not `window`) to avoid a circular module
+/// dependency: `window` already imports `render::tabs`, so `render::tabs`
+/// cannot import from `window`.
+#[derive(Debug, Clone)]
 pub struct RenameInputState {
     /// Index in `app.tabs()` of the tab being renamed.
     pub tab_idx: usize,
@@ -3269,6 +3417,12 @@ pub struct RenameInputState {
     /// Original title before rename, for Esc-cancel restore.
     pub original: String,
 }
+```
+
+In `crates/vibeflow/src/window.rs`, import it:
+
+```rust
+use crate::render::tabs::RenameInputState;
 ```
 
 Add field to `WindowApp`:
@@ -3299,7 +3453,7 @@ Append to `impl WindowApp`:
     fn commit_rename(&mut self) {
         let Some(rs) = self.rename_state.take() else { return };
         if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
-            s.label_mut().title = rs.buffer;
+            s.set_title(rs.buffer);
             s.user_renamed = true;
         }
         if let Some(window) = self.window.as_ref() { window.request_redraw(); }
@@ -3308,31 +3462,36 @@ Append to `impl WindowApp`:
     fn cancel_rename(&mut self) {
         let Some(rs) = self.rename_state.take() else { return };
         if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
-            s.label_mut().title = rs.original;
+            s.set_title(rs.original);
         }
         if let Some(window) = self.window.as_ref() { window.request_redraw(); }
     }
 ```
 
-Note: `s.label_mut() -> &mut TabLabel` is needed. Open `crates/vibeflow/src/session/session.rs` and add (in `impl PtySession`, near the existing `pub fn label(&self) -> &TabLabel`):
+Note: `s.set_title(String)` is a new convenience method that replaces only line 1 (title), keeping the existing subtitle. The existing `set_label(TabLabel)` replaces both lines. Add `set_title` to `crates/vibeflow/src/session/session.rs` (in `impl PtySession`, near the existing `pub fn set_label`):
 
 ```rust
-    pub fn label_mut(&mut self) -> &mut TabLabel {
-        &mut self.label
+    /// Replace only the title (line 1) of the label, preserving the current
+    /// subtitle. Used by the interactive rename UI which doesn't touch the
+    /// activity-driven subtitle.
+    pub fn set_title(&mut self, title: String) {
+        self.label.title = title;
     }
 ```
 
-- [ ] **Step 3: Wire `Shortcut::RenameTab` in `handle_shortcut`**
+- [ ] **Step 3: Replace the no-op `RenameTab` arm with the real implementation**
 
-In `WindowApp::handle_shortcut` (Stage 8 has the match block), add:
+Task 4 Step 1.5 added a no-op `Shortcut::RenameTab` arm in `WindowApp::handle_shortcut` to keep the match exhaustive. Replace it:
 
 ```rust
-        match shortcut {
-            // ... existing arms
+            // Was (Task 4):
+            //   Shortcut::RenameTab => {
+            //       tracing::trace!("RenameTab shortcut ignored (Task 13 wires it)");
+            //   }
+            // Becomes:
             Shortcut::RenameTab => {
                 self.start_rename(self.app.active());
             }
-        }
 ```
 
 - [ ] **Step 4: Capture keyboard while renaming**
@@ -3349,61 +3508,80 @@ In `WindowEvent::KeyboardInput`, AT THE TOP (before `match_shortcut` dispatch an
                 }
 ```
 
-Add the `handle_rename_keyboard` method:
+Add the `handle_rename_keyboard` method using a "decide → apply outside" pattern. `drop(rs)` does NOT release the borrow on `self` (the `as_mut` borrow lives for the entire `if let` arm), so we must collect the desired action into a local enum, let the borrow on `self.rename_state` end, then apply the action with a fresh `&mut self`:
 
 ```rust
+    /// Outcome of a single keypress while a rename is in progress.
+    enum RenameAction {
+        None,
+        Commit,
+        Cancel,
+        // For all the in-buffer edits, we apply them inside the rename_state
+        // borrow; nothing escapes.
+        Edited,
+    }
+
     fn handle_rename_keyboard(&mut self, key: &winit::keyboard::Key) {
         use winit::keyboard::{Key, NamedKey};
         let Some(rs) = self.rename_state.as_mut() else { return };
-        match key {
-            Key::Named(NamedKey::Enter) => {
-                drop(rs);
-                self.commit_rename();
-            }
-            Key::Named(NamedKey::Escape) => {
-                drop(rs);
-                self.cancel_rename();
-            }
+        let action = match key {
+            Key::Named(NamedKey::Enter) => RenameAction::Commit,
+            Key::Named(NamedKey::Escape) => RenameAction::Cancel,
             Key::Named(NamedKey::Backspace) => {
                 if rs.cursor_pos > 0 {
                     let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
                     rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
                     rs.cursor_pos = new_pos;
                 }
+                RenameAction::Edited
             }
             Key::Named(NamedKey::Delete) => {
                 if rs.cursor_pos < rs.buffer.len() {
                     let new_end = next_grapheme(&rs.buffer, rs.cursor_pos);
                     rs.buffer.replace_range(rs.cursor_pos..new_end, "");
                 }
+                RenameAction::Edited
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 if rs.cursor_pos > 0 {
                     rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
                 }
+                RenameAction::Edited
             }
             Key::Named(NamedKey::ArrowRight) => {
                 if rs.cursor_pos < rs.buffer.len() {
                     rs.cursor_pos = next_grapheme(&rs.buffer, rs.cursor_pos);
                 }
+                RenameAction::Edited
             }
             Key::Named(NamedKey::Home) => {
                 rs.cursor_pos = 0;
+                RenameAction::Edited
             }
             Key::Named(NamedKey::End) => {
                 rs.cursor_pos = rs.buffer.len();
+                RenameAction::Edited
             }
             Key::Character(c) => {
                 rs.buffer.insert_str(rs.cursor_pos, c.as_str());
                 rs.cursor_pos += c.as_str().len();
+                RenameAction::Edited
             }
             // Ignore modifier-only keys (Ctrl/Shift/Alt/Super alone), F-keys, etc.
-            _ => {}
+            _ => RenameAction::None,
+        };
+        // The `as_mut` borrow on `self.rename_state` ends when `rs` goes out
+        // of scope (end of statement above). Now we can call `&mut self`
+        // methods like `commit_rename` / `cancel_rename`.
+        match action {
+            RenameAction::Commit => self.commit_rename(),
+            RenameAction::Cancel => self.cancel_rename(),
+            RenameAction::Edited | RenameAction::None => {}
         }
     }
 ```
 
-The `prev_grapheme` / `next_grapheme` helpers walk grapheme boundaries. Use the `unicode-segmentation` crate (already a transitive dep through cosmic-text — verify):
+The `prev_grapheme` / `next_grapheme` helpers walk grapheme boundaries. Use the `unicode-segmentation` crate (already a transitive dep through cosmic-text — verify with `grep unicode-segmentation crates/vibeflow/Cargo.lock`):
 
 ```rust
 fn prev_grapheme(s: &str, pos: usize) -> usize {
@@ -3430,7 +3608,9 @@ If `unicode-segmentation` is NOT a transitive dep, add it to `Cargo.toml`:
 unicode-segmentation = "1"
 ```
 
-The drop(rs) calls in handle_rename_keyboard are because we then call self.commit_rename / cancel_rename which need &mut self. The borrow checker may need restructuring — alternative: split the match into "decide what to do" + "apply outside":
+The two-phase pattern above is necessary because of Rust's borrow checker — `dropping` an `&mut` reference does NOT release the underlying borrow until the borrow's scope ends. Trying to call `self.commit_rename()` while still inside the `if let Some(rs) = self.rename_state.as_mut()` arm fails with "cannot borrow `self` as mutable more than once at a time."
+
+ALTERNATIVE APPROACH (only if the above proves awkward — keep as backup): split the match into "decide what to do" + "apply outside" with a closure:
 
 ```rust
     fn handle_rename_keyboard(&mut self, key: &winit::keyboard::Key) {
@@ -3518,14 +3698,34 @@ NOTE: The existing Stage 8 left-click code is already complex; this extension is
 
 - [ ] **Step 6: Render override in `tabs.rs::push_text_glyphs`**
 
-Open `crates/vibeflow/src/render/tabs.rs`. Find `push_text_glyphs`. Update the signature:
+Open `crates/vibeflow/src/render/tabs.rs`. The `RenameInputState` type was defined in this same file in Step 1, so no cross-module import is needed.
+
+`push_text_glyphs` is a private free function in `tabs.rs` (around line 765); it's called by `TabBarRenderer::build_glyphs` (pub, around line 658), which is called by `Renderer::render` in `render/mod.rs`. Both signatures need the `rename_state` parameter threaded through.
+
+Update `push_text_glyphs` signature:
 
 ```rust
-pub fn push_text_glyphs(
+fn push_text_glyphs(
     // ... existing parameters
-    rename_state: Option<&crate::window::RenameInputState>,
+    rename_state: Option<&RenameInputState>,
 )
 ```
+
+Update `TabBarRenderer::build_glyphs` signature to forward it:
+
+```rust
+pub fn build_glyphs(
+    // ... existing parameters
+    rename_state: Option<&RenameInputState>,
+    // ... existing trailing params
+) -> ... {
+    // ... existing code
+    push_text_glyphs(/* existing args */, rename_state);
+    // ...
+}
+```
+
+Update the call site in `crates/vibeflow/src/render/mod.rs`'s `Renderer::render` method to pass `rename_state` (a parameter on `render` added in Task 9 / Task 13 Step 7 below).
 
 Inside the per-tab loop, when iterating tab `idx`, check:
 
@@ -3560,7 +3760,7 @@ Expected: 234 default + 15 ignored. Task 13 doesn't add new tests (the rename be
 
 If `unicode-segmentation` is missing as a transitive dep, the `cargo check` will say "unresolved import `unicode_segmentation`" — add to Cargo.toml.
 
-If borrow-checker fails on `s.label_mut()` while `tabs_mut` is borrowed — the let-else pattern from Stage 8 (active-binding-first) applies here too:
+If borrow-checker fails on `s.set_title(...)` while `tabs_mut` is borrowed — the let-else pattern from Stage 8 (active-binding-first) applies here too:
 
 ```rust
         let active = self.app.active();
