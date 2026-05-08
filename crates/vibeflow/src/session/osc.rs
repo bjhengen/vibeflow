@@ -51,6 +51,9 @@ pub enum DispatchEvent {
     AiState(Frame),
     /// An OSC 133 prompt marker was identified.
     Prompt(PromptMarker),
+    /// OSC 0 (set window+icon title) or OSC 2 (set window title only).
+    /// Carries the title payload as UTF-8. Stage 9.
+    SetTitle(String),
     /// Bytes that should be forwarded to the terminal grid (alacritty_terminal in
     /// future stages). Includes any unknown OSC sequences (their original bytes,
     /// terminator and all) plus all non-OSC bytes.
@@ -249,6 +252,19 @@ fn handle_osc(body: &[u8]) -> OscOutcome {
     };
     let (id, params) = body_str.split_once(';').unwrap_or((body_str, ""));
     match id {
+        "0" | "2" => {
+            // OSC 0 sets both window + icon title; OSC 2 sets only window
+            // title. We don't distinguish icon from title — both update
+            // `TabLabel.title` via DispatchEvent::SetTitle. xterm caps title
+            // length at ~1024 chars; we follow that convention.
+            let title: String = if params.chars().count() > 1024 {
+                params.chars().take(1024).collect()
+            } else {
+                params.to_string()
+            };
+            OscOutcome::Event(DispatchEvent::SetTitle(title))
+        }
+        "1" => OscOutcome::Drop, // icon name only — silently ignore
         "1338" => {
             let mut full = Vec::with_capacity(body.len() + 3);
             full.push(0x1B);
@@ -476,16 +492,13 @@ mod tests {
 
     #[test]
     fn dispatcher_passes_through_unknown_osc_intact() {
-        // OSC 0 is the iTerm/xterm window-title sequence. We don't recognise
-        // it, so the original bytes (ESC ] 0;<title> BEL) must reach the
-        // terminal grid unchanged.
+        // Use a genuinely unrecognised OSC ID. Stage 9 added OSC 0/2 as the
+        // window-title sequence so they're no longer unknown — pick 999.
         let mut d = OscDispatcher::new();
-        let events = d.feed(b"\x1b]0;hello world\x07");
+        let events = d.feed(b"\x1b]999;garbage\x07");
         assert_eq!(
             events,
-            vec![DispatchEvent::PassThrough(
-                b"\x1b]0;hello world\x07".to_vec()
-            )]
+            vec![DispatchEvent::PassThrough(b"\x1b]999;garbage\x07".to_vec())]
         );
     }
 
@@ -542,6 +555,62 @@ mod tests {
             events,
             vec![DispatchEvent::AiState(Frame::new(State::Waiting))]
         );
+    }
+
+    #[test]
+    fn osc_0_emits_set_title() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]0;hello\x07");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            DispatchEvent::SetTitle(s) => assert_eq!(s, "hello"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc_2_emits_set_title() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]2;world\x07");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            DispatchEvent::SetTitle(s) => assert_eq!(s, "world"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc_0_with_embedded_semicolon_in_title() {
+        let mut d = OscDispatcher::new();
+        // OSC 0 has a single parameter — `;` chars after the first are part
+        // of the title.
+        let events = d.feed(b"\x1b]0;a;b;c\x07");
+        match &events[0] {
+            DispatchEvent::SetTitle(s) => assert_eq!(s, "a;b;c"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc_1_is_silently_ignored() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]1;icon\x07");
+        for ev in &events {
+            assert!(
+                !matches!(ev, DispatchEvent::SetTitle(_)),
+                "OSC 1 should not emit SetTitle, got {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn osc_0_with_st_terminator_works() {
+        let mut d = OscDispatcher::new();
+        let events = d.feed(b"\x1b]0;st_form\x1b\\");
+        match &events[0] {
+            DispatchEvent::SetTitle(s) => assert_eq!(s, "st_form"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
     }
 
     use proptest::prelude::*;

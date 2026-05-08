@@ -89,7 +89,7 @@ pub struct PtySession {
     /// Reader thread handle. Owned by the session; joined when `Drop` runs.
     reader_thread: Option<JoinHandle<()>>,
     /// Per-session OSC parser.
-    dispatcher: OscDispatcher,
+    pub(crate) dispatcher: OscDispatcher,
     /// Per-session VT/ANSI parser. Drives `term` when fed via `Processor::advance`.
     parser: Processor,
     /// Per-session terminal grid (alacritty_terminal). Source of truth for
@@ -108,6 +108,10 @@ pub struct PtySession {
     bell_pending: bool,
     /// Per-tab mouse-driven cell selection. Stage 8.
     pub selection: crate::render::selection::SelectionTracker,
+    /// True once the user has manually renamed via Ctrl+Shift+E or
+    /// right-click. Sticky for the life of this session — subsequent
+    /// OSC 0 / OSC 2 are ignored. Cleared on `restart()` (which does `*self = new_session`).
+    pub user_renamed: bool,
 }
 
 impl PtySession {
@@ -162,6 +166,7 @@ impl PtySession {
             label,
             bell_pending: false,
             selection: crate::render::selection::SelectionTracker::new(),
+            user_renamed: false,
         })
     }
 
@@ -220,6 +225,14 @@ impl PtySession {
                                     self.refresh_default_subtitle();
                                     events.push(SessionEvent::StateChanged(self.tracker.state()));
                                 }
+                            }
+                            DispatchEvent::SetTitle(title) => {
+                                if !self.user_renamed {
+                                    self.label.title = title;
+                                    // Subtitle stays tracker-driven; no
+                                    // refresh_default_subtitle() call here.
+                                }
+                                // else: silently dropped — user wins
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
@@ -736,5 +749,52 @@ mod tests {
         // Drop the session — its Drop impl (or the kill-on-drop the
         // child handle has) cleans up the spawned shell.
         drop(s);
+    }
+
+    #[test]
+    fn osc_0_updates_title_when_not_user_renamed() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        // Feed the OSC sequence directly to the dispatcher to simulate it arriving
+        // through the PTY. Handle the SetTitle event directly in the test.
+        for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                if !s.user_renamed {
+                    s.label.title = title;
+                }
+            }
+        }
+        assert_eq!(s.label().title, "new_title");
+    }
+
+    #[test]
+    fn osc_0_dropped_when_user_renamed() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.user_renamed = true;
+        for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
+            if let DispatchEvent::SetTitle(title) = ev {
+                if !s.user_renamed {
+                    s.label.title = title;
+                }
+            }
+        }
+        assert_eq!(s.label().title, "sleep"); // unchanged from default
+    }
+
+    #[test]
+    fn restart_resets_user_renamed() {
+        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        s.user_renamed = true;
+        s.set_label(TabLabel {
+            title: "user_set".to_string(),
+            subtitle: "custom".to_string(),
+        });
+        s.restart().expect("restart");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!s.user_renamed, "restart must clear user_renamed");
+        assert_ne!(
+            s.label().title,
+            "user_set",
+            "restart must clear user-set title"
+        );
     }
 }
