@@ -445,7 +445,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
                 };
-                match renderer.render(term, &self.app) {
+                match renderer.render(term, &self.app, &self.error_banner) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                         // Surface needs to be re-created with current config.
@@ -502,6 +502,20 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     "key event"
                 );
                 if event.state != ElementState::Pressed {
+                    return;
+                }
+                // Esc dismisses the config-error banner (Stage 9) before any
+                // other handling so the Escape byte is not forwarded to the PTY
+                // while the banner is visible.
+                if matches!(
+                    event.logical_key,
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+                ) && self.error_banner.visible()
+                {
+                    self.error_banner.dismiss();
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 // Shortcut dispatch FIRST. If the combo matches, suppress the

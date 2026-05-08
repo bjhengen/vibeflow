@@ -240,6 +240,7 @@ impl Renderer {
         &mut self,
         term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
         app: &crate::app::App,
+        error_banner: &crate::config::error_banner::ErrorBannerState,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
@@ -308,6 +309,34 @@ impl Renderer {
         let tab_glyphs =
             self.tab_bar
                 .build_glyphs(app, &layout, &mut self.text_engine, &self.indicator_colors);
+
+        // Stage 9 config-error banner. Left-aligned at x=8, dark-red bg.
+        let config_banner_h = (cell_h as f32) * 1.5;
+        let config_banner_bg: [f32; 4] = [0.40, 0.10, 0.10, 0.85];
+        let config_banner_fg: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+        let (config_banner_rect, config_banner_glyphs) = if error_banner.visible() {
+            let rect = crate::render::tabs::RectInstance::new(
+                0.0,
+                layout.bar_height_px as f32,
+                surface_size.0 as f32,
+                config_banner_h,
+                config_banner_bg,
+            );
+            let text = error_banner.display_text();
+            let glyphs = crate::render::quad::build_config_banner_instances(
+                &text,
+                &mut self.text_engine,
+                cell_w,
+                cell_h,
+                layout.bar_height_px,
+                config_banner_fg,
+                config_banner_bg,
+            );
+            (Some(rect), glyphs)
+        } else {
+            (None, Vec::new())
+        };
+
         let banner_quads = banner_glyph_count.map(|count| {
             crate::render::quad::build_banner_instances(
                 BANNER_TEXT,
@@ -353,14 +382,18 @@ impl Renderer {
         let cell_count = cell_instances.len() as u32;
         let tab_glyph_offset = cell_count;
         let tab_glyph_count = tab_glyphs.len() as u32;
-        let banner_glyph_offset = tab_glyph_offset + tab_glyph_count;
+        let config_banner_glyph_offset = tab_glyph_offset + tab_glyph_count;
+        let config_banner_glyph_count = config_banner_glyphs.len() as u32;
+        let banner_glyph_offset = config_banner_glyph_offset + config_banner_glyph_count;
         let banner_glyph_count = banner_quads.as_ref().map_or(0, |v| v.len()) as u32;
         let total_quads = banner_glyph_offset + banner_glyph_count;
 
         let tab_rect_count = tab_rects.len() as u32;
         let selection_rect_offset = tab_rect_count;
         let selection_rect_count = selection_rects.len() as u32;
-        let banner_rect_offset = selection_rect_offset + selection_rect_count;
+        let config_banner_rect_offset = selection_rect_offset + selection_rect_count;
+        let config_banner_rect_count = u32::from(config_banner_rect.is_some());
+        let banner_rect_offset = config_banner_rect_offset + config_banner_rect_count;
         let banner_rect_count = u32::from(banner_rect.is_some());
         let bell_rect_offset = banner_rect_offset + banner_rect_count;
         let bell_rect_count = u32::from(bell_rect.is_some());
@@ -369,6 +402,7 @@ impl Renderer {
         let mut all_quads = Vec::with_capacity(total_quads as usize);
         all_quads.extend_from_slice(&cell_instances);
         all_quads.extend_from_slice(&tab_glyphs);
+        all_quads.extend_from_slice(&config_banner_glyphs);
         if let Some(b) = &banner_quads {
             all_quads.extend_from_slice(b);
         }
@@ -376,6 +410,9 @@ impl Renderer {
         let mut all_rects = Vec::with_capacity(total_rects as usize);
         all_rects.extend_from_slice(&tab_rects);
         all_rects.extend_from_slice(&selection_rects);
+        if let Some(r) = config_banner_rect {
+            all_rects.push(r);
+        }
         if let Some(r) = banner_rect {
             all_rects.push(r);
         }
@@ -445,12 +482,20 @@ impl Renderer {
 
             // ---- Tab bar text pass ----
             self.quad_pipeline
-                .draw_range(&mut pass, tab_glyph_offset..banner_glyph_offset);
+                .draw_range(&mut pass, tab_glyph_offset..config_banner_glyph_offset);
 
             // ---- Selection highlight rects ----
             if selection_rect_count > 0 {
                 self.tab_bar_pipeline
-                    .draw_range(&mut pass, selection_rect_offset..banner_rect_offset);
+                    .draw_range(&mut pass, selection_rect_offset..config_banner_rect_offset);
+            }
+
+            // ---- Stage 9 config-error banner ----
+            if config_banner_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, config_banner_rect_offset..banner_rect_offset);
+                self.quad_pipeline
+                    .draw_range(&mut pass, config_banner_glyph_offset..banner_glyph_offset);
             }
 
             // ---- Dead-tab banner ----
