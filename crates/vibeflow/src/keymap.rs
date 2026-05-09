@@ -19,6 +19,9 @@ pub enum Shortcut {
     Paste,
     /// Stage 9: open the inline rename input on the active tab.
     RenameTab,
+    /// Stage 10: select the entire grid buffer (including scrollback). Default
+    /// binding is Ctrl+Shift+A; wired to a real handler in Task 8.
+    SelectAll,
 }
 
 /// Keyed lookup table. Constructed via `ShortcutTable::with_default_bindings()`
@@ -129,6 +132,13 @@ impl ShortcutTable {
                     ),
                     (ModifiersState::empty(), ChordKeyDisc::Function(2)),
                 ],
+            ),
+            (
+                Shortcut::SelectAll,
+                &[(
+                    ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                    ChordKeyDisc::Char('a'),
+                )],
             ),
         ];
         let mut by_chord = HashMap::new();
@@ -425,8 +435,16 @@ mod tests {
     #[test]
     fn shortcut_table_default_has_all_actions() {
         let t = ShortcutTable::with_default_bindings();
-        // 8 distinct actions × 2 chord aliases = 16 entries.
-        assert_eq!(t.by_chord.len(), 16);
+        // 8 original actions × 2 chord aliases = 16 entries,
+        // + 1 for SelectAll (Ctrl+Shift+A only) = 17.
+        assert_eq!(t.by_chord.len(), 17);
+    }
+
+    #[test]
+    fn ctrl_shift_a_maps_to_select_all() {
+        let table = ShortcutTable::with_default_bindings();
+        let action = table.lookup(&ch("a"), mods(true, true, false, false));
+        assert_eq!(action, Some(Shortcut::SelectAll));
     }
 
     #[test]

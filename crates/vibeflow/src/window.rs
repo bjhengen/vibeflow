@@ -155,9 +155,92 @@ pub struct WindowApp {
     config_path: std::path::PathBuf,
     /// Stage 9: in-progress inline rename of a tab title. None when not renaming.
     rename_state: Option<RenameInputState>,
+    /// Stage 10: open right-click context menu, if any. At most one open.
+    context_menu: Option<crate::render::context_menu::ContextMenuState>,
 }
 
 impl WindowApp {
+    fn activate_focused_menu_item(&mut self) {
+        let Some(menu) = self.context_menu.take() else {
+            return;
+        };
+        let Some(item) = menu.items.get(menu.focused) else {
+            return;
+        };
+        if !item.enabled || matches!(item.kind, crate::render::context_menu::ItemKind::Separator) {
+            // Re-arm: defensive — should never happen if focus invariants hold.
+            return;
+        }
+        let action = item.action;
+        let target_idx = menu.target_idx;
+        self.dispatch_menu_action(action, target_idx);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn dispatch_menu_action(
+        &mut self,
+        action: crate::render::context_menu::MenuAction,
+        target_idx: Option<usize>,
+    ) {
+        use crate::render::context_menu::MenuAction;
+        match action {
+            MenuAction::Shortcut(shortcut) => {
+                // For tab-menu actions that target a specific tab, switch
+                // active to it first so existing handlers (which key off
+                // `App::active()`) operate against the right tab. The Stage 9
+                // rename for tab N is the canonical case.
+                if let Some(idx) = target_idx {
+                    self.app.set_active(idx);
+                }
+                self.handle_shortcut(shortcut);
+            }
+            MenuAction::PastePrimary => {
+                self.handle_paste_primary();
+            }
+            MenuAction::ClearBuffer => {
+                let target = target_idx.unwrap_or_else(|| self.app.active());
+                if let Some(s) = self.app.tabs_mut().get_mut(target) {
+                    let _ = s.send_input(&[0x0c]);
+                }
+            }
+            MenuAction::CloseOtherTabs => {
+                let target = target_idx.unwrap_or_else(|| self.app.active());
+                // Close from end to start so indices stay stable for `target`.
+                let mut idx = self.app.tabs().len();
+                while idx > 0 {
+                    idx -= 1;
+                    if idx != target {
+                        self.app.close_tab(idx);
+                    }
+                }
+                // After closing, the surviving tab is at index 0.
+                if !self.app.tabs().is_empty() {
+                    self.app.set_active(0);
+                }
+            }
+            MenuAction::OpenConfig => {
+                let path = self.config_path.clone();
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&path)
+                    .spawn()
+                    .map_err(|e| {
+                        tracing::warn!("xdg-open {} failed: {e}", path.display());
+                    });
+            }
+            MenuAction::OpenRepoUrl => {
+                const REPO_URL: &str = "https://github.com/bjhengen/vibeflow";
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(REPO_URL)
+                    .spawn()
+                    .map_err(|e| {
+                        tracing::warn!("xdg-open {REPO_URL} failed: {e}");
+                    });
+            }
+        }
+    }
+
     /// Build a `WindowApp` with no window and no tabs. Call
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
@@ -190,6 +273,7 @@ impl WindowApp {
             error_banner,
             config_path,
             rename_state: None,
+            context_menu: None,
         }
     }
 
@@ -274,6 +358,7 @@ impl WindowApp {
                 }
             }
             TabBarHit::TabBody(idx) => {
+                self.context_menu = None;
                 self.app.set_active(idx);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -281,6 +366,10 @@ impl WindowApp {
             }
             TabBarHit::TabClose(idx) => {
                 self.app.close_tab(idx);
+                // Stage 10: dismiss context menu if one is open when a tab closes.
+                if self.context_menu.is_some() {
+                    self.context_menu = None;
+                }
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -301,6 +390,10 @@ impl WindowApp {
             }
             Shortcut::CloseTab => {
                 self.app.close_tab(self.app.active());
+                // Stage 10: dismiss context menu when a tab closes.
+                if self.context_menu.is_some() {
+                    self.context_menu = None;
+                }
             }
             Shortcut::NextTab => self.app.cycle_active(1),
             Shortcut::PrevTab => self.app.cycle_active(-1),
@@ -313,6 +406,17 @@ impl WindowApp {
             Shortcut::Paste => self.handle_paste(),
             Shortcut::RenameTab => {
                 self.start_rename(self.app.active());
+            }
+            Shortcut::SelectAll => {
+                let active = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active) else {
+                    return;
+                };
+                let (sel, term) = s.split_borrow_mouse();
+                sel.select_all(term);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
         }
     }
@@ -345,6 +449,14 @@ impl WindowApp {
             ]);
             r.set_cursor_blink_ms(config.cursor.blink_ms);
             r.set_font_priorities(config.fonts.priority.clone());
+            r.set_menu_colors(crate::render::context_menu::MenuColors {
+                bg: config.colors.menu_bg,
+                border: config.colors.menu_border,
+                text: config.colors.menu_text,
+                text_disabled: config.colors.menu_text_disabled,
+                shortcut: config.colors.menu_shortcut,
+                focus_bg: config.colors.menu_focus_bg,
+            });
         }
         // Rebuild the shortcut table from the bindings.
         self.shortcut_table = build_shortcut_table(&config.shortcuts);
@@ -387,6 +499,30 @@ impl WindowApp {
         }
     }
 
+    /// Paste the PRIMARY selection (X11 middle-click clipboard) into the active tab.
+    /// Called by both the `MouseButton::Middle` arm and `MenuAction::PastePrimary`.
+    fn handle_paste_primary(&mut self) {
+        let active = self.app.active();
+        let Some(s) = self.app.tabs_mut().get_mut(active) else {
+            return;
+        };
+        let bracketed = s
+            .term()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            if let Some(text) = clipboard.paste_primary() {
+                if bracketed {
+                    let _ = s.send_input(b"\x1b[200~");
+                    let _ = s.send_input(text.as_bytes());
+                    let _ = s.send_input(b"\x1b[201~");
+                } else {
+                    let _ = s.send_input(text.as_bytes());
+                }
+            }
+        }
+    }
+
     fn start_rename(&mut self, tab_idx: usize) {
         let title = match self.app.tabs().get(tab_idx) {
             Some(s) => s.label().title.clone(),
@@ -423,6 +559,78 @@ impl WindowApp {
         if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
             s.set_title(rs.original);
         }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    /// Open a context menu anchored at (px_x, px_y). `target_idx` is `Some` for
+    /// tab menus (set to the tab the user right-clicked) and `None` for grid
+    /// menus (action targets the active tab).
+    fn open_context_menu(&mut self, anchor: (f32, f32), target_idx: Option<usize>) {
+        use crate::render::context_menu::{self, ContextMenuState, MenuFontMetrics, MenuLayout};
+
+        // If a rename is in progress, commit it before opening the menu.
+        if self.rename_state.is_some() {
+            self.commit_rename();
+        }
+
+        // Build items based on context.
+        let items = match target_idx {
+            Some(idx) => {
+                // PtySession exposes `is_alive()` (not `is_dead`). Negate.
+                let is_dead = self
+                    .app
+                    .tabs()
+                    .get(idx)
+                    .map(|s| !s.is_alive())
+                    .unwrap_or(true);
+                let tab_count = self.app.tabs().len();
+                context_menu::tab_menu(idx, is_dead, tab_count)
+            }
+            None => {
+                let active = self.app.active();
+                let has_selection = self
+                    .app
+                    .tabs()
+                    .get(active)
+                    .and_then(|s| s.selection.current())
+                    .is_some();
+                context_menu::grid_menu(has_selection)
+            }
+        };
+        // Find the first enabled action for initial focus.
+        let focused = items
+            .iter()
+            .position(|item| matches!(item.kind, context_menu::ItemKind::Action) && item.enabled)
+            .unwrap_or(0);
+        // Compute layout. Font metrics come from the renderer (cell metrics).
+        // `Renderer::cell_pitch()` returns (cell_w, cell_h) in physical px.
+        let (cell_w, cell_h) = self
+            .renderer
+            .as_ref()
+            .map(|r| r.cell_pitch())
+            .unwrap_or((8, 16));
+        let font = MenuFontMetrics {
+            item_height_px: cell_h as f32 + 4.0,
+            char_width_px: cell_w as f32,
+        };
+        let window_size = self
+            .window
+            .as_ref()
+            .map(|w| {
+                let s = w.inner_size();
+                (s.width as f32, s.height as f32)
+            })
+            .unwrap_or((1024.0, 768.0));
+        let layout = MenuLayout::compute(&items, font, anchor, window_size);
+        self.context_menu = Some(ContextMenuState {
+            anchor,
+            items,
+            focused,
+            target_idx,
+            layout,
+        });
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -591,6 +799,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     &self.app,
                     &self.error_banner,
                     self.rename_state.as_ref(),
+                    self.context_menu.as_ref(),
                 ) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -612,6 +821,11 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 }
             }
             WindowEvent::Resized(new_size) => {
+                // Stage 10: a resize invalidates any open context menu (anchor
+                // coordinates shift and the hit regions would be stale).
+                if self.context_menu.is_some() {
+                    self.context_menu = None;
+                }
                 let cell_pitch = self.renderer.as_ref().map(|r| r.cell_pitch());
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(new_size.width, new_size.height);
@@ -649,6 +863,65 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 );
                 if event.state != ElementState::Pressed {
                     return;
+                }
+                // Stage 10: if a context menu is open, it gets first crack at
+                // keyboard input. Arrow keys navigate, Enter activates, Escape
+                // closes, bare modifier presses keep the menu alive, and any
+                // other typed key closes the menu and falls through to the grid.
+                if self.context_menu.is_some() {
+                    use winit::keyboard::{Key, NamedKey};
+                    if event.state == ElementState::Pressed {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::ArrowDown) => {
+                                if let Some(menu) = self.context_menu.as_mut() {
+                                    menu.focus_next();
+                                }
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                if let Some(menu) = self.context_menu.as_mut() {
+                                    menu.focus_prev();
+                                }
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                self.activate_focused_menu_item();
+                                return;
+                            }
+                            Key::Named(NamedKey::Escape) => {
+                                self.context_menu = None;
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            // Modifier-only presses keep the menu alive (per
+                            // Stage 8 lesson: bare modifiers are key events
+                            // too). Detect by checking that the key is one of
+                            // the modifier NamedKeys.
+                            Key::Named(
+                                NamedKey::Control
+                                | NamedKey::Shift
+                                | NamedKey::Alt
+                                | NamedKey::Super
+                                | NamedKey::Meta,
+                            ) => {
+                                // Don't close on modifier-only press.
+                            }
+                            _ => {
+                                // Any other typed key: close, then fall
+                                // through to normal handling so the keystroke
+                                // reaches the grid.
+                                self.context_menu = None;
+                            }
+                        }
+                    }
                 }
                 // Stage 9: while renaming a tab, capture all keystrokes.
                 if event.state == ElementState::Pressed && self.rename_state.is_some() {
@@ -710,6 +983,26 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let (px, py) = (position.x as u32, position.y as u32);
                 self.cursor_pos = Some((px, py));
 
+                // Stage 10: update hover focus when a context menu is open.
+                if let Some(menu) = self.context_menu.as_mut() {
+                    let cursor = (position.x as f32, position.y as f32);
+                    if let crate::render::context_menu::HitRegion::Inside(idx) =
+                        menu.layout.hit_test(cursor)
+                    {
+                        if matches!(
+                            menu.items[idx].kind,
+                            crate::render::context_menu::ItemKind::Action
+                        ) && menu.items[idx].enabled
+                            && menu.focused != idx
+                        {
+                            menu.focused = idx;
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                        }
+                    }
+                }
+
                 let Some(renderer) = self.renderer.as_ref() else {
                     return;
                 };
@@ -765,6 +1058,54 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let Some((px, py)) = self.cursor_pos else {
                     return;
                 };
+
+                // Stage 10 fix: when a context menu is open, intercept ALL
+                // left-button events FIRST — before tab-strip or grid routing.
+                // - Pressed: consume; do not propagate to selection.mouse_down
+                //   (otherwise drag_anchor gets set and mouse-move drags after
+                //   the menu dismisses, leaving the user in selection mode).
+                // - Released: hit-test the menu; Inside(enabled+Action)
+                //   activates; Outside dismisses; both consume the click.
+                // The menu's bbox can span both the tab-strip and grid areas
+                // (e.g., tab menus anchored within the tab strip), so this
+                // branch MUST run before the `py < bar_h` split.
+                if self.context_menu.is_some() && button == MouseButton::Left {
+                    if state == ElementState::Pressed {
+                        return;
+                    }
+                    if state == ElementState::Released {
+                        let cursor = (px as f32, py as f32);
+                        let menu = self.context_menu.as_ref().unwrap();
+                        match menu.layout.hit_test(cursor) {
+                            crate::render::context_menu::HitRegion::Inside(idx) => {
+                                let item = &menu.items[idx];
+                                if item.enabled
+                                    && matches!(
+                                        item.kind,
+                                        crate::render::context_menu::ItemKind::Action
+                                    )
+                                {
+                                    // Reuse the keyboard activation path with focused = clicked.
+                                    if let Some(menu) = self.context_menu.as_mut() {
+                                        menu.focused = idx;
+                                    }
+                                    self.activate_focused_menu_item();
+                                }
+                                // Disabled or separator: no-op (menu stays open).
+                                return;
+                            }
+                            crate::render::context_menu::HitRegion::Outside => {
+                                // Dismiss; consume the click.
+                                self.context_menu = None;
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // Resolve cell metrics.
                 let Some(renderer) = self.renderer.as_ref() else {
                     return;
@@ -777,23 +1118,39 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // in the tab bar and any non-Left buttons in the tab bar are
                 // ignored (no-op).
                 if py < bar_h {
-                    // Stage 9: right-click on a tab body opens rename.
+                    // Stage 10: right-click anywhere in the tab bar opens a context menu.
+                    // Hit-test determines whether to show a tab menu (click on a tab body)
+                    // or a grid menu (click in the gutters / empty area of the tab bar).
                     if state == ElementState::Released && button == MouseButton::Right {
-                        if let Some(renderer) = self.renderer.as_ref() {
-                            let (window_w, _) = renderer.surface_size();
-                            let (_, cell_h) = renderer.cell_pitch();
+                        let anchor = (px as f32, py as f32);
+                        let tab_idx = if let Some(r) = self.renderer.as_ref() {
+                            let (window_w, _) = r.surface_size();
+                            let (_, cell_h) = r.cell_pitch();
                             let layout = crate::render::tabs::TabBarLayout::compute(
                                 window_w,
                                 cell_h,
                                 self.app.tabs().len(),
                             );
+                            // Stage 9 used TabBarHit::TabBody; we mirror that pattern
+                            // but only care about the index, not the hit variant.
                             if let crate::render::tabs::TabBarHit::TabBody(idx) =
                                 layout.hit_test(px, py)
                             {
-                                self.start_rename(idx);
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        match tab_idx {
+                            Some(idx) => self.open_context_menu(anchor, Some(idx)),
+                            None => {
+                                // Click in tab-bar gutter → grid menu targeting active tab.
+                                self.open_context_menu(anchor, None);
                             }
                         }
-                        return;
+                        return; // consumed
                     }
                     // Existing Stage 8 release-left handler (preserve behavior):
                     if state == ElementState::Released && button == MouseButton::Left {
@@ -822,6 +1179,15 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     // Fall through to selection / mouse-mode logic.
                 }
 
+                // Stage 10: right-click in the grid area opens the grid context menu.
+                // We consume this before any mouse-mode routing so the right-click
+                // does not get forwarded to the PTY as a mouse event.
+                if released && button == MouseButton::Right {
+                    let anchor = (px as f32, py as f32);
+                    self.open_context_menu(anchor, None);
+                    return; // consumed
+                }
+
                 let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
                     return;
@@ -844,22 +1210,10 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 };
 
                 // Stage 9: middle-click in NON-mouse-mode pastes PRIMARY.
+                // Let `s` go out of scope so `handle_paste_primary` can take `&mut self`.
                 if button == MouseButton::Middle && released && !mode_on {
-                    let bracketed = s
-                        .term()
-                        .mode()
-                        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
-                    if let Some(clipboard) = self.clipboard.as_mut() {
-                        if let Some(text) = clipboard.paste_primary() {
-                            if bracketed {
-                                let _ = s.send_input(b"\x1b[200~");
-                                let _ = s.send_input(text.as_bytes());
-                                let _ = s.send_input(b"\x1b[201~");
-                            } else {
-                                let _ = s.send_input(text.as_bytes());
-                            }
-                        }
-                    }
+                    let _ = s; // end the borrow
+                    self.handle_paste_primary();
                     return;
                 }
 
@@ -905,6 +1259,15 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                             }
                         }
                     }
+                }
+            }
+            // Stage 10: losing focus dismisses the context menu to avoid a
+            // stale overlay. The Focused arm didn't exist before Stage 10 so
+            // this is a new arm (not a modification of an existing handler).
+            WindowEvent::Focused(false) if self.context_menu.is_some() => {
+                self.context_menu = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
                 }
             }
             _ => {}
