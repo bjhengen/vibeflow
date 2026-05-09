@@ -2,8 +2,6 @@
 //! this module; input wiring lives in `window.rs`. No generalized overlay
 //! layer — see the Stage 10 design spec for the YAGNI rationale.
 
-use alacritty_terminal::index::{Column, Line, Point};
-
 use crate::keymap::Shortcut;
 
 /// Resolved menu color palette. Written by `Renderer::set_menu_colors` from
@@ -341,18 +339,6 @@ impl ContextMenuState {
         }
         None
     }
-}
-
-/// Used by `SelectionTracker::select_all` (Task 7) to bound the selection's
-/// upper end (`Point::new(Line(last_line), Column(last_col))`).
-///
-/// Re-exported only to keep the type bound visible in this module's docs. Not
-/// constructed here.
-#[allow(dead_code)]
-pub(crate) type _MenuPoint = Point;
-#[allow(dead_code)]
-pub(crate) fn _menu_pt(line: i32, col: usize) -> Point {
-    Point::new(Line(line), Column(col))
 }
 
 /// Build the rect instances for an open context menu — pushed onto the

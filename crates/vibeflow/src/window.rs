@@ -358,6 +358,7 @@ impl WindowApp {
                 }
             }
             TabBarHit::TabBody(idx) => {
+                self.context_menu = None;
                 self.app.set_active(idx);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
