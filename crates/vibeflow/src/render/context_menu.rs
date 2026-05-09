@@ -448,10 +448,6 @@ pub fn build_glyphs(
     let (cell_w, cell_h) = text_engine.cell_metrics();
     let cell_w_f = cell_w as f32;
     let cell_h_f = cell_h as f32;
-    // Fully-transparent background: the menu bg rect is already drawn by the
-    // rect pass. The glyph shader's mono path blends fg over bg so any nonzero
-    // bg would tint the area around each glyph — we want pure foreground.
-    let transparent_bg = [0.0f32; 4];
 
     for (idx, item) in state.items.iter().enumerate() {
         if !matches!(item.kind, ItemKind::Action) {
@@ -467,6 +463,15 @@ pub fn build_glyphs(
         } else {
             colors.text_disabled
         };
+
+        // Glyph anti-aliasing edges blend from item_bg toward fg.
+        // For focused action items, use focus_bg; otherwise use the menu bg.
+        let item_bg =
+            if idx == state.focused && item.enabled && matches!(item.kind, ItemKind::Action) {
+                colors.focus_bg
+            } else {
+                colors.bg
+            };
 
         // Label: left-aligned with a 14 px left inset.
         let label_x = rx + 14.0;
@@ -485,7 +490,7 @@ pub fn build_glyphs(
             (label_x, text_y),
             cell_w_f,
             label_fg,
-            transparent_bg,
+            item_bg,
             label_max_x,
         );
 
@@ -502,7 +507,7 @@ pub fn build_glyphs(
                 (hint_x, text_y),
                 cell_w_f,
                 colors.shortcut,
-                transparent_bg,
+                item_bg,
                 hint_max_x,
             );
         }
