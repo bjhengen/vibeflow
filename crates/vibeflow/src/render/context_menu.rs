@@ -192,17 +192,76 @@ pub struct MenuFontMetrics {
 }
 
 impl MenuLayout {
-    /// Computed at open and on resize; reused for hit-testing each frame.
+    /// Pure-data layout computation. Padding constants, separator height, and
+    /// gutter are stable across themes — colors are decoupled.
     pub fn compute(
-        _items: &[MenuItem],
-        _font: MenuFontMetrics,
-        _anchor: (f32, f32),
-        _window_size: (f32, f32),
+        items: &[MenuItem],
+        font: MenuFontMetrics,
+        anchor: (f32, f32),
+        window_size: (f32, f32),
     ) -> Self {
+        const VPAD: f32 = 8.0;
+        const GUTTER: f32 = 32.0;
+        const MIN_WIDTH: f32 = 220.0;
+        const SEPARATOR_H: f32 = 1.0;
+
+        // Width: max(label + hint + gutter), clamped to floor.
+        let mut max_text_w = 0.0_f32;
+        for item in items {
+            if matches!(item.kind, ItemKind::Separator) {
+                continue;
+            }
+            let label_w = item.label.chars().count() as f32 * font.char_width_px;
+            let hint_w = item
+                .shortcut_hint
+                .map(|h| h.chars().count() as f32 * font.char_width_px)
+                .unwrap_or(0.0);
+            max_text_w = max_text_w.max(label_w + hint_w);
+        }
+        let width = (max_text_w + GUTTER).max(MIN_WIDTH);
+
+        // Item rects + total height accumulator.
+        let mut item_rects = Vec::with_capacity(items.len());
+        let mut y_cursor = anchor.1 + VPAD;
+        let item_anchor_x = anchor.0;
+        for item in items {
+            let h = match item.kind {
+                ItemKind::Action => font.item_height_px,
+                ItemKind::Separator => SEPARATOR_H,
+            };
+            item_rects.push((item_anchor_x, y_cursor, width, h));
+            y_cursor += h;
+        }
+        let height = (y_cursor - anchor.1) + VPAD;
+
+        // Anchor flips. Compute desired (x, y), flip if overflow, then clamp.
+        let mut x = anchor.0;
+        let mut y = anchor.1;
+        if x + width > window_size.0 {
+            x = anchor.0 - width;
+        }
+        if y + height > window_size.1 {
+            y = anchor.1 - height;
+        }
+        if x < 0.0 {
+            x = 0.0;
+        }
+        if y < 0.0 {
+            y = 0.0;
+        }
+
+        // If we shifted x or y, slide item_rects to match.
+        let dx = x - anchor.0;
+        let dy = (y + VPAD) - (anchor.1 + VPAD); // = y - anchor.1
+        let item_rects: Vec<Rect> = item_rects
+            .into_iter()
+            .map(|(rx, ry, rw, rh)| (rx + dx, ry + dy, rw, rh))
+            .collect();
+
         Self {
-            bbox: (0.0, 0.0, 0.0, 0.0),
-            item_rects: Vec::new(),
-        } // implemented in Task 4
+            bbox: (x, y, width, height),
+            item_rects,
+        }
     }
 
     pub fn hit_test(&self, _cursor: (f32, f32)) -> HitRegion {
@@ -392,5 +451,133 @@ mod tests {
         assert_eq!(by_label("Clear Buffer").shortcut_hint, None);
         assert_eq!(by_label("Open Config…").shortcut_hint, None);
         assert_eq!(by_label("About vibeflow").shortcut_hint, None);
+    }
+
+    // ---- MenuLayout::compute ---------------------------------------------
+
+    fn metrics() -> MenuFontMetrics {
+        // 22 px tall items, 8 px wide chars (round numbers for assertions).
+        MenuFontMetrics {
+            item_height_px: 22.0,
+            char_width_px: 8.0,
+        }
+    }
+
+    fn long_items() -> Vec<MenuItem> {
+        // Mix of action items and separators, with one wide label to drive
+        // the width clamp away from the floor.
+        vec![
+            MenuItem {
+                label: "A_very_wide_action_label_for_width",
+                shortcut_hint: Some("Ctrl+Shift+E"),
+                action: MenuAction::Shortcut(Shortcut::RenameTab),
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+            MenuItem::separator(),
+            MenuItem {
+                label: "Short",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+        ]
+    }
+
+    fn short_items() -> Vec<MenuItem> {
+        // All labels < 220 px to exercise the width floor clamp.
+        vec![
+            MenuItem {
+                label: "Hi",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+            MenuItem {
+                label: "Yo",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+        ]
+    }
+
+    #[test]
+    fn layout_width_clamps_to_min_220() {
+        let layout = MenuLayout::compute(&short_items(), metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        let (_, _, w, _) = layout.bbox;
+        assert!(w >= 220.0, "width {w} < min 220");
+    }
+
+    #[test]
+    fn layout_width_grows_for_long_items() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        let (_, _, w, _) = layout.bbox;
+        // Wide label is 33 chars × 8 px = 264 px; shortcut hint is 12 chars × 8 = 96; gutter 32 → ~392 px total.
+        assert!(w > 300.0, "expected wide menu, got {w}");
+    }
+
+    #[test]
+    fn layout_height_sums_items_and_padding() {
+        let items = long_items(); // 2 actions + 1 separator
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        let (_, _, _, h) = layout.bbox;
+        // 2 * 22 (actions) + 1 * 1 (separator) + 8 + 8 (top/bottom pad) = 61.
+        assert_eq!(h, 61.0);
+    }
+
+    #[test]
+    fn layout_anchors_at_click_when_room_below_right() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (50.0, 60.0), (1000.0, 1000.0));
+        let (x, y, _, _) = layout.bbox;
+        assert_eq!((x, y), (50.0, 60.0));
+    }
+
+    #[test]
+    fn layout_flips_horizontally_at_right_edge() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (980.0, 10.0), (1000.0, 1000.0));
+        let (x, _, w, _) = layout.bbox;
+        assert!(x < 980.0, "expected horizontal flip; bbox.x={x}");
+        assert!(x + w <= 1000.0, "right edge {} > window 1000", x + w);
+    }
+
+    #[test]
+    fn layout_flips_vertically_at_bottom_edge() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 990.0), (1000.0, 1000.0));
+        let (_, y, _, h) = layout.bbox;
+        assert!(y < 990.0, "expected vertical flip; bbox.y={y}");
+        assert!(y + h <= 1000.0, "bottom {} > window 1000", y + h);
+    }
+
+    #[test]
+    fn layout_clamps_to_zero_when_window_smaller_than_menu() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (5.0, 5.0), (50.0, 50.0));
+        let (x, y, _, _) = layout.bbox;
+        assert_eq!((x, y), (0.0, 0.0), "expected (0,0) clamp on tiny window");
+    }
+
+    #[test]
+    fn layout_item_rects_align_with_bbox() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        assert_eq!(layout.item_rects.len(), items.len());
+        let (bx, by, bw, _) = layout.bbox;
+        // First item starts after the 8 px top padding.
+        let (ix, iy, iw, ih) = layout.item_rects[0];
+        assert_eq!(ix, bx);
+        assert_eq!(iy, by + 8.0);
+        assert_eq!(iw, bw);
+        assert_eq!(ih, 22.0); // an action item
+                              // Separator's height is 1 px.
+        let (_, _, _, sep_h) = layout.item_rects[1];
+        assert_eq!(sep_h, 1.0);
     }
 }
