@@ -1058,6 +1058,54 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let Some((px, py)) = self.cursor_pos else {
                     return;
                 };
+
+                // Stage 10 fix: when a context menu is open, intercept ALL
+                // left-button events FIRST — before tab-strip or grid routing.
+                // - Pressed: consume; do not propagate to selection.mouse_down
+                //   (otherwise drag_anchor gets set and mouse-move drags after
+                //   the menu dismisses, leaving the user in selection mode).
+                // - Released: hit-test the menu; Inside(enabled+Action)
+                //   activates; Outside dismisses; both consume the click.
+                // The menu's bbox can span both the tab-strip and grid areas
+                // (e.g., tab menus anchored within the tab strip), so this
+                // branch MUST run before the `py < bar_h` split.
+                if self.context_menu.is_some() && button == MouseButton::Left {
+                    if state == ElementState::Pressed {
+                        return;
+                    }
+                    if state == ElementState::Released {
+                        let cursor = (px as f32, py as f32);
+                        let menu = self.context_menu.as_ref().unwrap();
+                        match menu.layout.hit_test(cursor) {
+                            crate::render::context_menu::HitRegion::Inside(idx) => {
+                                let item = &menu.items[idx];
+                                if item.enabled
+                                    && matches!(
+                                        item.kind,
+                                        crate::render::context_menu::ItemKind::Action
+                                    )
+                                {
+                                    // Reuse the keyboard activation path with focused = clicked.
+                                    if let Some(menu) = self.context_menu.as_mut() {
+                                        menu.focused = idx;
+                                    }
+                                    self.activate_focused_menu_item();
+                                }
+                                // Disabled or separator: no-op (menu stays open).
+                                return;
+                            }
+                            crate::render::context_menu::HitRegion::Outside => {
+                                // Dismiss; consume the click.
+                                self.context_menu = None;
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // Resolve cell metrics.
                 let Some(renderer) = self.renderer.as_ref() else {
                     return;
@@ -1138,42 +1186,6 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     let anchor = (px as f32, py as f32);
                     self.open_context_menu(anchor, None);
                     return; // consumed
-                }
-
-                // Stage 10: left-click on an open context menu activates or dismisses it.
-                if self.context_menu.is_some()
-                    && state == ElementState::Released
-                    && button == MouseButton::Left
-                {
-                    let cursor = (px as f32, py as f32);
-                    let menu = self.context_menu.as_ref().unwrap();
-                    match menu.layout.hit_test(cursor) {
-                        crate::render::context_menu::HitRegion::Inside(idx) => {
-                            let item = &menu.items[idx];
-                            if item.enabled
-                                && matches!(
-                                    item.kind,
-                                    crate::render::context_menu::ItemKind::Action
-                                )
-                            {
-                                // Reuse the keyboard activation path with focused = clicked.
-                                if let Some(menu) = self.context_menu.as_mut() {
-                                    menu.focused = idx;
-                                }
-                                self.activate_focused_menu_item();
-                            }
-                            // Disabled or separator: no-op (menu stays open).
-                            return;
-                        }
-                        crate::render::context_menu::HitRegion::Outside => {
-                            // Dismiss; consume the click.
-                            self.context_menu = None;
-                            if let Some(window) = self.window.as_ref() {
-                                window.request_redraw();
-                            }
-                            return;
-                        }
-                    }
                 }
 
                 let active = self.app.active();
