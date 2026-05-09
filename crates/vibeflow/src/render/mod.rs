@@ -85,6 +85,9 @@ pub struct Renderer {
     /// Stage 9: configurable indicator-stripe palette. Order: [active_done, working, waiting, inactive_idle].
     /// `TabState::Active` always renders transparent (hardcoded).
     indicator_colors: [[f32; 4]; 4],
+    /// Stage 10: context-menu color palette. Written by `set_menu_colors` from hot-reload.
+    /// Read by `build_rects` (Task 13). Defaults to all-zeros until `apply_config` fires.
+    menu_colors: crate::render::context_menu::MenuColors,
 }
 
 impl Renderer {
@@ -199,6 +202,14 @@ impl Renderer {
                 defaults.colors.indicator_waiting,
                 defaults.colors.indicator_inactive,
             ],
+            menu_colors: crate::render::context_menu::MenuColors {
+                bg: defaults.colors.menu_bg,
+                border: defaults.colors.menu_border,
+                text: defaults.colors.menu_text,
+                text_disabled: defaults.colors.menu_text_disabled,
+                shortcut: defaults.colors.menu_shortcut,
+                focus_bg: defaults.colors.menu_focus_bg,
+            },
         })
     }
 
@@ -553,5 +564,11 @@ impl Renderer {
     /// Update the font priority order (takes effect on next startup).
     pub fn set_font_priorities(&mut self, priority: Vec<String>) {
         self.text_engine.set_font_priorities(priority);
+    }
+
+    /// Update the context-menu color palette (live). Called from
+    /// `WindowApp::apply_config` on every hot-reload.
+    pub fn set_menu_colors(&mut self, colors: crate::render::context_menu::MenuColors) {
+        self.menu_colors = colors;
     }
 }

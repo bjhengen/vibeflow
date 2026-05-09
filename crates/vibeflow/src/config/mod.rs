@@ -56,6 +56,12 @@ pub struct Colors {
     pub indicator_working: [f32; 4],
     pub indicator_waiting: [f32; 4],
     pub indicator_inactive: [f32; 4],
+    pub menu_bg: [f32; 4],
+    pub menu_border: [f32; 4],
+    pub menu_text: [f32; 4],
+    pub menu_text_disabled: [f32; 4],
+    pub menu_shortcut: [f32; 4],
+    pub menu_focus_bg: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -147,6 +153,12 @@ impl Config {
                 indicator_working: rgba(0x33, 0x99, 0xFF, 0xFF),
                 indicator_waiting: rgba(0xFF, 0xAA, 0x00, 0xFF),
                 indicator_inactive: rgba(0x88, 0x88, 0x88, 0xFF),
+                menu_bg: rgba(0x1a, 0x1a, 0x22, 0xFF),
+                menu_border: rgba(0x2a, 0x2a, 0x35, 0xFF),
+                menu_text: rgba(0xe8, 0xe8, 0xec, 0xFF),
+                menu_text_disabled: rgba(0x5a, 0x5a, 0x65, 0xFF),
+                menu_shortcut: rgba(0x99, 0x99, 0xa5, 0xFF),
+                menu_focus_bg: rgba(0x2a, 0x35, 0x50, 0xFF),
             },
             cursor: CursorConfig { blink_ms: 500 },
             fonts: FontsConfig {
@@ -440,6 +452,24 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
         &mut out.indicator_inactive,
         section.indicator_inactive,
     );
+    apply("menu_bg", &mut out.menu_bg, section.menu_bg);
+    apply("menu_border", &mut out.menu_border, section.menu_border);
+    apply("menu_text", &mut out.menu_text, section.menu_text);
+    apply(
+        "menu_text_disabled",
+        &mut out.menu_text_disabled,
+        section.menu_text_disabled,
+    );
+    apply(
+        "menu_shortcut",
+        &mut out.menu_shortcut,
+        section.menu_shortcut,
+    );
+    apply(
+        "menu_focus_bg",
+        &mut out.menu_focus_bg,
+        section.menu_focus_bg,
+    );
 }
 
 /// Events delivered to the main thread via `EventLoopProxy::send_event`. The
@@ -448,8 +478,11 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
 pub enum AppUserEvent {
     /// New `Config` (with all defaults applied) plus any errors encountered
     /// during parse. `errors.is_empty()` means a clean reload.
+    ///
+    /// `Config` is boxed to keep the enum variant sizes comparable; the struct
+    /// grows with each stage as more color/font fields are added.
     ConfigReloaded {
-        config: Config,
+        config: Box<Config>,
         errors: Vec<ConfigError>,
     },
     /// One-off error not tied to a successful reload (file removed at
@@ -708,5 +741,94 @@ blink_ms = 250
         matches!(&errs[0], ConfigError::Syntax { .. });
         // Defaults preserved.
         assert_eq!(cfg.cursor.blink_ms, 500);
+    }
+
+    #[test]
+    fn menu_colors_default_to_dark_theme_values() {
+        let cf = Config::default_values();
+        assert_eq!(
+            cf.colors.menu_bg,
+            [
+                0x1a as f32 / 255.0,
+                0x1a as f32 / 255.0,
+                0x22 as f32 / 255.0,
+                1.0
+            ]
+        );
+        assert_eq!(
+            cf.colors.menu_border,
+            [
+                0x2a as f32 / 255.0,
+                0x2a as f32 / 255.0,
+                0x35 as f32 / 255.0,
+                1.0
+            ]
+        );
+        assert_eq!(
+            cf.colors.menu_text,
+            [
+                0xe8 as f32 / 255.0,
+                0xe8 as f32 / 255.0,
+                0xec as f32 / 255.0,
+                1.0
+            ]
+        );
+        assert_eq!(
+            cf.colors.menu_text_disabled,
+            [
+                0x5a as f32 / 255.0,
+                0x5a as f32 / 255.0,
+                0x65 as f32 / 255.0,
+                1.0
+            ]
+        );
+        assert_eq!(
+            cf.colors.menu_shortcut,
+            [
+                0x99 as f32 / 255.0,
+                0x99 as f32 / 255.0,
+                0xa5 as f32 / 255.0,
+                1.0
+            ]
+        );
+        assert_eq!(
+            cf.colors.menu_focus_bg,
+            [
+                0x2a as f32 / 255.0,
+                0x35 as f32 / 255.0,
+                0x50 as f32 / 255.0,
+                1.0
+            ]
+        );
+    }
+
+    #[test]
+    fn menu_colors_load_from_toml_overrides() {
+        // Write a temp TOML file and load via Config::load (the public path users go through).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[colors]
+menu_bg            = "#000000ff"
+menu_focus_bg      = "#0000ffff"
+"##,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(cf.colors.menu_bg, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(cf.colors.menu_focus_bg, [0.0, 0.0, 1.0, 1.0]);
+        // Other fields keep their dark-theme defaults.
+        assert_eq!(
+            cf.colors.menu_border,
+            [
+                0x2a as f32 / 255.0,
+                0x2a as f32 / 255.0,
+                0x35 as f32 / 255.0,
+                1.0
+            ]
+        );
     }
 }

@@ -47,6 +47,12 @@ pub struct ColorsSection {
     pub indicator_working: Option<String>,
     pub indicator_waiting: Option<String>,
     pub indicator_inactive: Option<String>,
+    pub menu_bg: Option<String>,
+    pub menu_border: Option<String>,
+    pub menu_text: Option<String>,
+    pub menu_text_disabled: Option<String>,
+    pub menu_shortcut: Option<String>,
+    pub menu_focus_bg: Option<String>,
 }
 
 /// `[cursor]` table. `blink_ms = 0` disables blinking.

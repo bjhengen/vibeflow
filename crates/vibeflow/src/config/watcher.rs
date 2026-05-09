@@ -83,7 +83,7 @@ pub fn spawn(path: PathBuf, proxy: EventLoopProxy<AppUserEvent>) -> notify::Resu
                                 let (cfg, errors) = Config::load(&path);
                                 if proxy
                                     .send_event(AppUserEvent::ConfigReloaded {
-                                        config: cfg,
+                                        config: Box::new(cfg),
                                         errors,
                                     })
                                     .is_err()

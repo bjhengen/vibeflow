@@ -2,11 +2,21 @@
 //! this module; input wiring lives in `window.rs`. No generalized overlay
 //! layer — see the Stage 10 design spec for the YAGNI rationale.
 
-#![allow(dead_code)] // call sites land in Tasks 9–13; cleanup attribute removed in Task 9.
-
 use alacritty_terminal::index::{Column, Line, Point};
 
 use crate::keymap::Shortcut;
+
+/// Resolved menu color palette. Written by `Renderer::set_menu_colors` from
+/// the hot-reload path and read by `build_rects` (Task 13).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MenuColors {
+    pub bg: [f32; 4],
+    pub border: [f32; 4],
+    pub text: [f32; 4],
+    pub text_disabled: [f32; 4],
+    pub shortcut: [f32; 4],
+    pub focus_bg: [f32; 4],
+}
 
 /// Tab index into `App.tabs()`. Defined locally as a type alias for clarity in
 /// menu code without introducing a new newtype.
@@ -280,6 +290,7 @@ impl MenuLayout {
     }
 }
 
+#[allow(dead_code)] // WindowApp field added in Task 10; allow removed then.
 #[derive(Debug, Clone)]
 pub struct ContextMenuState {
     /// Anchor in physical pixels (where the right-click happened). Kept so a

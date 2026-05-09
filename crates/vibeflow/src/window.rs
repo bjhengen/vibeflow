@@ -356,6 +356,14 @@ impl WindowApp {
             ]);
             r.set_cursor_blink_ms(config.cursor.blink_ms);
             r.set_font_priorities(config.fonts.priority.clone());
+            r.set_menu_colors(crate::render::context_menu::MenuColors {
+                bg: config.colors.menu_bg,
+                border: config.colors.menu_border,
+                text: config.colors.menu_text,
+                text_disabled: config.colors.menu_text_disabled,
+                shortcut: config.colors.menu_shortcut,
+                focus_bg: config.colors.menu_focus_bg,
+            });
         }
         // Rebuild the shortcut table from the bindings.
         self.shortcut_table = build_shortcut_table(&config.shortcuts);
