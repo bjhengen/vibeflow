@@ -355,6 +355,85 @@ pub(crate) fn _menu_pt(line: i32, col: usize) -> Point {
     Point::new(Line(line), Column(col))
 }
 
+/// Build the rect instances for an open context menu — pushed onto the
+/// caller's flat `all_rects` buffer in `Renderer::render`. Called LAST in
+/// the rect-build sequence, after bell flash, so the menu sits above
+/// every other layer.
+///
+/// Order within the returned Vec (the renderer must `draw_range` this
+/// span as a single contiguous block):
+///   1. background (full bbox)
+///   2. four 1-px rects forming the border
+///   3. per item: focus-highlight rect (only on focused index)
+///   4. per separator: 1-px rect
+pub fn build_rects(
+    state: &ContextMenuState,
+    colors: &MenuColors,
+) -> Vec<crate::render::tabs::RectInstance> {
+    let mut rects = Vec::with_capacity(8 + state.items.len());
+    let (bx, by, bw, bh) = state.layout.bbox;
+    // 1. Background.
+    rects.push(crate::render::tabs::RectInstance::new(
+        bx, by, bw, bh, colors.bg,
+    ));
+    // 2. Border (top, bottom, left, right — 1 px each).
+    rects.push(crate::render::tabs::RectInstance::new(
+        bx,
+        by,
+        bw,
+        1.0,
+        colors.border,
+    ));
+    rects.push(crate::render::tabs::RectInstance::new(
+        bx,
+        by + bh - 1.0,
+        bw,
+        1.0,
+        colors.border,
+    ));
+    rects.push(crate::render::tabs::RectInstance::new(
+        bx,
+        by,
+        1.0,
+        bh,
+        colors.border,
+    ));
+    rects.push(crate::render::tabs::RectInstance::new(
+        bx + bw - 1.0,
+        by,
+        1.0,
+        bh,
+        colors.border,
+    ));
+    // 3. Focus highlight (only on focused index, only if Action and enabled).
+    if let Some(item) = state.items.get(state.focused) {
+        if matches!(item.kind, ItemKind::Action) && item.enabled {
+            let (rx, ry, rw, rh) = state.layout.item_rects[state.focused];
+            rects.push(crate::render::tabs::RectInstance::new(
+                rx,
+                ry,
+                rw,
+                rh,
+                colors.focus_bg,
+            ));
+        }
+    }
+    // 4. Separators (1-px-tall rects at the item's y).
+    for (idx, item) in state.items.iter().enumerate() {
+        if matches!(item.kind, ItemKind::Separator) {
+            let (rx, ry, rw, _rh) = state.layout.item_rects[idx];
+            rects.push(crate::render::tabs::RectInstance::new(
+                rx,
+                ry,
+                rw,
+                1.0,
+                colors.border,
+            ));
+        }
+    }
+    rects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

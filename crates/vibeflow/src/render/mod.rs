@@ -234,6 +234,7 @@ impl Renderer {
         app: &crate::app::App,
         error_banner: &crate::config::error_banner::ErrorBannerState,
         rename_state: Option<&crate::render::tabs::RenameInputState>,
+        context_menu: Option<&crate::render::context_menu::ContextMenuState>,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
@@ -398,7 +399,12 @@ impl Renderer {
         let banner_rect_count = u32::from(banner_rect.is_some());
         let bell_rect_offset = banner_rect_offset + banner_rect_count;
         let bell_rect_count = u32::from(bell_rect.is_some());
-        let total_rects = bell_rect_offset + bell_rect_count;
+        let menu_rects: Vec<crate::render::tabs::RectInstance> = context_menu
+            .map(|m| crate::render::context_menu::build_rects(m, &self.menu_colors))
+            .unwrap_or_default();
+        let menu_rect_offset = bell_rect_offset + bell_rect_count;
+        let menu_rect_count = menu_rects.len() as u32;
+        let total_rects = menu_rect_offset + menu_rect_count;
 
         let mut all_quads = Vec::with_capacity(total_quads as usize);
         all_quads.extend_from_slice(&cell_instances);
@@ -420,6 +426,7 @@ impl Renderer {
         if let Some(r) = bell_rect {
             all_rects.push(r);
         }
+        all_rects.extend_from_slice(&menu_rects);
 
         // Now grow the GPU buffers + write all instance data (still outside
         // the render-pass scope). Writes happen ONCE per pipeline per frame
@@ -510,7 +517,13 @@ impl Renderer {
             // ---- Bell flash overlay ----
             if bell_rect_count > 0 {
                 self.tab_bar_pipeline
-                    .draw_range(&mut pass, bell_rect_offset..total_rects);
+                    .draw_range(&mut pass, bell_rect_offset..menu_rect_offset);
+            }
+
+            // ---- Context menu rects (topmost layer) ----
+            if menu_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, menu_rect_offset..total_rects);
             }
         }
 

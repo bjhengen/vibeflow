@@ -798,6 +798,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     &self.app,
                     &self.error_banner,
                     self.rename_state.as_ref(),
+                    self.context_menu.as_ref(),
                 ) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
