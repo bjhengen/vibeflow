@@ -434,6 +434,97 @@ pub fn build_rects(
     rects
 }
 
+/// Build the glyph quad batch for an open context menu's text labels and
+/// shortcut hints. Called by `Renderer::render` in the same frame as
+/// `build_rects`; the returned `Vec<QuadInstance>` is appended to the master
+/// quad buffer **after** all existing glyph layers so the menu text paints
+/// above everything else.
+///
+/// Layout per `ItemKind::Action` row:
+///   - Label   → left-aligned at `item_rect.x + 14`, vertically centered.
+///   - Hint → right-aligned at `item_rect.x + item_rect.w - 14 - hint_width`,
+///     same vertical position.
+///
+/// Color rules:
+///   - Label fg = `colors.text` (enabled) or `colors.text_disabled` (disabled).
+///   - Hint  fg = `colors.shortcut` regardless of enabled state.
+///
+/// Background for all glyphs is fully transparent so the menu bg rect shows
+/// through — we pass `[0.0, 0.0, 0.0, 0.0]`. The quad shader blends using
+/// `mix(bg, fg, alpha)` for mono glyphs, so a transparent bg simply lets the
+/// compositor see whatever was drawn beneath (the menu bg rect).
+pub fn build_glyphs(
+    state: &ContextMenuState,
+    colors: &MenuColors,
+    text_engine: &mut crate::render::text_engine::TextEngine,
+) -> Vec<crate::render::quad::QuadInstance> {
+    let mut glyphs = Vec::new();
+    let (cell_w, cell_h) = text_engine.cell_metrics();
+    let cell_w_f = cell_w as f32;
+    let cell_h_f = cell_h as f32;
+    // Fully-transparent background: the menu bg rect is already drawn by the
+    // rect pass. The glyph shader's mono path blends fg over bg so any nonzero
+    // bg would tint the area around each glyph — we want pure foreground.
+    let transparent_bg = [0.0f32; 4];
+
+    for (idx, item) in state.items.iter().enumerate() {
+        if !matches!(item.kind, ItemKind::Action) {
+            continue;
+        }
+        let (rx, ry, rw, _rh) = state.layout.item_rects[idx];
+        // Vertical centre of the item row (clamp to 0 if cell is taller than row).
+        let item_h = state.layout.item_rects[idx].3;
+        let text_y = ry + ((item_h - cell_h_f) / 2.0).max(0.0);
+
+        let label_fg = if item.enabled {
+            colors.text
+        } else {
+            colors.text_disabled
+        };
+
+        // Label: left-aligned with a 14 px left inset.
+        let label_x = rx + 14.0;
+        // Max-x clamp: stop before the right edge of the item rect minus a gutter.
+        // If there's a hint, reserve enough space for it; otherwise use the full width.
+        let hint_reserve = item
+            .shortcut_hint
+            .map(|h| h.chars().count() as f32 * cell_w_f + 28.0)
+            .unwrap_or(14.0);
+        let label_max_x = (rx + rw - hint_reserve).floor() as u32;
+
+        crate::render::tabs::push_text_glyphs(
+            &mut glyphs,
+            text_engine,
+            item.label,
+            (label_x, text_y),
+            cell_w_f,
+            label_fg,
+            transparent_bg,
+            label_max_x,
+        );
+
+        // Shortcut hint: right-aligned with a 14 px right inset.
+        if let Some(hint) = item.shortcut_hint {
+            let hint_char_count = hint.chars().count() as f32;
+            let hint_pixel_w = hint_char_count * cell_w_f;
+            let hint_x = rx + rw - 14.0 - hint_pixel_w;
+            let hint_max_x = (rx + rw - 14.0).floor() as u32;
+            crate::render::tabs::push_text_glyphs(
+                &mut glyphs,
+                text_engine,
+                hint,
+                (hint_x, text_y),
+                cell_w_f,
+                colors.shortcut,
+                transparent_bg,
+                hint_max_x,
+            );
+        }
+    }
+
+    glyphs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -388,7 +388,8 @@ impl Renderer {
         let config_banner_glyph_count = config_banner_glyphs.len() as u32;
         let banner_glyph_offset = config_banner_glyph_offset + config_banner_glyph_count;
         let banner_glyph_count = banner_quads.as_ref().map_or(0, |v| v.len()) as u32;
-        let total_quads = banner_glyph_offset + banner_glyph_count;
+        // menu_glyph_offset and total_quads are computed after menu_glyphs is built
+        // (menu glyphs may cause atlas uploads via glyph_for, so build first).
 
         let tab_rect_count = tab_rects.len() as u32;
         let selection_rect_offset = tab_rect_count;
@@ -402,6 +403,22 @@ impl Renderer {
         let menu_rects: Vec<crate::render::tabs::RectInstance> = context_menu
             .map(|m| crate::render::context_menu::build_rects(m, &self.menu_colors))
             .unwrap_or_default();
+        // Menu glyph quads — built after menu rects so atlas uploads (if any)
+        // complete before the render pass begins. Both are `None`-safe: when
+        // `context_menu` is `None`, both vecs are empty and the draw_range
+        // for menu glyphs is a no-op (QuadPipeline::draw_range skips empty ranges).
+        let menu_glyphs: Vec<crate::render::quad::QuadInstance> = context_menu
+            .map(|m| {
+                crate::render::context_menu::build_glyphs(
+                    m,
+                    &self.menu_colors,
+                    &mut self.text_engine,
+                )
+            })
+            .unwrap_or_default();
+        let menu_glyph_offset = banner_glyph_offset + banner_glyph_count;
+        let menu_glyph_count = menu_glyphs.len() as u32;
+        let total_quads = menu_glyph_offset + menu_glyph_count;
         let menu_rect_offset = bell_rect_offset + bell_rect_count;
         let menu_rect_count = menu_rects.len() as u32;
         let total_rects = menu_rect_offset + menu_rect_count;
@@ -413,6 +430,8 @@ impl Renderer {
         if let Some(b) = &banner_quads {
             all_quads.extend_from_slice(b);
         }
+        // Menu glyph quads are always last — they must paint above all other layers.
+        all_quads.extend_from_slice(&menu_glyphs);
 
         let mut all_rects = Vec::with_capacity(total_rects as usize);
         all_rects.extend_from_slice(&tab_rects);
@@ -511,7 +530,7 @@ impl Renderer {
                 self.tab_bar_pipeline
                     .draw_range(&mut pass, banner_rect_offset..bell_rect_offset);
                 self.quad_pipeline
-                    .draw_range(&mut pass, banner_glyph_offset..total_quads);
+                    .draw_range(&mut pass, banner_glyph_offset..menu_glyph_offset);
             }
 
             // ---- Bell flash overlay ----
@@ -520,10 +539,16 @@ impl Renderer {
                     .draw_range(&mut pass, bell_rect_offset..menu_rect_offset);
             }
 
-            // ---- Context menu rects (topmost layer) ----
+            // ---- Context menu rects ----
             if menu_rect_count > 0 {
                 self.tab_bar_pipeline
                     .draw_range(&mut pass, menu_rect_offset..total_rects);
+            }
+
+            // ---- Context menu glyphs (topmost glyph layer) ----
+            if menu_glyph_count > 0 {
+                self.quad_pipeline
+                    .draw_range(&mut pass, menu_glyph_offset..total_quads);
             }
         }
 

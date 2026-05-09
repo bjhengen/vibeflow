@@ -848,8 +848,11 @@ impl Default for TabBarRenderer {
 /// Convert a string to a sequence of `QuadInstance`s laid out at integer
 /// pixel positions, clipped to a max-x boundary so titles/subtitles don't
 /// spill onto the close button.
+///
+/// Made `pub(crate)` in Stage 10 so `render::context_menu::build_glyphs` can
+/// reuse the exact same glyph-placement logic without duplication.
 #[allow(clippy::too_many_arguments)]
-fn push_text_glyphs(
+pub(crate) fn push_text_glyphs(
     out: &mut Vec<crate::render::quad::QuadInstance>,
     text_engine: &mut crate::render::text_engine::TextEngine,
     s: &str,
