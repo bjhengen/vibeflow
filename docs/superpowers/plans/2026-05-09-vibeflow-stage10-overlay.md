@@ -1223,7 +1223,7 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::event::VoidListener;
 ```
 
-`term.columns()` and `term.screen_lines()` are `Dimensions` trait methods — `Dimensions` is already imported in this file. `term.history_size()` is an inherent method on `Term`.
+`term.columns()`, `term.screen_lines()`, and `term.history_size()` are all provided methods on the `Dimensions` trait — `Dimensions` is already imported in this file at `selection.rs:32`, so all three resolve via that single trait import.
 
 - [ ] **Step 4: Run select_all tests; expect 3 passes.**
 
@@ -1255,40 +1255,20 @@ git commit -m "feat(stage10): SelectionTracker::select_all covers full buffer + 
 
 - [ ] **Step 1: Add a failing test asserting Ctrl+Shift+A invokes the handler.**
 
-The right place depends on existing keymap test patterns. Check `keymap.rs` first: `grep -n '#\[test\]' crates/vibeflow/src/keymap.rs | head -10`. Add a test alongside the existing keymap tests:
+Real signature of `ShortcutTable::lookup` (verified at `keymap.rs:152`): `pub fn lookup(&self, key: &Key, modifiers: ModifiersState) -> Option<Shortcut>`. Existing test helpers `ch(s)` and `mods(ctrl, shift, alt, super)` are at `keymap.rs:240-259`. Mirror the existing tests' style.
+
+Add this test in the existing `mod tests` block in `keymap.rs`:
 
 ```rust
     #[test]
     fn ctrl_shift_a_maps_to_select_all() {
-        let table = ShortcutTable::default();
-        // Match the helper or method existing tests use to look up a chord.
-        // (Read existing tests in this file before adding — pattern may be
-        // `table.lookup(ModifiersState::CONTROL | ModifiersState::SHIFT, "a")`
-        // or `table.dispatch(...)`. Adapt the assertion below to the actual
-        // helper's name and signature.)
-        let mods = ModifiersState::CONTROL | ModifiersState::SHIFT;
-        let action = table.lookup(mods, "a");
+        let table = ShortcutTable::with_default_bindings();
+        let action = table.lookup(&ch("a"), mods(true, true, false, false));
         assert_eq!(action, Some(Shortcut::SelectAll));
     }
 ```
 
-If the existing test helper takes a `Key::Character` rather than a string, mirror that exact call shape — read the surrounding tests first and copy their pattern verbatim. Do NOT invent a new signature. If the keymap tests use `keymap::for_key(...)` or another function name, use that.
-
-If you find that the closest existing test cannot be paralleled cleanly without knowledge of internal types, write the test against `WindowApp::handle_shortcut` directly instead. (Alternative test below if so.)
-
-Alternative (in `window.rs` `mod tests`, if such a module exists; otherwise create `#[cfg(test)] mod tests` adjacent to `handle_shortcut`):
-
-```rust
-    #[test]
-    fn handle_shortcut_select_all_sets_selection_on_active_tab() {
-        // Construct a minimal WindowApp test fixture. Use whatever existing
-        // window-tests pattern there is — if there is none, prefer extending
-        // keymap.rs's test instead (since SelectAll wiring is testable
-        // upstream of WindowApp's GUI dependencies).
-    }
-```
-
-The keymap.rs test path is preferred — it avoids needing a winit/wgpu test fixture.
+**Critical: also update the existing `shortcut_table_default_has_all_actions` test.** That test asserts `by_chord.len() == 16` (or similar — read it first to confirm the exact count). Adding `SelectAll` increments that count by however many chord entries you add for it (likely 1 for Ctrl+Shift+A unless you also add an alternate). Update the asserted count to match the new total. Do NOT remove the test; just bump the integer.
 
 - [ ] **Step 2: Run the new test; expect failure.**
 
@@ -1346,14 +1326,20 @@ git commit -m "feat(stage10): Ctrl+Shift+A → Shortcut::SelectAll → Selection
 
 Read these to learn the pattern: `grep -n 'selection\|indicator' crates/vibeflow/src/config/schema.rs | head -30` and `grep -n 'fn set_selection_color\|fn set_indicator_colors\|fn set_cursor_blink_ms' crates/vibeflow/src/render/mod.rs`.
 
-The existing pattern: schema field `Option<[f32; 4]>` (or a typed wrapper); `Config::default_values` provides defaults; `Renderer` has a `set_…` method; `WindowApp::apply_config` calls each setter.
+The existing pattern, **verified against source**:
+- `config/schema.rs::ColorsSection` is `#[serde(deny_unknown_fields)]` — every TOML key must be declared here as `Option<String>` (hex string).
+- `config/mod.rs::Colors` is the resolved struct with `[f32; 4]` fields and defaults from `Config::default_values()` (function name is **`default_values()`, not `default()`** — there is no `impl Default for Config`).
+- `apply_colors()` in `mod.rs` walks each field, parses the hex via the `rgba()` helper, and applies it.
+- `Renderer` has setter methods like `set_selection_color`, `set_indicator_colors`.
 
-- [ ] **Step 2: Add menu color tests in `config/schema.rs`'s test block.**
+You MUST update BOTH structs (the `ColorsSection` in `schema.rs` AND the resolved `Colors` in `mod.rs`) plus extend `apply_colors()` to read each new schema key and write to the corresponding resolved field. If you only add fields to one struct, TOML parsing will reject the new keys (because of `deny_unknown_fields`).
+
+- [ ] **Step 2: Add menu color tests in `config/mod.rs`'s test block (where existing `apply_colors`-style tests live — read first to find the right module).**
 
 ```rust
     #[test]
     fn menu_colors_default_to_dark_theme_values() {
-        let cf = Config::default();
+        let cf = Config::default_values();
         assert_eq!(cf.colors.menu_bg,            [0x1a as f32 / 255.0, 0x1a as f32 / 255.0, 0x22 as f32 / 255.0, 1.0]);
         assert_eq!(cf.colors.menu_border,        [0x2a as f32 / 255.0, 0x2a as f32 / 255.0, 0x35 as f32 / 255.0, 1.0]);
         assert_eq!(cf.colors.menu_text,          [0xe8 as f32 / 255.0, 0xe8 as f32 / 255.0, 0xec as f32 / 255.0, 1.0]);
@@ -1364,45 +1350,57 @@ The existing pattern: schema field `Option<[f32; 4]>` (or a typed wrapper); `Con
 
     #[test]
     fn menu_colors_load_from_toml_overrides() {
-        let toml = r#"
+        // Write a temp TOML file and load via Config::load (the public path users go through).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, r#"
 [colors]
 menu_bg            = "#000000"
-menu_border        = "#ffffff"
-menu_text          = "#ffffff"
-menu_text_disabled = "#888888"
-menu_shortcut      = "#cccccc"
 menu_focus_bg      = "#0000ff"
-"#;
-        let cf: Config = toml::from_str(toml).expect("parse");
-        let cf = cf.with_defaults_filled();
-        assert_eq!(cf.colors.menu_bg,            [0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(cf.colors.menu_focus_bg,      [0.0, 0.0, 1.0, 1.0]);
+"#).expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(cf.colors.menu_bg,       [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(cf.colors.menu_focus_bg, [0.0, 0.0, 1.0, 1.0]);
+        // Other fields keep their dark-theme defaults.
+        assert_eq!(cf.colors.menu_border,   [0x2a as f32 / 255.0, 0x2a as f32 / 255.0, 0x35 as f32 / 255.0, 1.0]);
     }
 ```
 
-The exact API names (`with_defaults_filled`, `Config::default`) must match what schema.rs currently uses. Read existing tests; copy their exact accessor patterns. If `Config::default_values()` is the actual function name, use that. Reading the existing menu-color-test patterns is mandatory — do not invent.
+If `tempfile` isn't already a dev-dep, check Cargo.toml — Stage 9's config tests probably use it. If not present, write to `std::env::temp_dir().join("vibeflow_test_<unique>.toml")` and clean up at end.
 
 - [ ] **Step 3: Run; expect 2 failures (fields don't exist).**
 
 Run: `cargo test --package vibeflow --lib config::schema::tests::menu_colors 2>&1 | tail -15`
 Expected: build error — fields missing.
 
-- [ ] **Step 4: Add the six fields to the `[colors]` schema struct + defaults + parser plumbing.**
+- [ ] **Step 4: Add the six fields to BOTH the schema struct (TOML parsing) AND the resolved struct (runtime), plus extend the defaults + apply step.**
 
-In `crates/vibeflow/src/config/schema.rs`, find the `Colors` struct (or whatever holds `selection`, `indicator_*`). Add:
+In `crates/vibeflow/src/config/schema.rs`, find `pub struct ColorsSection` (line ~43). It uses `#[serde(deny_unknown_fields)]` and `Option<String>` fields for hex inputs. Add:
 
 ```rust
-    pub menu_bg: Option<[f32; 4]>,
-    pub menu_border: Option<[f32; 4]>,
-    pub menu_text: Option<[f32; 4]>,
-    pub menu_text_disabled: Option<[f32; 4]>,
-    pub menu_shortcut: Option<[f32; 4]>,
-    pub menu_focus_bg: Option<[f32; 4]>,
+    pub menu_bg: Option<String>,
+    pub menu_border: Option<String>,
+    pub menu_text: Option<String>,
+    pub menu_text_disabled: Option<String>,
+    pub menu_shortcut: Option<String>,
+    pub menu_focus_bg: Option<String>,
 ```
 
-(If the schema uses a non-Option type with serde defaults, mirror that pattern instead — read the file before editing.)
+In `crates/vibeflow/src/config/mod.rs`, find `pub struct Colors` (the resolved runtime struct). Add the corresponding `[f32; 4]` fields (no `Option`):
 
-In the matching default-values function, add literals matching the test expectations above. The hex-to-`[f32;4]` conversion should use the same helper the existing color defaults use. If the existing pattern is `[0x0e as f32 / 255.0, …]`, use that.
+```rust
+    pub menu_bg: [f32; 4],
+    pub menu_border: [f32; 4],
+    pub menu_text: [f32; 4],
+    pub menu_text_disabled: [f32; 4],
+    pub menu_shortcut: [f32; 4],
+    pub menu_focus_bg: [f32; 4],
+```
+
+In `Config::default_values()`, populate the six fields with the literals from Step 2's test (e.g. `menu_bg: [0x1a as f32 / 255.0, 0x1a as f32 / 255.0, 0x22 as f32 / 255.0, 1.0]` etc.).
+
+In `apply_colors()` (mod.rs — read it first to learn the parse-and-write loop), add an apply step for each new field. Pattern matches what's there for `selection`/`indicator_*`: parse the schema's `Option<String>` via the existing `rgba()` helper; on success, write to the resolved struct's `[f32;4]` field; on failure, push a `ConfigError` and keep the default.
 
 - [ ] **Step 5: Add a renderer setter and wire it into `apply_config`.**
 
@@ -1487,11 +1485,12 @@ In `WindowApp::new` (or wherever the struct is constructed), initialize `context
         // Build items based on context.
         let items = match target_idx {
             Some(idx) => {
+                // PtySession exposes `is_alive()` (not `is_dead`). Negate.
                 let is_dead = self
                     .app
                     .tabs()
                     .get(idx)
-                    .map(|s| s.is_dead())
+                    .map(|s| !s.is_alive())
                     .unwrap_or(true);
                 let tab_count = self.app.tabs().len();
                 context_menu::tab_menu(idx, is_dead, tab_count)
@@ -1515,10 +1514,11 @@ In `WindowApp::new` (or wherever the struct is constructed), initialize `context
             })
             .unwrap_or(0);
         // Compute layout. Font metrics come from the renderer (cell metrics).
+        // `Renderer::cell_pitch()` returns (cell_w, cell_h) in physical px.
         let (cell_w, cell_h) = self
             .renderer
             .as_ref()
-            .map(|r| r.cell_size_px())
+            .map(|r| r.cell_pitch())
             .unwrap_or((8, 16));
         let font = MenuFontMetrics {
             item_height_px: cell_h as f32 + 4.0,
@@ -1546,7 +1546,11 @@ In `WindowApp::new` (or wherever the struct is constructed), initialize `context
     }
 ```
 
-`Renderer::cell_size_px()` and `PtySession::is_dead()` may already exist; if not, the senior pre-execution review should have caught it. If `is_dead()` doesn't exist, search for the field that tracks the death state of a `PtySession` (likely `s.dead` or `s.alive` or similar) and inline that boolean here. Same for `cell_size_px()`. Read the source — do not invent.
+**APIs verified by the senior pre-execution review:**
+- `Renderer::cell_pitch() -> (u32, u32)` exists at `render/mod.rs:527`. Use this exact name (not `cell_size_px`).
+- `PtySession::is_alive() -> bool` exists at `session.rs:350`. There is NO `is_dead()` method — use `!s.is_alive()`.
+- `App::tabs() -> &[PtySession]`, `App::active() -> usize`, `App::set_active(usize)`, `App::close_tab(usize)` all confirmed.
+- `PtySession::send_input(&[u8])` exists at `session.rs:307`.
 
 - [ ] **Step 4: Replace the existing right-click → rename block in the mouse handler.**
 
@@ -1565,18 +1569,27 @@ After:
                     if state == ElementState::Released && button == MouseButton::Right {
                         let Some((px, py)) = self.cursor_pos else { return; };
                         let anchor = (px as f32, py as f32);
-                        // Hit-test against the tab strip.
-                        let tab_idx = self
-                            .renderer
-                            .as_ref()
-                            .and_then(|r| r.tab_bar_hit_test(px, py));
+                        // Tab-strip hit test mirrors the existing Stage 9 pattern at
+                        // window.rs:783-795: rebuild a TabBarLayout for the current
+                        // window + cell metrics + tab count, then hit_test pixel coords.
+                        // No `Renderer::tab_bar_hit_test` wrapper exists — inline the
+                        // compute here, just like the existing right-click code does.
+                        let tab_idx = if let Some(r) = self.renderer.as_ref() {
+                            let (cell_w, cell_h) = r.cell_pitch();
+                            let surface = r.surface_size();
+                            let layout = crate::render::tabs::TabBarLayout::compute(
+                                surface.0, cell_h, self.app.tabs().len(),
+                            );
+                            let _ = cell_w;
+                            layout.hit_test(px, py)
+                        } else {
+                            None
+                        };
                         match tab_idx {
                             Some(idx) => self.open_context_menu(anchor, Some(idx)),
                             None => {
-                                // If the click is in the grid (below the tab bar),
-                                // open the grid menu. The hit-test for "below tab
-                                // bar" is already implicit — `tab_bar_hit_test`
-                                // returns None outside the bar.
+                                // Below the tab strip → grid menu. (TabBarLayout::hit_test
+                                // returns None for clicks outside the strip.)
                                 self.open_context_menu(anchor, None);
                             }
                         }
@@ -1584,7 +1597,7 @@ After:
                     }
 ```
 
-`Renderer::tab_bar_hit_test(px, py)` may need to be added (one-line wrapper around the existing tab-bar layout's hit-test). If the existing renderer already exposes a method that maps pixel coords to a tab index, use that exact name; otherwise add a thin wrapper. Read `render::tabs.rs` for the existing hit-test; many tab strips already expose this.
+**Verified by senior review:** `TabBarLayout::compute(window_w, cell_h, tab_count)` exists in `render::tabs`. The exact `compute` signature must be lifted from the existing right-click site at `window.rs:783-795` — read those lines first and copy the call shape verbatim, including which arguments are passed. If the existing call uses different parameter names or includes extra arguments (e.g., bar height), match it. The `Renderer::surface_size()` accessor is one possibility; if it isn't named that, find the actual public accessor that returns `(width, height)` in physical px (likely `r.surface_config_size()` or similar — read `render/mod.rs`).
 
 - [ ] **Step 5: Add unit tests for the open-menu state machine.**
 
@@ -1796,6 +1809,12 @@ git commit -m "feat(stage10): menu input dispatch — kbd nav + focus loss + res
                 self.handle_shortcut(shortcut);
             }
             MenuAction::PastePrimary => {
+                // `WindowApp::handle_paste_primary` does NOT exist as a method.
+                // The PRIMARY paste code is currently inline in the
+                // MouseButton::Middle arm at window.rs:847-864. Factor it out
+                // into a new private helper `fn handle_paste_primary(&mut self)`
+                // BEFORE this match arm calls it. Have the existing middle-click
+                // arm call the new helper too — single source of truth.
                 self.handle_paste_primary();
             }
             MenuAction::ClearBuffer => {
@@ -1841,7 +1860,9 @@ git commit -m "feat(stage10): menu input dispatch — kbd nav + focus loss + res
     }
 ```
 
-`PtySession::send_input(&[u8])` and `WindowApp::handle_paste_primary` may or may not already exist. Read window.rs and session.rs first. If `handle_paste_primary` doesn't exist as a separate method, factor it out from the existing `handle_paste` body — read existing paste plumbing, extract a `paste_bytes_to_active(&[u8])` helper, and have both handlers call it.
+**APIs verified by senior review:**
+- `PtySession::send_input(&[u8])` exists at `session.rs:307` — use it directly for ClearBuffer.
+- `WindowApp::handle_paste_primary` does NOT exist. The PRIMARY paste code is inline in the `MouseButton::Middle` arm at `window.rs:847-864`. Refactor: extract a private `fn handle_paste_primary(&mut self)` containing the existing middle-click body; have both the middle-click arm and the menu's `PastePrimary` branch call it.
 
 - [ ] **Step 3: Add the mouse-click handling in the existing `MouseInput` arm.**
 
@@ -1900,12 +1921,12 @@ In Task 10's `open_context_menu` for the tab-menu path, before constructing the 
 
 ```rust
         // If a rename is in progress, commit it before opening the menu.
-        if let Some(rename) = self.rename_state.take() {
-            self.commit_rename(rename);
+        if self.rename_state.is_some() {
+            self.commit_rename();
         }
 ```
 
-`WindowApp::commit_rename(...)` may already exist as a Stage 9 helper. If not, factor it out from the existing rename-finalize path.
+**Verified by senior review:** `WindowApp::commit_rename(&mut self)` exists at `window.rs:406` and takes ZERO extra arguments — it pulls `self.rename_state.take()` internally. Do NOT pass `rename_state` as an argument; the previous draft of this plan was wrong.
 
 - [ ] **Step 6: Quality gate.**
 
@@ -1930,52 +1951,26 @@ git commit -m "feat(stage10): MenuAction dispatch + click-to-activate + outside-
 - Modify: `crates/vibeflow/src/render/context_menu.rs`
 - Modify: `crates/vibeflow/src/render/mod.rs` (call after bell-flash pass)
 
-- [ ] **Step 1: Read existing rect and text-quad emit patterns.**
+- [ ] **Step 1: Understand the actual rendering architecture (verified by senior review).**
 
-Bell flash and selection rects use `TabBarPipeline::queue_rect` (or similar) — read `render::bell.rs` and `render::tabs.rs` for the call shape. Tab labels use `text_engine` to push glyph quads into `quad_pipeline`. Match those exact patterns; do not invent.
+`Renderer::render` does NOT push rects/glyphs incrementally to the GPU. Instead it:
+1. Builds a flat `Vec<RectInstance>` named `all_rects` by appending rects from each layer (tab strip, selection, banners, bell flash, etc).
+2. Builds a flat glyph buffer similarly.
+3. Calls `tab_bar_pipeline.write_uniform_and_instances(&queue, surface_size, &all_rects)` ONCE.
+4. Records draw commands as offset-bounded ranges via `draw_range(start..end)`.
 
-`grep -n 'fn queue_rect\|fn push_glyph\|fn push_text_quads\|TextEngine::shape\|fn measure_str' crates/vibeflow/src/render/{bell.rs,tabs.rs,text_engine.rs,quad.rs} 2>&1 | head -30`
+There is **no `queue_rect`, `push_rect`, or per-rect emit API.** The context menu must contribute a `Vec<RectInstance>` (and a glyph batch) that the caller appends to the master buffers, and the caller must also extend its offset/range accounting to issue a `draw_range` for the menu region. Read `render/mod.rs:399-501` end-to-end before writing any code in this task — that's the existing pattern.
 
-- [ ] **Step 2: Add the `render` function in `context_menu.rs`.**
+Reference call sites in `render/mod.rs`:
+- `let mut all_rects = Vec::with_capacity(total_rects as usize); all_rects.extend_from_slice(&tab_rects); all_rects.extend_from_slice(&selection_rects);` etc — line 399-409.
+- Per-layer offset/range tracking: each layer computes its rect/glyph counts; offsets are summed and used in `draw_range(start..end)` calls — lines 466-501.
+- `RectInstance::new(x, y, w, h, color)` constructor at `tabs.rs:355`.
+
+- [ ] **Step 2: Add the rect-building function in `context_menu.rs`.**
 
 Add at the end of `context_menu.rs`:
 
 ```rust
-/// Render the open context menu. Called LAST in `Renderer::render`, after
-/// the bell-flash overlay, so it sits above all other layers.
-///
-/// `tab_bar` and `text_engine` and `quad_pipeline` are mutable references to
-/// the renderer's owned subsystems. The function pushes solid-color rects
-/// (background, border, focus highlight, separators) into `tab_bar` and
-/// glyph quads (item labels, shortcut hints) into `quad_pipeline`.
-pub fn render(
-    state: &ContextMenuState,
-    colors: &MenuColors,
-    tab_bar: &mut crate::render::tabs::TabBarPipeline,
-    text_engine: &mut crate::render::text_engine::TextEngine,
-    quad_pipeline: &mut crate::render::quad::QuadPipeline,
-    cell_w: u32,
-) {
-    let _ = (state, colors, tab_bar, text_engine, quad_pipeline, cell_w);
-    // Implementation matches the existing emit patterns in render::bell and
-    // render::tabs. Read those files first; copy their exact call shapes for
-    // pushing rects + text quads. Steps:
-    //
-    //   1. tab_bar.queue_rect(state.layout.bbox, colors.bg)
-    //   2. four 1-px rects for the border (colors.border)
-    //   3. for each item rect:
-    //         - if focused: tab_bar.queue_rect(item_rect, colors.focus_bg)
-    //         - if Action:
-    //             - text quad for label at (item_rect.x + 14, item_rect.y + 4)
-    //               using colors.text or colors.text_disabled
-    //             - if shortcut_hint.is_some(): text quad right-aligned at
-    //               (item_rect.x + item_rect.w - 14 - hint_w, ...)
-    //         - if Separator: 1-px-tall rect at item_rect, color colors.border
-    //
-    // Concrete call shapes are codebase-specific and MUST be lifted verbatim
-    // from `render::bell::draw` and `render::tabs::draw_tab_label`.
-}
-
 /// Color cache populated by `WindowApp::apply_config` from the `[colors]` schema keys.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MenuColors {
@@ -1986,34 +1981,95 @@ pub struct MenuColors {
     pub shortcut: [f32; 4],
     pub focus_bg: [f32; 4],
 }
+
+/// Build the rect instances for an open context menu — pushed onto the
+/// caller's flat `all_rects` buffer in `Renderer::render`. Called LAST in
+/// the rect-build sequence, after bell flash, so the menu sits above
+/// every other layer.
+///
+/// Order within the returned Vec (the renderer must `draw_range` this
+/// span as a single contiguous block):
+///   1. background (full bbox)
+///   2. four 1-px rects forming the border
+///   3. per item: focus-highlight rect (only on focused index)
+///   4. per separator: 1-px rect
+pub fn build_rects(state: &ContextMenuState, colors: &MenuColors) -> Vec<crate::render::tabs::RectInstance> {
+    let mut rects = Vec::with_capacity(8 + state.items.len());
+    let (bx, by, bw, bh) = state.layout.bbox;
+    // 1. Background.
+    rects.push(crate::render::tabs::RectInstance::new(bx, by, bw, bh, colors.bg));
+    // 2. Border (top, bottom, left, right — 1 px each).
+    rects.push(crate::render::tabs::RectInstance::new(bx,            by,            bw, 1.0,  colors.border));
+    rects.push(crate::render::tabs::RectInstance::new(bx,            by + bh - 1.0, bw, 1.0,  colors.border));
+    rects.push(crate::render::tabs::RectInstance::new(bx,            by,            1.0, bh,  colors.border));
+    rects.push(crate::render::tabs::RectInstance::new(bx + bw - 1.0, by,            1.0, bh,  colors.border));
+    // 3. Focus highlight (only on focused index, only if Action).
+    if let Some(item) = state.items.get(state.focused) {
+        if matches!(item.kind, ItemKind::Action) && item.enabled {
+            let (rx, ry, rw, rh) = state.layout.item_rects[state.focused];
+            rects.push(crate::render::tabs::RectInstance::new(rx, ry, rw, rh, colors.focus_bg));
+        }
+    }
+    // 4. Separators (1-px-tall rects at the item's y).
+    for (idx, item) in state.items.iter().enumerate() {
+        if matches!(item.kind, ItemKind::Separator) {
+            let (rx, ry, rw, _rh) = state.layout.item_rects[idx];
+            rects.push(crate::render::tabs::RectInstance::new(rx, ry, rw, 1.0, colors.border));
+        }
+    }
+    rects
+}
 ```
 
-The body comment is intentionally directive: the actual rect/text emit calls have not been pinned down in the spec because the implementer must match the exact pipeline API in this codebase. The senior pre-execution review (workflow step before T1) MUST have flagged the exact method names; if not, this task's implementer should:
+**Glyphs (text labels + shortcut hints) are deferred** — initial T13 commit ships rects only (background, border, focus highlight, separators). The menu will be visible, click-and-key-navigable, but unlabeled. Add labels in a follow-up sub-step (Step 4 below) after confirming the rects render correctly.
 
-1. Read `render::bell.rs` and `render::tabs.rs` for the rect/text emit patterns.
-2. Lift the *exact* method signatures and call shapes.
-3. Implement the body without abstracting — straight-line code is easier to review.
+- [ ] **Step 3: Integrate into `Renderer::render`'s rect-build sequence.**
 
-If the implementer cannot find clear call shapes, REPORT BLOCKED with the call shapes encountered and the gaps observed.
+Walk through `render/mod.rs::Renderer::render` and add the menu's rect contribution AFTER the bell-flash rects but BEFORE the `write_uniform_and_instances` + `draw_range` block. Match the existing pattern for tracking offsets.
 
-- [ ] **Step 3: Wire the call into `Renderer::render`.**
-
-Find the existing render pass in `render/mod.rs::Renderer::render`. After the bell-flash draw step, add:
+In the function signature, add a parameter:
 
 ```rust
-        if let Some(menu) = context_menu {
-            crate::render::context_menu::render(
-                menu,
-                &self.menu_colors,
-                &mut self.tab_bar_pipeline,
-                &mut self.text_engine,
-                &mut self.quad_pipeline,
-                cell_w,
-            );
+        context_menu: Option<&crate::render::context_menu::ContextMenuState>,
+```
+
+Build the menu rects (or empty vec when None):
+
+```rust
+        let menu_rects: Vec<crate::render::tabs::RectInstance> = context_menu
+            .map(|m| crate::render::context_menu::build_rects(m, &self.menu_colors))
+            .unwrap_or_default();
+        let menu_rect_count = menu_rects.len() as u32;
+```
+
+Append into `all_rects` after the bell rects extend:
+
+```rust
+        for r in &menu_rects {
+            all_rects.push(*r);
         }
 ```
 
-`Renderer::render` will need to accept `context_menu: Option<&ContextMenuState>` as a parameter — add it to the signature alongside the existing parameters (`term`, `selection`, etc). Update the single call site in `WindowApp::request_redraw` (or wherever the render call originates) to pass `self.context_menu.as_ref()`.
+Compute the offset for the new draw range:
+
+```rust
+        let menu_rect_offset = bell_rect_offset + bell_rect_count; // existing offset chain
+        // New total: was previously `bell_rect_offset + bell_rect_count`. Now extends further.
+```
+
+Update the `draw_range` chain so the bell-flash range ends at `menu_rect_offset` and add a new draw call for the menu range. Read the existing offset/range comments in mod.rs (lines 466-501) for the exact pattern; mirror it precisely.
+
+Update the single call site of `Renderer::render` in `window.rs` to pass `self.context_menu.as_ref()`.
+
+- [ ] **Step 4: Add label and shortcut-hint glyphs (deferred from Step 2).**
+
+After Step 3's rect-only menu renders correctly, add a second function `build_glyphs` that walks `state.items`, for each `Action` item:
+- pushes a glyph batch for the label at `(item_rect.x + 14, item_rect.y + 4)` colored `colors.text` if enabled, `colors.text_disabled` if not.
+- if `shortcut_hint.is_some()`, pushes a right-aligned glyph batch for the hint at `(item_rect.x + item_rect.w - 14 - hint_width, item_rect.y + 4)` colored `colors.shortcut`.
+
+The glyph push pattern is in `render::tabs::TabBarRenderer::build_rects` (text engine + glyph quads). Read that function first — copy its exact glyph-push idiom verbatim. If the existing tab text uses cosmic-text `Buffer` + a per-character iter that pushes `QuadInstance`s, mirror exactly.
+
+If the implementer cannot find a clear extraction path for glyph-pushing logic, REPORT BLOCKED with the gap observed.
 
 - [ ] **Step 4: Smoke run on VNC to verify menu draws.**
 
@@ -2147,7 +2203,10 @@ fn drive_until(app: &mut App, deadline: Instant) {
     // Drive poll/tick like the main loop does. Match the existing
     // integration-test pattern from another file in this directory.
     while Instant::now() < deadline {
-        let _ = app.poll(Instant::now());
+        let now = Instant::now();
+        let _events = app.poll_all(now);
+        // (existing integration tests in this dir may also call tick_all —
+        //  read another *.rs file in tests/ first and copy the loop body.)
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -2181,7 +2240,7 @@ fn tab_menu_for_dead_tab_includes_restart() {
     app.new_tab(&["true"]).expect("spawn true");
     // Drive until the child exits and the session marks dead.
     drive_until(&mut app, Instant::now() + Duration::from_millis(500));
-    let is_dead = app.tabs()[0].is_dead();
+    let is_dead = !app.tabs()[0].is_alive(); // PtySession exposes is_alive(), not is_dead().
     assert!(is_dead, "expected `true` child to have exited");
     let items = context_menu::tab_menu(0, is_dead, app.tabs().len());
     assert!(items.iter().any(|i| i.label == "Restart Tab"));
