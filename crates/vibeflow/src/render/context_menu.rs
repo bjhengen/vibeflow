@@ -264,8 +264,19 @@ impl MenuLayout {
         }
     }
 
-    pub fn hit_test(&self, _cursor: (f32, f32)) -> HitRegion {
-        HitRegion::Outside // implemented in Task 5
+    pub fn hit_test(&self, cursor: (f32, f32)) -> HitRegion {
+        // Bbox check first (cheap rejection).
+        let (bx, by, bw, bh) = self.bbox;
+        if cursor.0 < bx || cursor.0 > bx + bw || cursor.1 < by || cursor.1 > by + bh {
+            return HitRegion::Outside;
+        }
+        // Walk per-item rects in order.
+        for (idx, &(rx, ry, rw, rh)) in self.item_rects.iter().enumerate() {
+            if cursor.0 >= rx && cursor.0 <= rx + rw && cursor.1 >= ry && cursor.1 <= ry + rh {
+                return HitRegion::Inside(idx);
+            }
+        }
+        HitRegion::Outside
     }
 }
 
@@ -579,5 +590,41 @@ mod tests {
                               // Separator's height is 1 px.
         let (_, _, _, sep_h) = layout.item_rects[1];
         assert_eq!(sep_h, 1.0);
+    }
+
+    // ---- MenuLayout::hit_test --------------------------------------------
+
+    #[test]
+    fn hit_test_returns_inside_for_known_item() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        // Pick a point inside the first item's rect.
+        let (rx, ry, rw, rh) = layout.item_rects[0];
+        let cursor = (rx + rw / 2.0, ry + rh / 2.0);
+        assert_eq!(layout.hit_test(cursor), HitRegion::Inside(0));
+    }
+
+    #[test]
+    fn hit_test_returns_outside_above_bbox() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 100.0), (1000.0, 1000.0));
+        assert_eq!(layout.hit_test((50.0, 50.0)), HitRegion::Outside);
+    }
+
+    #[test]
+    fn hit_test_returns_outside_to_the_right_of_bbox() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        let (x, y, w, _) = layout.bbox;
+        assert_eq!(layout.hit_test((x + w + 5.0, y + 5.0)), HitRegion::Outside);
+    }
+
+    #[test]
+    fn hit_test_distinguishes_adjacent_items() {
+        let items = long_items();
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        // Item 0 is an action (22 px), item 1 is a separator (1 px), item 2 is an action.
+        let (rx, ry, _, _) = layout.item_rects[2];
+        assert_eq!(layout.hit_test((rx + 5.0, ry + 5.0)), HitRegion::Inside(2));
     }
 }
