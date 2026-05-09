@@ -287,6 +287,8 @@ impl Renderer {
             &self.indicator_colors,
             rename_state,
             (cell_w, cell_h),
+            &self.cursor,
+            now,
         );
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {

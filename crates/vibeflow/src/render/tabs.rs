@@ -628,6 +628,7 @@ impl TabBarRenderer {
 
     /// Build the RectInstance list (tab backgrounds + indicator stripes + close
     /// buttons + new-tab button) for the current `App` state.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_rects(
         &self,
         app: &App,
@@ -635,6 +636,8 @@ impl TabBarRenderer {
         palette: &[[f32; 4]; 4],
         rename_state: Option<&RenameInputState>,
         cell_metrics: (u32, u32),
+        cursor_blink: &crate::render::cursor::CursorBlink,
+        now: Instant,
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
@@ -703,13 +706,16 @@ impl TabBarRenderer {
                     let title_y = tab.body.y as f32 + 2.0;
                     let chars_before = rs.buffer[..rs.cursor_pos].chars().count() as f32;
                     let caret_x = title_x_start + chars_before * cell_w as f32;
-                    rects.push(RectInstance::new(
-                        caret_x,
-                        title_y,
-                        2.0,
-                        cell_h as f32,
-                        [1.0, 1.0, 1.0, 0.85],
-                    ));
+                    // Gate caret visibility on the active tab's blink phase.
+                    if cursor_blink.visible(now) {
+                        rects.push(RectInstance::new(
+                            caret_x,
+                            title_y,
+                            2.0,
+                            cell_h as f32,
+                            [1.0, 1.0, 1.0, 0.85],
+                        ));
+                    }
                 }
             }
         }
