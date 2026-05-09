@@ -182,6 +182,26 @@ impl SelectionTracker {
         // the double-click window. The 500ms / 1-cell rule still gates it.
     }
 
+    /// Select the entire grid buffer including all available scrollback. The
+    /// start line uses `-history_size as i32`; the end is the bottom-right
+    /// cell of the viewport. `text()` and `cells()` already iterate the full
+    /// range without filtering scrollback, so a subsequent copy retrieves the
+    /// invisible history. Selection rectangles for scrollback rows are still
+    /// filtered out of rendering by `build_selection_rects`.
+    pub fn select_all(&mut self, term: &Term<VoidListener>) {
+        let cols = term.columns();
+        let lines = term.screen_lines();
+        let history = term.history_size();
+        let start = Point::new(Line(-(history as i32)), Column(0));
+        let end = Point::new(Line(lines as i32 - 1), Column(cols.saturating_sub(1)));
+        self.selection = Some(Selection {
+            start,
+            end,
+            mode: SelectionMode::Cell,
+        });
+        self.drag_anchor = None;
+    }
+
     /// Yield each cell in the current selection in row-major order.
     /// Returns an empty iterator if no selection.
     pub fn cells<'a>(
@@ -502,5 +522,48 @@ mod tests {
         let t = SelectionTracker::new();
         let term = make_term(80, 24);
         assert_eq!(t.cells(&term).count(), 0);
+    }
+
+    // ---- select_all (Stage 10) -------------------------------------------
+
+    #[test]
+    fn select_all_covers_visible_grid_when_no_history() {
+        let mut t = SelectionTracker::new();
+        let term = make_term(80, 24);
+        t.select_all(&term);
+        let s = t.current().expect("selection set after select_all");
+        // start at (line: -history_size, col: 0); end at (line: 23, col: 79) for an 80x24 grid.
+        assert_eq!(s.start.column.0, 0);
+        assert_eq!(s.end.line.0, 23);
+        assert_eq!(s.end.column.0, 79);
+        // Default TermConfig has scrolling_history = 10000 → start.line = -10000.
+        // Don't pin the exact value (config-dependent); assert it's <= 0.
+        assert!(s.start.line.0 <= 0, "start.line should reach into history");
+    }
+
+    #[test]
+    fn select_all_uses_cell_mode() {
+        let mut t = SelectionTracker::new();
+        let term = make_term(80, 24);
+        t.select_all(&term);
+        let s = t.current().expect("selection set");
+        assert_eq!(s.mode, SelectionMode::Cell);
+    }
+
+    #[test]
+    fn select_all_replaces_existing_selection() {
+        let mut t = SelectionTracker::new();
+        let term = make_term(80, 24);
+        // Establish a small selection first.
+        let now = Instant::now();
+        t.mouse_down(pt(2, 3), false, &term, now);
+        t.mouse_drag(pt(2, 8), &term);
+        t.mouse_up();
+        assert!(t.current().is_some());
+        // Now select_all replaces it.
+        t.select_all(&term);
+        let s = t.current().expect("replaced");
+        assert_eq!(s.end.line.0, 23);
+        assert_eq!(s.end.column.0, 79);
     }
 }
