@@ -160,6 +160,11 @@ pub struct WindowApp {
 }
 
 impl WindowApp {
+    fn activate_focused_menu_item(&mut self) {
+        // Implemented in Task 12.
+        self.context_menu = None;
+    }
+
     /// Build a `WindowApp` with no window and no tabs. Call
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
@@ -706,6 +711,11 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 }
             }
             WindowEvent::Resized(new_size) => {
+                // Stage 10: a resize invalidates any open context menu (anchor
+                // coordinates shift and the hit regions would be stale).
+                if self.context_menu.is_some() {
+                    self.context_menu = None;
+                }
                 let cell_pitch = self.renderer.as_ref().map(|r| r.cell_pitch());
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(new_size.width, new_size.height);
@@ -743,6 +753,65 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 );
                 if event.state != ElementState::Pressed {
                     return;
+                }
+                // Stage 10: if a context menu is open, it gets first crack at
+                // keyboard input. Arrow keys navigate, Enter activates, Escape
+                // closes, bare modifier presses keep the menu alive, and any
+                // other typed key closes the menu and falls through to the grid.
+                if self.context_menu.is_some() {
+                    use winit::keyboard::{Key, NamedKey};
+                    if event.state == ElementState::Pressed {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::ArrowDown) => {
+                                if let Some(menu) = self.context_menu.as_mut() {
+                                    menu.focus_next();
+                                }
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                if let Some(menu) = self.context_menu.as_mut() {
+                                    menu.focus_prev();
+                                }
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                self.activate_focused_menu_item();
+                                return;
+                            }
+                            Key::Named(NamedKey::Escape) => {
+                                self.context_menu = None;
+                                if let Some(window) = self.window.as_ref() {
+                                    window.request_redraw();
+                                }
+                                return;
+                            }
+                            // Modifier-only presses keep the menu alive (per
+                            // Stage 8 lesson: bare modifiers are key events
+                            // too). Detect by checking that the key is one of
+                            // the modifier NamedKeys.
+                            Key::Named(
+                                NamedKey::Control
+                                | NamedKey::Shift
+                                | NamedKey::Alt
+                                | NamedKey::Super
+                                | NamedKey::Meta,
+                            ) => {
+                                // Don't close on modifier-only press.
+                            }
+                            _ => {
+                                // Any other typed key: close, then fall
+                                // through to normal handling so the keystroke
+                                // reaches the grid.
+                                self.context_menu = None;
+                            }
+                        }
+                    }
                 }
                 // Stage 9: while renaming a tab, capture all keystrokes.
                 if event.state == ElementState::Pressed && self.rename_state.is_some() {
@@ -803,6 +872,26 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let (px, py) = (position.x as u32, position.y as u32);
                 self.cursor_pos = Some((px, py));
+
+                // Stage 10: update hover focus when a context menu is open.
+                if let Some(menu) = self.context_menu.as_mut() {
+                    let cursor = (position.x as f32, position.y as f32);
+                    if let crate::render::context_menu::HitRegion::Inside(idx) =
+                        menu.layout.hit_test(cursor)
+                    {
+                        if matches!(
+                            menu.items[idx].kind,
+                            crate::render::context_menu::ItemKind::Action
+                        ) && menu.items[idx].enabled
+                            && menu.focused != idx
+                        {
+                            menu.focused = idx;
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                        }
+                    }
+                }
 
                 let Some(renderer) = self.renderer.as_ref() else {
                     return;
@@ -1024,6 +1113,15 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                             }
                         }
                     }
+                }
+            }
+            // Stage 10: losing focus dismisses the context menu to avoid a
+            // stale overlay. The Focused arm didn't exist before Stage 10 so
+            // this is a new arm (not a modification of an existing handler).
+            WindowEvent::Focused(false) if self.context_menu.is_some() => {
+                self.context_menu = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
                 }
             }
             _ => {}
