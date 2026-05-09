@@ -297,14 +297,39 @@ pub struct ContextMenuState {
 
 impl ContextMenuState {
     /// Move focus to the next enabled action item, wrapping at end. Skips
-    /// separators and disabled items. Implemented in Task 6.
+    /// separators and disabled items. No-op if no enabled action exists.
     pub fn focus_next(&mut self) {
-        let _ = self;
+        if let Some(idx) = self.find_enabled_action(self.focused, /* forward */ true) {
+            self.focused = idx;
+        }
     }
+
     /// Move focus to the previous enabled action item, wrapping at start.
-    /// Implemented in Task 6.
+    /// Skips separators and disabled items. No-op if no enabled action exists.
     pub fn focus_prev(&mut self) {
-        let _ = self;
+        if let Some(idx) = self.find_enabled_action(self.focused, /* forward */ false) {
+            self.focused = idx;
+        }
+    }
+
+    fn find_enabled_action(&self, from: usize, forward: bool) -> Option<usize> {
+        let n = self.items.len();
+        if n == 0 {
+            return None;
+        }
+        for step in 1..=n {
+            let candidate = if forward {
+                (from + step) % n
+            } else {
+                // Subtract `step` modulo `n` without underflow.
+                (from + n - (step % n)) % n
+            };
+            let item = &self.items[candidate];
+            if matches!(item.kind, ItemKind::Action) && item.enabled {
+                return Some(candidate);
+            }
+        }
+        None
     }
 }
 
@@ -626,5 +651,126 @@ mod tests {
         // Item 0 is an action (22 px), item 1 is a separator (1 px), item 2 is an action.
         let (rx, ry, _, _) = layout.item_rects[2];
         assert_eq!(layout.hit_test((rx + 5.0, ry + 5.0)), HitRegion::Inside(2));
+    }
+
+    // ---- focus_next / focus_prev -----------------------------------------
+
+    fn make_state_with_items(items: Vec<MenuItem>, initial_focus: usize) -> ContextMenuState {
+        let layout = MenuLayout::compute(&items, metrics(), (10.0, 10.0), (1000.0, 1000.0));
+        ContextMenuState {
+            anchor: (10.0, 10.0),
+            items,
+            focused: initial_focus,
+            target_idx: None,
+            layout,
+        }
+    }
+
+    fn nav_items() -> Vec<MenuItem> {
+        // Action 0, Separator 1, Action 2 (disabled), Action 3, Action 4.
+        vec![
+            MenuItem {
+                label: "A0",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+            MenuItem::separator(),
+            MenuItem {
+                label: "A2-disabled",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: false,
+                kind: ItemKind::Action,
+            },
+            MenuItem {
+                label: "A3",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+            MenuItem {
+                label: "A4",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: true,
+                kind: ItemKind::Action,
+            },
+        ]
+    }
+
+    #[test]
+    fn focus_next_skips_separator_and_disabled() {
+        let mut s = make_state_with_items(nav_items(), 0);
+        s.focus_next();
+        assert_eq!(
+            s.focused, 3,
+            "expected to skip separator (1) and disabled (2)"
+        );
+    }
+
+    #[test]
+    fn focus_next_wraps_to_first_enabled() {
+        let mut s = make_state_with_items(nav_items(), 4);
+        s.focus_next();
+        assert_eq!(s.focused, 0, "expected wrap to A0");
+    }
+
+    #[test]
+    fn focus_prev_wraps_to_last_enabled() {
+        let mut s = make_state_with_items(nav_items(), 0);
+        s.focus_prev();
+        assert_eq!(s.focused, 4, "expected wrap back to A4");
+    }
+
+    #[test]
+    fn focus_prev_skips_separator_and_disabled() {
+        let mut s = make_state_with_items(nav_items(), 3);
+        s.focus_prev();
+        assert_eq!(s.focused, 0, "expected skip A2-disabled and separator");
+    }
+
+    #[test]
+    fn focus_next_on_single_enabled_item_is_idempotent() {
+        let items = vec![MenuItem {
+            label: "Only",
+            shortcut_hint: None,
+            action: MenuAction::ClearBuffer,
+            enabled: true,
+            kind: ItemKind::Action,
+        }];
+        let mut s = make_state_with_items(items, 0);
+        s.focus_next();
+        assert_eq!(s.focused, 0);
+        s.focus_prev();
+        assert_eq!(s.focused, 0);
+    }
+
+    #[test]
+    fn focus_next_no_op_when_no_enabled_items() {
+        // All disabled — defensive: don't loop forever.
+        let items = vec![
+            MenuItem {
+                label: "Off1",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: false,
+                kind: ItemKind::Action,
+            },
+            MenuItem::separator(),
+            MenuItem {
+                label: "Off2",
+                shortcut_hint: None,
+                action: MenuAction::ClearBuffer,
+                enabled: false,
+                kind: ItemKind::Action,
+            },
+        ];
+        let mut s = make_state_with_items(items, 0);
+        s.focus_next();
+        // Should remain at 0 (no enabled item to move to).
+        assert_eq!(s.focused, 0);
     }
 }
