@@ -58,8 +58,48 @@ impl MenuItem {
 }
 
 /// Pure-logic builder for the tab right-click menu.
-pub fn tab_menu(_target_idx: SessionIdx, _is_dead: bool, _tab_count: usize) -> Vec<MenuItem> {
-    Vec::new() // implemented in Task 2
+pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec<MenuItem> {
+    let mut items = Vec::with_capacity(7);
+    items.push(MenuItem {
+        label: "Rename Tab",
+        shortcut_hint: Some("Ctrl+Shift+E"),
+        action: MenuAction::Shortcut(Shortcut::RenameTab),
+        enabled: true,
+        kind: ItemKind::Action,
+    });
+    if is_dead {
+        items.push(MenuItem {
+            label: "Restart Tab",
+            shortcut_hint: Some("Ctrl+Shift+R"),
+            action: MenuAction::Shortcut(Shortcut::RestartTab),
+            enabled: true,
+            kind: ItemKind::Action,
+        });
+    }
+    items.push(MenuItem::separator());
+    items.push(MenuItem {
+        label: "New Tab",
+        shortcut_hint: Some("Ctrl+Shift+T"),
+        action: MenuAction::Shortcut(Shortcut::NewTab),
+        enabled: true,
+        kind: ItemKind::Action,
+    });
+    items.push(MenuItem::separator());
+    items.push(MenuItem {
+        label: "Close Tab",
+        shortcut_hint: Some("Ctrl+Shift+W"),
+        action: MenuAction::Shortcut(Shortcut::CloseTab),
+        enabled: true,
+        kind: ItemKind::Action,
+    });
+    items.push(MenuItem {
+        label: "Close Other Tabs",
+        shortcut_hint: None,
+        action: MenuAction::CloseOtherTabs,
+        enabled: tab_count > 1,
+        kind: ItemKind::Action,
+    });
+    items
 }
 
 /// Pure-logic builder for the grid right-click menu.
@@ -156,4 +196,100 @@ pub(crate) type _MenuPoint = Point;
 #[allow(dead_code)]
 pub(crate) fn _menu_pt(line: i32, col: usize) -> Point {
     Point::new(Line(line), Column(col))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap::Shortcut;
+
+    fn assert_action(item: &MenuItem, label: &'static str, action: MenuAction) {
+        assert_eq!(item.label, label, "label mismatch");
+        assert_eq!(item.action, action, "action mismatch on {label}");
+        assert_eq!(
+            item.kind,
+            ItemKind::Action,
+            "expected Action kind on {label}"
+        );
+    }
+
+    fn assert_separator(item: &MenuItem) {
+        assert_eq!(item.kind, ItemKind::Separator);
+    }
+
+    // ---- tab_menu ---------------------------------------------------------
+
+    #[test]
+    fn tab_menu_alive_excludes_restart_tab() {
+        let items = tab_menu(0, /* is_dead */ false, /* tab_count */ 2);
+        // Rename, ───, New Tab, ───, Close Tab, Close Other Tabs.
+        assert_eq!(items.len(), 6);
+        assert_action(
+            &items[0],
+            "Rename Tab",
+            MenuAction::Shortcut(Shortcut::RenameTab),
+        );
+        assert_separator(&items[1]);
+        assert_action(&items[2], "New Tab", MenuAction::Shortcut(Shortcut::NewTab));
+        assert_separator(&items[3]);
+        assert_action(
+            &items[4],
+            "Close Tab",
+            MenuAction::Shortcut(Shortcut::CloseTab),
+        );
+        assert_action(&items[5], "Close Other Tabs", MenuAction::CloseOtherTabs);
+    }
+
+    #[test]
+    fn tab_menu_dead_includes_restart_tab() {
+        let items = tab_menu(0, /* is_dead */ true, /* tab_count */ 2);
+        // Rename, Restart, ───, New Tab, ───, Close Tab, Close Other Tabs.
+        assert_eq!(items.len(), 7);
+        assert_action(
+            &items[0],
+            "Rename Tab",
+            MenuAction::Shortcut(Shortcut::RenameTab),
+        );
+        assert_action(
+            &items[1],
+            "Restart Tab",
+            MenuAction::Shortcut(Shortcut::RestartTab),
+        );
+        assert_separator(&items[2]);
+        assert_action(&items[3], "New Tab", MenuAction::Shortcut(Shortcut::NewTab));
+    }
+
+    #[test]
+    fn tab_menu_single_tab_disables_close_other_tabs() {
+        let items = tab_menu(0, false, 1);
+        let close_others = items
+            .iter()
+            .find(|i| i.label == "Close Other Tabs")
+            .unwrap();
+        assert!(
+            !close_others.enabled,
+            "Close Other Tabs must be disabled when only one tab"
+        );
+    }
+
+    #[test]
+    fn tab_menu_multi_tab_enables_close_other_tabs() {
+        let items = tab_menu(0, false, 3);
+        let close_others = items
+            .iter()
+            .find(|i| i.label == "Close Other Tabs")
+            .unwrap();
+        assert!(close_others.enabled);
+    }
+
+    #[test]
+    fn tab_menu_shortcut_hints() {
+        let items = tab_menu(0, true, 2);
+        let by_label = |l: &str| items.iter().find(|i| i.label == l).unwrap();
+        assert_eq!(by_label("Rename Tab").shortcut_hint, Some("Ctrl+Shift+E"));
+        assert_eq!(by_label("Restart Tab").shortcut_hint, Some("Ctrl+Shift+R"));
+        assert_eq!(by_label("New Tab").shortcut_hint, Some("Ctrl+Shift+T"));
+        assert_eq!(by_label("Close Tab").shortcut_hint, Some("Ctrl+Shift+W"));
+        assert_eq!(by_label("Close Other Tabs").shortcut_hint, None);
+    }
 }
