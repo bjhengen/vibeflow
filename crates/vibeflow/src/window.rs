@@ -161,8 +161,84 @@ pub struct WindowApp {
 
 impl WindowApp {
     fn activate_focused_menu_item(&mut self) {
-        // Implemented in Task 12.
-        self.context_menu = None;
+        let Some(menu) = self.context_menu.take() else {
+            return;
+        };
+        let Some(item) = menu.items.get(menu.focused) else {
+            return;
+        };
+        if !item.enabled || matches!(item.kind, crate::render::context_menu::ItemKind::Separator) {
+            // Re-arm: defensive — should never happen if focus invariants hold.
+            return;
+        }
+        let action = item.action;
+        let target_idx = menu.target_idx;
+        self.dispatch_menu_action(action, target_idx);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    fn dispatch_menu_action(
+        &mut self,
+        action: crate::render::context_menu::MenuAction,
+        target_idx: Option<usize>,
+    ) {
+        use crate::render::context_menu::MenuAction;
+        match action {
+            MenuAction::Shortcut(shortcut) => {
+                // For tab-menu actions that target a specific tab, switch
+                // active to it first so existing handlers (which key off
+                // `App::active()`) operate against the right tab. The Stage 9
+                // rename for tab N is the canonical case.
+                if let Some(idx) = target_idx {
+                    self.app.set_active(idx);
+                }
+                self.handle_shortcut(shortcut);
+            }
+            MenuAction::PastePrimary => {
+                self.handle_paste_primary();
+            }
+            MenuAction::ClearBuffer => {
+                let target = target_idx.unwrap_or_else(|| self.app.active());
+                if let Some(s) = self.app.tabs_mut().get_mut(target) {
+                    let _ = s.send_input(&[0x0c]);
+                }
+            }
+            MenuAction::CloseOtherTabs => {
+                let target = target_idx.unwrap_or_else(|| self.app.active());
+                // Close from end to start so indices stay stable for `target`.
+                let mut idx = self.app.tabs().len();
+                while idx > 0 {
+                    idx -= 1;
+                    if idx != target {
+                        self.app.close_tab(idx);
+                    }
+                }
+                // After closing, the surviving tab is at index 0.
+                if !self.app.tabs().is_empty() {
+                    self.app.set_active(0);
+                }
+            }
+            MenuAction::OpenConfig => {
+                let path = self.config_path.clone();
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&path)
+                    .spawn()
+                    .map_err(|e| {
+                        tracing::warn!("xdg-open {} failed: {e}", path.display());
+                    });
+            }
+            MenuAction::OpenRepoUrl => {
+                const REPO_URL: &str = "https://github.com/bjhengen/vibeflow";
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(REPO_URL)
+                    .spawn()
+                    .map_err(|e| {
+                        tracing::warn!("xdg-open {REPO_URL} failed: {e}");
+                    });
+            }
+        }
     }
 
     /// Build a `WindowApp` with no window and no tabs. Call
@@ -289,6 +365,10 @@ impl WindowApp {
             }
             TabBarHit::TabClose(idx) => {
                 self.app.close_tab(idx);
+                // Stage 10: dismiss context menu if one is open when a tab closes.
+                if self.context_menu.is_some() {
+                    self.context_menu = None;
+                }
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -309,6 +389,10 @@ impl WindowApp {
             }
             Shortcut::CloseTab => {
                 self.app.close_tab(self.app.active());
+                // Stage 10: dismiss context menu when a tab closes.
+                if self.context_menu.is_some() {
+                    self.context_menu = None;
+                }
             }
             Shortcut::NextTab => self.app.cycle_active(1),
             Shortcut::PrevTab => self.app.cycle_active(-1),
@@ -411,6 +495,30 @@ impl WindowApp {
             let _ = s.send_input(b"\x1b[201~");
         } else {
             let _ = s.send_input(text.as_bytes());
+        }
+    }
+
+    /// Paste the PRIMARY selection (X11 middle-click clipboard) into the active tab.
+    /// Called by both the `MouseButton::Middle` arm and `MenuAction::PastePrimary`.
+    fn handle_paste_primary(&mut self) {
+        let active = self.app.active();
+        let Some(s) = self.app.tabs_mut().get_mut(active) else {
+            return;
+        };
+        let bracketed = s
+            .term()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        if let Some(clipboard) = self.clipboard.as_mut() {
+            if let Some(text) = clipboard.paste_primary() {
+                if bracketed {
+                    let _ = s.send_input(b"\x1b[200~");
+                    let _ = s.send_input(text.as_bytes());
+                    let _ = s.send_input(b"\x1b[201~");
+                } else {
+                    let _ = s.send_input(text.as_bytes());
+                }
+            }
         }
     }
 
@@ -1030,6 +1138,42 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     return; // consumed
                 }
 
+                // Stage 10: left-click on an open context menu activates or dismisses it.
+                if self.context_menu.is_some()
+                    && state == ElementState::Released
+                    && button == MouseButton::Left
+                {
+                    let cursor = (px as f32, py as f32);
+                    let menu = self.context_menu.as_ref().unwrap();
+                    match menu.layout.hit_test(cursor) {
+                        crate::render::context_menu::HitRegion::Inside(idx) => {
+                            let item = &menu.items[idx];
+                            if item.enabled
+                                && matches!(
+                                    item.kind,
+                                    crate::render::context_menu::ItemKind::Action
+                                )
+                            {
+                                // Reuse the keyboard activation path with focused = clicked.
+                                if let Some(menu) = self.context_menu.as_mut() {
+                                    menu.focused = idx;
+                                }
+                                self.activate_focused_menu_item();
+                            }
+                            // Disabled or separator: no-op (menu stays open).
+                            return;
+                        }
+                        crate::render::context_menu::HitRegion::Outside => {
+                            // Dismiss; consume the click.
+                            self.context_menu = None;
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                            return;
+                        }
+                    }
+                }
+
                 let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
                     return;
@@ -1052,22 +1196,10 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 };
 
                 // Stage 9: middle-click in NON-mouse-mode pastes PRIMARY.
+                // Let `s` go out of scope so `handle_paste_primary` can take `&mut self`.
                 if button == MouseButton::Middle && released && !mode_on {
-                    let bracketed = s
-                        .term()
-                        .mode()
-                        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
-                    if let Some(clipboard) = self.clipboard.as_mut() {
-                        if let Some(text) = clipboard.paste_primary() {
-                            if bracketed {
-                                let _ = s.send_input(b"\x1b[200~");
-                                let _ = s.send_input(text.as_bytes());
-                                let _ = s.send_input(b"\x1b[201~");
-                            } else {
-                                let _ = s.send_input(text.as_bytes());
-                            }
-                        }
-                    }
+                    let _ = s; // end the borrow
+                    self.handle_paste_primary();
                     return;
                 }
 
