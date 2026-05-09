@@ -19,6 +19,9 @@ pub enum Shortcut {
     Paste,
     /// Stage 9: open the inline rename input on the active tab.
     RenameTab,
+    /// Stage 10: select the entire grid buffer (including scrollback). Default
+    /// binding is Ctrl+Shift+A; wired to a real handler in Task 8.
+    SelectAll,
 }
 
 /// Keyed lookup table. Constructed via `ShortcutTable::with_default_bindings()`

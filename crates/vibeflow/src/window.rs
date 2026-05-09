@@ -314,6 +314,10 @@ impl WindowApp {
             Shortcut::RenameTab => {
                 self.start_rename(self.app.active());
             }
+            Shortcut::SelectAll => {
+                // Wired in Task 8.
+                tracing::debug!("SelectAll fired (handler lands in Task 8)");
+            }
         }
     }
 

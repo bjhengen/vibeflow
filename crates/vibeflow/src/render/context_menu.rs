@@ -103,8 +103,60 @@ pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec
 }
 
 /// Pure-logic builder for the grid right-click menu.
-pub fn grid_menu(_has_selection: bool) -> Vec<MenuItem> {
-    Vec::new() // implemented in Task 3
+pub fn grid_menu(has_selection: bool) -> Vec<MenuItem> {
+    vec![
+        MenuItem {
+            label: "Copy",
+            shortcut_hint: Some("Ctrl+Shift+C"),
+            action: MenuAction::Shortcut(Shortcut::Copy),
+            enabled: has_selection,
+            kind: ItemKind::Action,
+        },
+        MenuItem {
+            label: "Paste",
+            shortcut_hint: Some("Ctrl+Shift+V"),
+            action: MenuAction::Shortcut(Shortcut::Paste),
+            enabled: true,
+            kind: ItemKind::Action,
+        },
+        MenuItem {
+            label: "Paste Selection",
+            shortcut_hint: Some("Mid-click"),
+            action: MenuAction::PastePrimary,
+            enabled: true,
+            kind: ItemKind::Action,
+        },
+        MenuItem::separator(),
+        MenuItem {
+            label: "Select All",
+            shortcut_hint: Some("Ctrl+Shift+A"),
+            action: MenuAction::Shortcut(Shortcut::SelectAll),
+            enabled: true,
+            kind: ItemKind::Action,
+        },
+        MenuItem {
+            label: "Clear Buffer",
+            shortcut_hint: None,
+            action: MenuAction::ClearBuffer,
+            enabled: true,
+            kind: ItemKind::Action,
+        },
+        MenuItem::separator(),
+        MenuItem {
+            label: "Open Config…",
+            shortcut_hint: None,
+            action: MenuAction::OpenConfig,
+            enabled: true,
+            kind: ItemKind::Action,
+        },
+        MenuItem {
+            label: "About vibeflow",
+            shortcut_hint: None,
+            action: MenuAction::OpenRepoUrl,
+            enabled: true,
+            kind: ItemKind::Action,
+        },
+    ]
 }
 
 /// Pixel-space rectangle: (x, y, w, h).
@@ -291,5 +343,54 @@ mod tests {
         assert_eq!(by_label("New Tab").shortcut_hint, Some("Ctrl+Shift+T"));
         assert_eq!(by_label("Close Tab").shortcut_hint, Some("Ctrl+Shift+W"));
         assert_eq!(by_label("Close Other Tabs").shortcut_hint, None);
+    }
+
+    // ---- grid_menu --------------------------------------------------------
+
+    #[test]
+    fn grid_menu_with_selection_enables_copy() {
+        let items = grid_menu(/* has_selection */ true);
+        // Copy, Paste, PastePrimary, ───, SelectAll, Clear, ───, OpenConfig, About.
+        assert_eq!(items.len(), 9);
+        let copy = items.iter().find(|i| i.label == "Copy").unwrap();
+        assert!(copy.enabled);
+    }
+
+    #[test]
+    fn grid_menu_without_selection_disables_copy() {
+        let items = grid_menu(false);
+        let copy = items.iter().find(|i| i.label == "Copy").unwrap();
+        assert!(!copy.enabled);
+    }
+
+    #[test]
+    fn grid_menu_item_order_and_actions() {
+        let items = grid_menu(true);
+        assert_action(&items[0], "Copy", MenuAction::Shortcut(Shortcut::Copy));
+        assert_action(&items[1], "Paste", MenuAction::Shortcut(Shortcut::Paste));
+        assert_action(&items[2], "Paste Selection", MenuAction::PastePrimary);
+        assert_separator(&items[3]);
+        assert_action(
+            &items[4],
+            "Select All",
+            MenuAction::Shortcut(Shortcut::SelectAll),
+        );
+        assert_action(&items[5], "Clear Buffer", MenuAction::ClearBuffer);
+        assert_separator(&items[6]);
+        assert_action(&items[7], "Open Config…", MenuAction::OpenConfig);
+        assert_action(&items[8], "About vibeflow", MenuAction::OpenRepoUrl);
+    }
+
+    #[test]
+    fn grid_menu_shortcut_hints() {
+        let items = grid_menu(true);
+        let by_label = |l: &str| items.iter().find(|i| i.label == l).unwrap();
+        assert_eq!(by_label("Copy").shortcut_hint, Some("Ctrl+Shift+C"));
+        assert_eq!(by_label("Paste").shortcut_hint, Some("Ctrl+Shift+V"));
+        assert_eq!(by_label("Paste Selection").shortcut_hint, Some("Mid-click"));
+        assert_eq!(by_label("Select All").shortcut_hint, Some("Ctrl+Shift+A"));
+        assert_eq!(by_label("Clear Buffer").shortcut_hint, None);
+        assert_eq!(by_label("Open Config…").shortcut_hint, None);
+        assert_eq!(by_label("About vibeflow").shortcut_hint, None);
     }
 }
