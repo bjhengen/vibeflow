@@ -155,6 +155,8 @@ pub struct WindowApp {
     config_path: std::path::PathBuf,
     /// Stage 9: in-progress inline rename of a tab title. None when not renaming.
     rename_state: Option<RenameInputState>,
+    /// Stage 10: open right-click context menu, if any. At most one open.
+    context_menu: Option<crate::render::context_menu::ContextMenuState>,
 }
 
 impl WindowApp {
@@ -190,6 +192,7 @@ impl WindowApp {
             error_banner,
             config_path,
             rename_state: None,
+            context_menu: None,
         }
     }
 
@@ -442,6 +445,78 @@ impl WindowApp {
         if let Some(s) = self.app.tabs_mut().get_mut(rs.tab_idx) {
             s.set_title(rs.original);
         }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    /// Open a context menu anchored at (px_x, px_y). `target_idx` is `Some` for
+    /// tab menus (set to the tab the user right-clicked) and `None` for grid
+    /// menus (action targets the active tab).
+    fn open_context_menu(&mut self, anchor: (f32, f32), target_idx: Option<usize>) {
+        use crate::render::context_menu::{self, ContextMenuState, MenuFontMetrics, MenuLayout};
+
+        // If a rename is in progress, commit it before opening the menu.
+        if self.rename_state.is_some() {
+            self.commit_rename();
+        }
+
+        // Build items based on context.
+        let items = match target_idx {
+            Some(idx) => {
+                // PtySession exposes `is_alive()` (not `is_dead`). Negate.
+                let is_dead = self
+                    .app
+                    .tabs()
+                    .get(idx)
+                    .map(|s| !s.is_alive())
+                    .unwrap_or(true);
+                let tab_count = self.app.tabs().len();
+                context_menu::tab_menu(idx, is_dead, tab_count)
+            }
+            None => {
+                let active = self.app.active();
+                let has_selection = self
+                    .app
+                    .tabs()
+                    .get(active)
+                    .and_then(|s| s.selection.current())
+                    .is_some();
+                context_menu::grid_menu(has_selection)
+            }
+        };
+        // Find the first enabled action for initial focus.
+        let focused = items
+            .iter()
+            .position(|item| matches!(item.kind, context_menu::ItemKind::Action) && item.enabled)
+            .unwrap_or(0);
+        // Compute layout. Font metrics come from the renderer (cell metrics).
+        // `Renderer::cell_pitch()` returns (cell_w, cell_h) in physical px.
+        let (cell_w, cell_h) = self
+            .renderer
+            .as_ref()
+            .map(|r| r.cell_pitch())
+            .unwrap_or((8, 16));
+        let font = MenuFontMetrics {
+            item_height_px: cell_h as f32 + 4.0,
+            char_width_px: cell_w as f32,
+        };
+        let window_size = self
+            .window
+            .as_ref()
+            .map(|w| {
+                let s = w.inner_size();
+                (s.width as f32, s.height as f32)
+            })
+            .unwrap_or((1024.0, 768.0));
+        let layout = MenuLayout::compute(&items, font, anchor, window_size);
+        self.context_menu = Some(ContextMenuState {
+            anchor,
+            items,
+            focused,
+            target_idx,
+            layout,
+        });
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -796,23 +871,39 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // in the tab bar and any non-Left buttons in the tab bar are
                 // ignored (no-op).
                 if py < bar_h {
-                    // Stage 9: right-click on a tab body opens rename.
+                    // Stage 10: right-click anywhere in the tab bar opens a context menu.
+                    // Hit-test determines whether to show a tab menu (click on a tab body)
+                    // or a grid menu (click in the gutters / empty area of the tab bar).
                     if state == ElementState::Released && button == MouseButton::Right {
-                        if let Some(renderer) = self.renderer.as_ref() {
-                            let (window_w, _) = renderer.surface_size();
-                            let (_, cell_h) = renderer.cell_pitch();
+                        let anchor = (px as f32, py as f32);
+                        let tab_idx = if let Some(r) = self.renderer.as_ref() {
+                            let (window_w, _) = r.surface_size();
+                            let (_, cell_h) = r.cell_pitch();
                             let layout = crate::render::tabs::TabBarLayout::compute(
                                 window_w,
                                 cell_h,
                                 self.app.tabs().len(),
                             );
+                            // Stage 9 used TabBarHit::TabBody; we mirror that pattern
+                            // but only care about the index, not the hit variant.
                             if let crate::render::tabs::TabBarHit::TabBody(idx) =
                                 layout.hit_test(px, py)
                             {
-                                self.start_rename(idx);
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        match tab_idx {
+                            Some(idx) => self.open_context_menu(anchor, Some(idx)),
+                            None => {
+                                // Click in tab-bar gutter → grid menu targeting active tab.
+                                self.open_context_menu(anchor, None);
                             }
                         }
-                        return;
+                        return; // consumed
                     }
                     // Existing Stage 8 release-left handler (preserve behavior):
                     if state == ElementState::Released && button == MouseButton::Left {
@@ -839,6 +930,15 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 if pressed && self.rename_state.is_some() {
                     self.cancel_rename();
                     // Fall through to selection / mouse-mode logic.
+                }
+
+                // Stage 10: right-click in the grid area opens the grid context menu.
+                // We consume this before any mouse-mode routing so the right-click
+                // does not get forwarded to the PTY as a mouse event.
+                if released && button == MouseButton::Right {
+                    let anchor = (px as f32, py as f32);
+                    self.open_context_menu(anchor, None);
+                    return; // consumed
                 }
 
                 let active = self.app.active();

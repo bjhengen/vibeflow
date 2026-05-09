@@ -290,7 +290,6 @@ impl MenuLayout {
     }
 }
 
-#[allow(dead_code)] // WindowApp field added in Task 10; allow removed then.
 #[derive(Debug, Clone)]
 pub struct ContextMenuState {
     /// Anchor in physical pixels (where the right-click happened). Kept so a
