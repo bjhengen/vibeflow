@@ -315,8 +315,15 @@ impl WindowApp {
                 self.start_rename(self.app.active());
             }
             Shortcut::SelectAll => {
-                // Wired in Task 8.
-                tracing::debug!("SelectAll fired (handler lands in Task 8)");
+                let active = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active) else {
+                    return;
+                };
+                let (sel, term) = s.split_borrow_mouse();
+                sel.select_all(term);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
         }
     }
