@@ -5,6 +5,7 @@
 
 pub mod bell;
 pub mod colors;
+pub mod context_menu;
 pub mod cursor;
 pub mod mouse_encoder;
 pub mod quad; // formerly `text` — see Step 3
