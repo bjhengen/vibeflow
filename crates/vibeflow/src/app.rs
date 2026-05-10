@@ -243,7 +243,14 @@ impl App {
             tracing::trace!("Ctrl+Shift+R on live tab; ignoring");
             return Ok(());
         }
-        s.restart()
+        s.restart()?;
+
+        // Propagate Stage 11 defaults to the restarted session (same pattern as new_tab).
+        s.tools_list = self.default_tools_list.clone();
+        s.proc_check_interval = self.default_proc_check_interval;
+        s.set_tracker_config(self.tracker_config);
+
+        Ok(())
     }
 
     /// Cycle the active tab by `direction`: +1 = forward, -1 = backward.
@@ -497,5 +504,42 @@ mod tests {
         assert_eq!(app.tabs().len(), 1);
         // Calling set_tracker_config on the live session is also safe.
         app.tabs_mut()[0].set_tracker_config(cfg);
+    }
+
+    #[test]
+    fn restart_active_preserves_stage11_fields() {
+        let mut app = App::new();
+        app.set_default_tools_list(vec!["claude".to_owned()]);
+        app.set_default_proc_check_interval(std::time::Duration::from_millis(500));
+        app.set_default_tracker_config(TrackerConfig {
+            heuristic_silence: std::time::Duration::from_millis(7000),
+            ..TrackerConfig::default()
+        });
+        // Spawn `/bin/sh -c true` (exits quickly).
+        let _ = app.new_tab(&["/bin/sh", "-c", "true"]).expect("spawn");
+
+        // Wait briefly for the child to exit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline && app.tabs()[0].is_alive() {
+            let _ = app.poll_all(std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!app.tabs()[0].is_alive(), "child should have exited");
+
+        // Restart, then verify the Stage 11 fields are preserved.
+        app.restart_active().expect("restart");
+        assert_eq!(
+            app.tabs()[0].tools_list,
+            vec!["claude".to_owned()],
+            "tools_list should propagate from App defaults after restart"
+        );
+        assert_eq!(
+            app.tabs()[0].proc_check_interval,
+            std::time::Duration::from_millis(500),
+            "proc_check_interval should propagate"
+        );
+        // tracker_config isn't directly readable from app.rs (private field),
+        // but set_tracker_config not panicking is a smoke check.
+        app.tabs_mut()[0].set_tracker_config(TrackerConfig::default());
     }
 }
