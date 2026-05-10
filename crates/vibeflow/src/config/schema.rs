@@ -15,6 +15,7 @@ pub struct ConfigFile {
     pub fonts: Option<FontsSection>,
     pub clipboard: Option<ClipboardSection>,
     pub tabs: Option<TabsSection>,
+    pub ai: Option<AiSection>,
 }
 
 /// `[shortcuts]` table. Each known action key (e.g. `new_tab`, `copy`) maps
@@ -90,6 +91,22 @@ pub struct TabsSection {
     /// `user@host: ` that crowds the tab strip. Titles that don't start
     /// with this prefix are unchanged. Default empty (no stripping).
     pub title_strip_prefix: Option<String>,
+}
+
+/// `[ai]` table. Stage 11: AI integration configuration.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AiSection {
+    /// List of enabled AI tools (e.g. `["claude", "codex"]`).
+    pub tools: Option<Vec<String>>,
+    /// Silence threshold in milliseconds for heuristic AI suggestions.
+    pub heuristic_silence_ms: Option<u64>,
+    /// Timeout in seconds for stale state detection.
+    pub stale_state_timeout_s: Option<u64>,
+    /// Debounce interval in milliseconds for AI requests.
+    pub debounce_ms: Option<u64>,
+    /// Interval in milliseconds for foreground activity checks.
+    pub foreground_check_interval_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -196,5 +213,47 @@ mod tests {
         "##;
         let r: Result<ConfigFile, _> = toml::from_str(s);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn ai_section_parses_all_fields() {
+        let toml = r#"
+[ai]
+tools = ["claude", "codex"]
+heuristic_silence_ms = 2500
+stale_state_timeout_s = 60
+debounce_ms = 50
+foreground_check_interval_ms = 500
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let ai = cs.ai.expect("ai section present");
+        assert_eq!(
+            ai.tools.as_deref(),
+            Some(&["claude".to_owned(), "codex".to_owned()][..])
+        );
+        assert_eq!(ai.heuristic_silence_ms, Some(2500));
+        assert_eq!(ai.stale_state_timeout_s, Some(60));
+        assert_eq!(ai.debounce_ms, Some(50));
+        assert_eq!(ai.foreground_check_interval_ms, Some(500));
+    }
+
+    #[test]
+    fn ai_section_missing_keeps_none() {
+        let toml = "";
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        assert!(cs.ai.is_none());
+    }
+
+    #[test]
+    fn ai_section_rejects_unknown_field() {
+        let toml = r#"
+[ai]
+bogus_key = 1
+"#;
+        let result: Result<super::ConfigFile, _> = toml::from_str(toml);
+        assert!(
+            result.is_err(),
+            "unknown key should fail to parse with deny_unknown_fields"
+        );
     }
 }
