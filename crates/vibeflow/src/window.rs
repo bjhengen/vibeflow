@@ -473,6 +473,23 @@ impl WindowApp {
         }
         self.app.set_default_respect_osc_title(respect);
         self.app.set_default_title_strip_prefix(prefix);
+
+        // Stage 11: [ai] section.
+        let ai = &config.ai;
+        let tracker_cfg = crate::session::tracker::TrackerConfig {
+            debounce: std::time::Duration::from_millis(ai.debounce_ms),
+            heuristic_silence: std::time::Duration::from_millis(ai.heuristic_silence_ms),
+            stale_state: std::time::Duration::from_secs(ai.stale_state_timeout_s),
+        };
+        let proc_interval = std::time::Duration::from_millis(ai.foreground_check_interval_ms);
+        self.app.set_default_tracker_config(tracker_cfg);
+        self.app.set_default_tools_list(ai.tools.clone());
+        self.app.set_default_proc_check_interval(proc_interval);
+        for s in self.app.tabs_mut().iter_mut() {
+            s.set_tracker_config(tracker_cfg);
+            s.tools_list = ai.tools.clone();
+            s.proc_check_interval = proc_interval;
+        }
     }
 
     fn handle_paste(&mut self) {
