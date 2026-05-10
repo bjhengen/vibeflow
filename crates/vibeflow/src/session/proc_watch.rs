@@ -13,6 +13,8 @@
 ///
 /// Caveat: kernel truncates `comm` to 15 chars; match-list entries longer
 /// than 15 chars will silently never match.
+///
+/// Used by tests and will be called from Task 6 (PtySession::tick).
 #[allow(dead_code)]
 pub fn foreground_command_name(child_pid: i32) -> Option<String> {
     #[cfg(target_os = "linux")]
@@ -38,6 +40,8 @@ pub fn foreground_command_name(child_pid: i32) -> Option<String> {
 /// is wrong. Find the LAST `)` and operate on the suffix; tpgid is the 6th
 /// whitespace-separated token in that suffix (state, ppid, pgrp, session,
 /// tty_nr, tpgid).
+///
+/// Called by foreground_command_name and tested directly via unit tests.
 #[allow(dead_code)]
 fn parse_tpgid(stat_line: &str) -> Option<i32> {
     let after_comm = stat_line.rsplit_once(')')?.1.trim_start();
@@ -99,22 +103,21 @@ mod tests {
     #[test]
     fn foreground_command_name_round_trips_for_self() {
         // The test process's tpgid points at whatever ran cargo test (cargo,
-        // bash, etc). We can't pin the exact name, but we can assert the
-        // result is Some(non-empty).
+        // bash, etc) ONLY if there's a controlling TTY. In non-TTY contexts
+        // (cargo test runner without `-t`, CI), tpgid = -1 and the function
+        // correctly returns None. Skip the body in that case — the parse-
+        // logic tests above cover the deterministic surface.
         let pid = std::process::id() as i32;
-        let name = foreground_command_name(pid);
-        assert!(
-            name.is_some(),
-            "self should resolve to some foreground command"
-        );
-        let name = name.unwrap();
-        assert!(!name.is_empty(), "comm should not be empty");
-        // comm is kernel-truncated to 15 chars max.
-        assert!(
-            name.len() <= 15,
-            "comm length {} exceeds kernel cap",
-            name.len()
-        );
+        if let Some(name) = foreground_command_name(pid) {
+            assert!(!name.is_empty(), "comm should not be empty when present");
+            // comm is kernel-truncated to 15 chars max.
+            assert!(
+                name.len() <= 15,
+                "comm length {} exceeds kernel cap",
+                name.len()
+            );
+        }
+        // If None: running without controlling TTY; not a failure.
     }
 
     #[cfg(not(target_os = "linux"))]
