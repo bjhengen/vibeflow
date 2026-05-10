@@ -14,8 +14,7 @@
 /// Caveat: kernel truncates `comm` to 15 chars; match-list entries longer
 /// than 15 chars will silently never match.
 ///
-/// Used by tests and will be called from Task 6 (PtySession::tick).
-#[allow(dead_code)]
+/// Used by tests and called from `PtySession::tick`.
 pub fn foreground_command_name(child_pid: i32) -> Option<String> {
     #[cfg(target_os = "linux")]
     {
@@ -42,7 +41,6 @@ pub fn foreground_command_name(child_pid: i32) -> Option<String> {
 /// tty_nr, tpgid).
 ///
 /// Called by foreground_command_name and tested directly via unit tests.
-#[allow(dead_code)]
 fn parse_tpgid(stat_line: &str) -> Option<i32> {
     let after_comm = stat_line.rsplit_once(')')?.1.trim_start();
     after_comm.split_whitespace().nth(5)?.parse().ok()
