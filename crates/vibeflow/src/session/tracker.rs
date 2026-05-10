@@ -178,6 +178,13 @@ impl AiStateTracker {
         self.heuristic_active = active;
     }
 
+    /// Update timing config at runtime. Used by hot-reload (`apply_config`).
+    /// In-flight timers don't restart; subsequent `tick()` calls compare
+    /// against the new thresholds.
+    pub fn set_config(&mut self, config: TrackerConfig) {
+        self.config = config;
+    }
+
     /// Internal: change state if the new value differs and (Task 10+) debounce
     /// allows. Returns true if the state actually changed.
     fn transition_to(&mut self, new_state: TabState, now: Instant) -> bool {
@@ -494,5 +501,36 @@ mod tests {
         let changed = t.tick(now + Duration::from_secs(5));
         assert!(!changed);
         assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn set_config_updates_heuristic_silence_threshold() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        // Drive Working state via OSC 1338 frame.
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        assert_eq!(t.state(), TabState::Working);
+        // Heuristic-silence path needs `last_output_at` to be set; otherwise
+        // the `if let Some(last_out) = self.last_output_at` guard short-circuits
+        // and tick() returns false even past the threshold. Inject an output
+        // observation now so subsequent ticks compare against this baseline.
+        t.on_input(TrackerInput::OutputObserved, now);
+        // Reduce heuristic silence to 1000 ms.
+        t.set_config(TrackerConfig {
+            heuristic_silence: Duration::from_millis(1000),
+            ..TrackerConfig::default()
+        });
+        // Tick at 800 ms — should NOT have transitioned (still under threshold).
+        let changed_short = t.tick(now + Duration::from_millis(800));
+        assert!(
+            !changed_short,
+            "should not transition within new 1000 ms threshold"
+        );
+        assert_eq!(t.state(), TabState::Working);
+        // Tick at 1100 ms — should transition to Waiting.
+        let changed_long = t.tick(now + Duration::from_millis(1100));
+        assert!(changed_long, "should transition past new 1000 ms threshold");
+        assert_eq!(t.state(), TabState::Waiting);
     }
 }
