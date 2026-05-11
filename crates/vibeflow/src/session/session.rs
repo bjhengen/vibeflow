@@ -128,6 +128,12 @@ pub struct PtySession {
     pub(crate) proc_check_interval: std::time::Duration,
     /// Stage 11: timestamp of the most recent proc check, for throttling.
     pub(crate) last_proc_check: Option<std::time::Instant>,
+    /// Stage 11 follow-up: tracks the previous heuristic_active state so
+    /// `tick()` can detect the rising edge (off→on) and synthesize an
+    /// `OutputObserved` to seed the tracker. Without this, AI tools that
+    /// produce no immediate output (e.g., `python3 -c "sleep 30"`) never
+    /// arm the silence guard because state stays Active.
+    pub(crate) heuristic_was_active: bool,
 }
 
 impl PtySession {
@@ -188,6 +194,7 @@ impl PtySession {
             tools_list: Vec::new(),
             proc_check_interval: std::time::Duration::from_millis(250),
             last_proc_check: None,
+            heuristic_was_active: false,
         })
     }
 
@@ -341,7 +348,17 @@ impl PtySession {
                         Some(name) => self.tools_list.iter().any(|t| t == &name),
                         None => false,
                     };
+                let was_armed = self.heuristic_was_active;
                 self.tracker.set_heuristic_active(matched);
+                self.heuristic_was_active = matched;
+                // Rising edge: heuristic just armed. Synthesize an OutputObserved so
+                // the tracker promotes Active/Idle → Working AND seeds last_output_at
+                // for the silence guard. Real subsequent output bytes will refresh
+                // the baseline; pure silence lets the heuristic-silence timer fire.
+                if matched && !was_armed {
+                    self.tracker
+                        .on_input(crate::session::tracker::TrackerInput::OutputObserved, now);
+                }
             }
         }
         // Existing tracker.tick() pathway unchanged.
@@ -1014,6 +1031,59 @@ mod tests {
         assert!(
             after_second > after_first,
             "tick past interval should re-run proc check"
+        );
+    }
+
+    #[test]
+    fn tier_3_arms_on_rising_edge_even_without_real_output() {
+        // Stage 11 follow-up: when the proc check flips heuristic from off to on
+        // and the AI tool produces no immediate output (e.g., `python3 -c "sleep 30"`),
+        // we must still transition the tracker to Working so the silence guard can fire.
+        // This test simulates the transition by mutating tools_list mid-flight and
+        // ticking to force a proc check.
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig {
+                heuristic_silence: std::time::Duration::from_millis(500),
+                ..TrackerConfig::default()
+            },
+        )
+        .expect("spawn");
+        // Initially tools_list is empty → heuristic stays off.
+        s.tools_list = vec![];
+        s.proc_check_interval = std::time::Duration::from_millis(0); // always fire
+        let t0 = std::time::Instant::now();
+        let _ = s.tick(t0);
+        assert_eq!(
+            s.tracker_state(),
+            TabState::Active,
+            "armed=false → state stays Active"
+        );
+
+        // Discover the actual comm name for the spawned child.
+        let pid = s.child_pid().unwrap();
+        let comm = crate::session::proc_watch::foreground_command_name(pid);
+        eprintln!("DEBUG: child comm = {comm:?}");
+
+        // Now arm the heuristic by adding a matcher for the running command (sh).
+        // /proc/<pgid>/comm for our spawned child will read "sh" (or similar).
+        let tool_name = comm.unwrap_or_else(|| "sh".to_owned());
+        s.tools_list = vec![tool_name];
+        let _ = s.tick(t0 + std::time::Duration::from_millis(50));
+        // Rising edge of heuristic_active should have synthesized an OutputObserved,
+        // which transitions Active → Working.
+        assert_eq!(
+            s.tracker_state(),
+            TabState::Working,
+            "rising edge of heuristic_active should promote state to Working"
+        );
+
+        // Without further output bytes, silence threshold elapses and state → Waiting.
+        let _ = s.tick(t0 + std::time::Duration::from_millis(700));
+        assert_eq!(
+            s.tracker_state(),
+            TabState::Waiting,
+            "silence past threshold should transition to Waiting"
         );
     }
 
