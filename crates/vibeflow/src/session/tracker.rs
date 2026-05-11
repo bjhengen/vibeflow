@@ -136,6 +136,15 @@ impl AiStateTracker {
             }
             TrackerInput::OutputObserved => {
                 self.last_output_at = Some(now);
+                // Tier 3: if the foreground process is in the AI tools list (heuristic_active)
+                // and we're not already tracking a state from an explicit signal, infer
+                // Working from observed output activity. This is the "rapid output → working"
+                // half of the Tier 3 heuristic; the Working → Waiting (silence) half lives
+                // in `tick()`.
+                if self.heuristic_active && matches!(self.state, TabState::Active | TabState::Idle)
+                {
+                    return self.transition_to(TabState::Working, now);
+                }
                 false
             }
         }
@@ -482,11 +491,23 @@ mod tests {
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
         t.set_heuristic_active(true);
-        // Tracker is Active (default). Heuristic only fires from Working.
+        // With the Tier 3 fix, OutputObserved on Active transitions → Working,
+        // so the heuristic silence CAN fire afterwards. This test verifies the
+        // full Tier 3 path: Active →(OutputObserved)→ Working →(silence)→ Waiting.
+        // The "does not fire outside Working" invariant is preserved because the
+        // transition goes *through* Working first.
         t.on_input(TrackerInput::OutputObserved, now);
+        assert_eq!(
+            t.state(),
+            TabState::Working,
+            "OutputObserved should have elevated to Working"
+        );
         let changed = t.tick(now + Duration::from_secs(5));
-        assert!(!changed);
-        assert_eq!(t.state(), TabState::Active);
+        assert!(
+            changed,
+            "silence timer should fire after Working transition"
+        );
+        assert_eq!(t.state(), TabState::Waiting);
     }
 
     #[test]
@@ -501,6 +522,62 @@ mod tests {
         let changed = t.tick(now + Duration::from_secs(5));
         assert!(!changed);
         assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn output_observed_triggers_working_when_heuristic_active() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        assert_eq!(t.state(), TabState::Active);
+        // First output observation should transition Active → Working when
+        // heuristic_active is true. This is the "rapid output → working"
+        // half of Tier 3 the original design spec called for.
+        let changed = t.on_input(TrackerInput::OutputObserved, now);
+        assert!(
+            changed,
+            "OutputObserved with heuristic_active should transition"
+        );
+        assert_eq!(t.state(), TabState::Working);
+        // last_output_at also gets set, so the silence timer can fire.
+        // (Verified indirectly: a tick past heuristic_silence should now transition to Waiting.)
+        let _ = t.tick(now + Duration::from_millis(5000));
+        assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    #[test]
+    fn output_observed_no_transition_when_heuristic_inactive() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        // heuristic_active = false (default).
+        let changed = t.on_input(TrackerInput::OutputObserved, now);
+        assert!(
+            !changed,
+            "OutputObserved without heuristic should not transition"
+        );
+        assert_eq!(t.state(), TabState::Active);
+    }
+
+    #[test]
+    fn output_observed_does_not_override_working_or_waiting() {
+        // If state is already Working (e.g., from explicit OSC 1338), OutputObserved
+        // shouldn't bump it back to Working — it should just refresh last_output_at.
+        // Same for Waiting (an explicit signal from a tool that's now waiting).
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Waiting)), now);
+        assert_eq!(t.state(), TabState::Waiting);
+        // Output observation should keep state at Waiting (explicit wins over heuristic).
+        let _ = t.on_input(
+            TrackerInput::OutputObserved,
+            now + Duration::from_millis(200),
+        );
+        assert_eq!(
+            t.state(),
+            TabState::Waiting,
+            "OutputObserved should not override explicit Waiting"
+        );
     }
 
     #[test]
