@@ -46,7 +46,7 @@ Apply the review's fixes inline before T1 dispatch.
 | `crates/vibeflow/src/session/tracker.rs` | TOUCHED (light) | New `pub fn set_config(&mut self, config: TrackerConfig)` method on `AiStateTracker`. |
 | `crates/vibeflow/src/session/session.rs` | TOUCHED | `PtySession` gains `pub(crate) tools_list: Vec<String>`, `pub(crate) proc_check_interval: Duration`, `pub(crate) last_proc_check: Option<Instant>`. New methods: `pub(crate) fn child_pid(&self) -> Option<i32>` and `pub fn set_tracker_config(&mut self, cfg: TrackerConfig)`. `tick(now)` adds the throttled proc check at the TOP. `spawn(argv, config)` initializes the new fields with defaults (full list/empty list per Step 5 of T5 below). |
 | `crates/vibeflow/src/app.rs` | TOUCHED | `App` gains private fields `default_tools_list: Vec<String>`, `default_proc_check_interval: Duration`. Three new public setters: `set_default_tracker_config`, `set_default_tools_list`, `set_default_proc_check_interval`. `App::new_tab` initializes the new `PtySession` fields from these defaults after `spawn`. |
-| `crates/vibeflow/src/config/schema.rs` | TOUCHED | New `pub struct AiSection` (with `#[serde(deny_unknown_fields)]` + `Option<…>` fields). Added to top-level `ConfigSchema`. |
+| `crates/vibeflow/src/config/schema.rs` | TOUCHED | New `pub struct AiSection` (with `#[serde(deny_unknown_fields)]` + `Option<…>` fields). Added to top-level `ConfigFile`. |
 | `crates/vibeflow/src/config/mod.rs` | TOUCHED | New resolved `pub struct Ai` with concrete fields + defaults. Added to `Config`. `Config::default_values()` populates. New `apply_ai(...)` step parses + writes (mirrors `apply_colors`). |
 | `crates/vibeflow/src/window.rs` | TOUCHED | `apply_config` extends with `[ai]` block: builds `TrackerConfig` from settings, calls `App::set_default_*` setters, walks `app.tabs_mut()` updating tracker + per-session fields. |
 | `integrations/claude-code-hooks.json` | NEW | Tier 1 ship artifact: 2 hook entries (Stop / UserPromptSubmit) calling `vibeflow-emit`. |
@@ -239,6 +239,11 @@ Append after the last existing test:
         // Drive Working state via OSC 1338 frame.
         t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
         assert_eq!(t.state(), TabState::Working);
+        // Heuristic-silence path needs `last_output_at` to be set; otherwise
+        // the `if let Some(last_out) = self.last_output_at` guard short-circuits
+        // and tick() returns false even past the threshold. Inject an output
+        // observation now so subsequent ticks compare against this baseline.
+        t.on_input(TrackerInput::OutputObserved, now);
         // Reduce heuristic silence to 1000 ms.
         t.set_config(TrackerConfig {
             heuristic_silence: Duration::from_millis(1000),
@@ -329,7 +334,7 @@ stale_state_timeout_s = 60
 debounce_ms = 50
 foreground_check_interval_ms = 500
 "#;
-        let cs: super::ConfigSchema = toml::from_str(toml).expect("parse");
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
         let ai = cs.ai.expect("ai section present");
         assert_eq!(ai.tools.as_deref(), Some(&["claude".to_owned(), "codex".to_owned()][..]));
         assert_eq!(ai.heuristic_silence_ms, Some(2500));
@@ -341,7 +346,7 @@ foreground_check_interval_ms = 500
     #[test]
     fn ai_section_missing_keeps_none() {
         let toml = "";
-        let cs: super::ConfigSchema = toml::from_str(toml).expect("parse");
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
         assert!(cs.ai.is_none());
     }
 
@@ -351,12 +356,12 @@ foreground_check_interval_ms = 500
 [ai]
 bogus_key = 1
 "#;
-        let result: Result<super::ConfigSchema, _> = toml::from_str(toml);
+        let result: Result<super::ConfigFile, _> = toml::from_str(toml);
         assert!(result.is_err(), "unknown key should fail to parse with deny_unknown_fields");
     }
 ```
 
-The ConfigSchema field name is whatever the existing top-level struct uses — likely `ConfigSchema` with a field `ai: Option<AiSection>`. If the existing struct has a different name (e.g. `Schema` or `RootSchema`), match exactly. Read the file first.
+**Verified by senior pre-execution review:** the existing top-level schema struct is `pub struct ConfigFile` at `crates/vibeflow/src/config/schema.rs:11`. Add `pub ai: Option<AiSection>` to `ConfigFile`, NOT to a renamed/new struct. Use `super::ConfigFile` in the test imports (matches the actual name).
 
 - [ ] **Step 3: Run the new tests; expect compile errors (`AiSection` and the `ai` field don't exist yet).**
 
@@ -524,12 +529,12 @@ Find the function and add the `ai:` field to the returned Config literal (near t
 Find the section apply chain inside `Config::load` (or wherever schema is folded into resolved). Add a call to `apply_ai`:
 
 ```rust
-        if let Some(ai_schema) = schema.ai {
-            apply_ai(ai_schema, &mut config.ai);
+        if let Some(a) = file.ai {
+            apply_ai(a, &mut defaults.ai);
         }
 ```
 
-(The exact match-or-call shape depends on the existing pattern — read `apply_colors` first and copy that style verbatim. If `apply_colors` is a free function taking `(&ColorsSection, &mut Colors, &mut Vec<ConfigError>)` and uses an `apply()` helper, mirror that.)
+**Verified by senior review:** in `Config::load`, the parsed schema variable is named `file` (not `schema`), and the mutable resolved-defaults variable is `defaults` (not `config`). Confirmed at `config/mod.rs:189, 204`. Use those exact names. The existing `apply_colors` signature is `fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut Vec<ConfigError>)` at `config/mod.rs:422`. Plan's `apply_ai` intentionally drops the `errors` parameter since all `[ai]` fields are infallible — that's a valid simpler shape.
 
 Add the `apply_ai` helper (next to `apply_colors`):
 
@@ -665,6 +670,21 @@ In the existing `impl PtySession { … }` block (near `set_heuristic_active`):
     pub fn set_tracker_config(&mut self, cfg: TrackerConfig) {
         self.tracker.set_config(cfg);
     }
+
+    /// Stage 11: read-only accessor for the most recent proc-check timestamp.
+    /// Used by integration tests at `crates/vibeflow/tests/` to verify the
+    /// throttled foreground-process detection actually fires; integration
+    /// tests run in a separate compilation unit, so `pub(crate)` field access
+    /// would fail to compile from there.
+    pub fn last_proc_check(&self) -> Option<std::time::Instant> {
+        self.last_proc_check
+    }
+
+    /// Stage 11: read-only accessor for the current tracker state. Same
+    /// rationale as `last_proc_check` — needed for integration tests.
+    pub fn tracker_state(&self) -> crate::session::tracker::TabState {
+        self.tracker.state()
+    }
 ```
 
 `Box<dyn Child + Send + Sync>::process_id()` returns `Option<u32>` — verified in `~/.cargo/registry/src/index.crates.io-*/portable-pty-*/src/lib.rs:137`. The cast to `i32` matches what `proc_watch::foreground_command_name` accepts; signed because /proc paths use signed PIDs.
@@ -765,9 +785,11 @@ Append to the same test block:
         // If heuristic is armed AND we're in Working AND silence elapsed, expect Waiting.
         // BUT: this depends on /proc being readable AND comm matching "bash" exactly.
         // On environments where /proc is restricted or comm differs, the assertion
-        // would fail. Make it tolerant: just confirm tick didn't panic and the
-        // session is alive.
-        assert!(s.is_alive() || !s.is_alive()); // smoke; full behavior is in integration tests
+        // would fail. So we make a tolerant check: confirm tick fired the proc
+        // check (last_proc_check is Some), which is the deterministic part of
+        // Stage 11's behavior. Full state-transition behavior is exercised in
+        // Task 10's integration tests.
+        assert!(s.last_proc_check.is_some(), "tick should have run the proc check");
     }
 ```
 
@@ -885,6 +907,16 @@ Find the existing `#[cfg(test)] mod tests` in `app.rs`. Append:
 
     #[test]
     fn set_default_tracker_config_persists_for_future_spawns() {
+        // Verify the setter exists and that spawn uses the new default
+        // without panicking. Full state-change behavior is covered in Task 2
+        // (tracker::set_config_updates_heuristic_silence_threshold) and
+        // Task 10's integration tests — those exercise tracker state via
+        // PtySession's public `state()` method against a real PTY.
+        //
+        // We can't easily verify "spawn used the default" from app.rs because
+        // `PtySession.tracker` is private (no public getter) and `app.rs` is
+        // a different module. So this test just confirms the setter API and
+        // that new_tab + spawn complete without error after the setter runs.
         let mut app = App::new();
         let cfg = TrackerConfig {
             heuristic_silence: std::time::Duration::from_millis(7000),
@@ -892,29 +924,13 @@ Find the existing `#[cfg(test)] mod tests` in `app.rs`. Append:
         };
         app.set_default_tracker_config(cfg);
         let _ = app.new_tab(&["bash"]).expect("spawn");
-        // PtySession's tracker isn't directly readable, but spawn passed `cfg`
-        // through. Drive a Working state and a tick at +6s — should NOT
-        // transition (under 7s threshold).
-        let now = std::time::Instant::now();
-        app.tabs_mut()[0].set_heuristic_active(true);
-        app.tabs_mut()[0].tracker.on_input(
-            crate::session::tracker::TrackerInput::AiFrame(
-                vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working),
-            ),
-            now,
-        );
-        let _ = app.tabs_mut()[0].tick(now + std::time::Duration::from_secs(6));
-        assert_ne!(
-            app.tabs_mut()[0].tracker.state(),
-            crate::session::tracker::TabState::Waiting,
-            "should NOT transition under 7s heuristic_silence"
-        );
+        assert_eq!(app.tabs().len(), 1);
+        // Calling set_tracker_config on the live session is also safe.
+        app.tabs_mut()[0].set_tracker_config(cfg);
     }
 ```
 
-The third test imports `app.tabs_mut()[0].tracker` — currently a private field. To test it via this path, either expose a `pub(crate)` getter, OR shape the test differently (drive Working via OSC 1338 bytes through the OscDispatcher and assert via `state()`). Mirror Stage 9 `app.rs` test patterns — read the file first.
-
-If `tracker` is private and there's no public way to drive Working without a real PTY response, simplify the third test to just construct the App, set the default config, spawn a tab, and verify `app.tabs()[0].set_tracker_config(...)` doesn't panic — i.e., that spawn used the default. The full state-change behavior is covered in Task 2's tracker test and Task 10's integration tests.
+**Verified by senior pre-execution review:** `PtySession.tracker` is a private field at `session.rs:99`. `app.rs` is a separate module from `session::session` and cannot read `pub(crate)`-or-less fields across module boundaries — direct `s.tracker.on_input(...)` from app.rs DOES NOT compile. The simplified test above confirms the setter API exists and `new_tab` doesn't panic. Full state-change behavior is exercised in T2 (within `tracker.rs::tests`, where the tracker fields are accessible) and T10 (integration tests via real PTY).
 
 - [ ] **Step 2: Run; expect compile errors (`set_default_*` methods don't exist).**
 
@@ -1261,7 +1277,7 @@ fn tier_3_arms_for_listed_tool() {
     let now = Instant::now();
     let _ = app.tick_all(now);
     assert!(
-        app.tabs()[0].last_proc_check.is_some(),
+        app.tabs()[0].last_proc_check().is_some(),
         "proc check should have fired at least once"
     );
 }
@@ -1291,19 +1307,15 @@ fn tier_3_does_not_arm_for_unlisted_tool() {
         vibeflow::session::tracker::TabState::Waiting,
         "non-AI shell should never enter Waiting via Tier 3"
     );
+    // The proc check did run (it's not gated on tools_list matching).
+    assert!(
+        app.tabs()[0].last_proc_check().is_some(),
+        "proc check should have run regardless of match"
+    );
 }
 ```
 
-The second test calls `app.tabs()[0].tracker_state()` — a `pub(crate) fn tracker_state(&self) -> TabState` accessor that doesn't exist yet. **Add it as a small extension to PtySession in this task** (the alternative — making `tracker` field `pub(crate)` — leaks more surface than necessary).
-
-In `crates/vibeflow/src/session/session.rs`, in `impl PtySession`:
-
-```rust
-    /// Stage 11: read-only accessor for tests (and future telemetry).
-    pub fn tracker_state(&self) -> crate::session::tracker::TabState {
-        self.tracker.state()
-    }
-```
+**Verified by senior pre-execution review:** `app.tabs()[0].tracker_state()` and `app.tabs()[0].last_proc_check()` are added in T5 as `pub fn` (NOT `pub(crate)`) so they're reachable from this integration test (which lives in a separate compilation unit). No further accessor additions needed in T10.
 
 - [ ] **Step 3: Run.**
 

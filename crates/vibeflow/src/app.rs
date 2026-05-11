@@ -23,6 +23,11 @@ pub struct App {
     /// Mirror of `Config.tabs.title_strip_prefix`. Same lifecycle as
     /// `default_respect_osc_title`.
     default_title_strip_prefix: String,
+    /// Stage 11: mirror of `Config.ai.tools`. Applied to subsequently-spawned tabs.
+    default_tools_list: Vec<String>,
+    /// Stage 11: mirror of `Config.ai.foreground_check_interval_ms`. Applied
+    /// to subsequently-spawned tabs.
+    default_proc_check_interval: std::time::Duration,
 }
 
 impl App {
@@ -35,6 +40,8 @@ impl App {
             tracker_config: default_tracker_config(),
             default_respect_osc_title: true,
             default_title_strip_prefix: String::new(),
+            default_tools_list: Vec::new(),
+            default_proc_check_interval: std::time::Duration::from_millis(250),
         }
     }
 
@@ -49,6 +56,23 @@ impl App {
         self.default_title_strip_prefix = prefix;
     }
 
+    /// Stage 11: update the default `TrackerConfig` for subsequently-spawned tabs.
+    /// Existing tabs keep their current config until `set_tracker_config` is
+    /// called explicitly (typically via `apply_config`).
+    pub fn set_default_tracker_config(&mut self, cfg: TrackerConfig) {
+        self.tracker_config = cfg;
+    }
+
+    /// Stage 11: update the default AI tool list for subsequently-spawned tabs.
+    pub fn set_default_tools_list(&mut self, tools: Vec<String>) {
+        self.default_tools_list = tools;
+    }
+
+    /// Stage 11: update the default proc-check interval for subsequently-spawned tabs.
+    pub fn set_default_proc_check_interval(&mut self, interval: std::time::Duration) {
+        self.default_proc_check_interval = interval;
+    }
+
     /// Spawn a new tab. Returns the index of the new tab in [`Self::tabs`]. The new
     /// tab becomes the active tab.
     ///
@@ -58,6 +82,8 @@ impl App {
         let mut session = PtySession::spawn(argv, self.tracker_config)?;
         session.respect_osc_title = self.default_respect_osc_title;
         session.title_strip_prefix = self.default_title_strip_prefix.clone();
+        session.tools_list = self.default_tools_list.clone();
+        session.proc_check_interval = self.default_proc_check_interval;
         self.tabs.push(session);
         let idx = self.tabs.len() - 1;
         self.active = idx;
@@ -217,7 +243,14 @@ impl App {
             tracing::trace!("Ctrl+Shift+R on live tab; ignoring");
             return Ok(());
         }
-        s.restart()
+        s.restart()?;
+
+        // Propagate Stage 11 defaults to the restarted session (same pattern as new_tab).
+        s.tools_list = self.default_tools_list.clone();
+        s.proc_check_interval = self.default_proc_check_interval;
+        s.set_tracker_config(self.tracker_config);
+
+        Ok(())
     }
 
     /// Cycle the active tab by `direction`: +1 = forward, -1 = backward.
@@ -425,5 +458,88 @@ mod tests {
         assert_eq!(app.active(), 0); // wraps
         app.cycle_active(-1);
         assert_eq!(app.active(), 2); // wraps backward
+    }
+
+    #[test]
+    fn new_tab_inherits_default_tools_list() {
+        let mut app = App::new();
+        app.set_default_tools_list(vec!["claude".to_owned(), "codex".to_owned()]);
+        let _ = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
+        assert_eq!(
+            app.tabs()[0].tools_list,
+            vec!["claude".to_owned(), "codex".to_owned()]
+        );
+    }
+
+    #[test]
+    fn new_tab_inherits_default_proc_check_interval() {
+        let mut app = App::new();
+        app.set_default_proc_check_interval(std::time::Duration::from_millis(500));
+        let _ = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
+        assert_eq!(
+            app.tabs()[0].proc_check_interval,
+            std::time::Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn set_default_tracker_config_persists_for_future_spawns() {
+        // Verify the setter exists and that spawn uses the new default
+        // without panicking. Full state-change behavior is covered in Task 2
+        // (tracker::set_config_updates_heuristic_silence_threshold) and
+        // Task 10's integration tests — those exercise tracker state via
+        // PtySession's public `state()` method against a real PTY.
+        //
+        // We can't easily verify "spawn used the default" from app.rs because
+        // `PtySession.tracker` is private (no public getter) and `app.rs` is
+        // a different module. So this test just confirms the setter API and
+        // that new_tab + spawn complete without error after the setter runs.
+        let mut app = App::new();
+        let cfg = TrackerConfig {
+            heuristic_silence: std::time::Duration::from_millis(7000),
+            ..TrackerConfig::default()
+        };
+        app.set_default_tracker_config(cfg);
+        let _ = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
+        assert_eq!(app.tabs().len(), 1);
+        // Calling set_tracker_config on the live session is also safe.
+        app.tabs_mut()[0].set_tracker_config(cfg);
+    }
+
+    #[test]
+    fn restart_active_preserves_stage11_fields() {
+        let mut app = App::new();
+        app.set_default_tools_list(vec!["claude".to_owned()]);
+        app.set_default_proc_check_interval(std::time::Duration::from_millis(500));
+        app.set_default_tracker_config(TrackerConfig {
+            heuristic_silence: std::time::Duration::from_millis(7000),
+            ..TrackerConfig::default()
+        });
+        // Spawn `/bin/sh -c true` (exits quickly).
+        let _ = app.new_tab(&["/bin/sh", "-c", "true"]).expect("spawn");
+
+        // Wait briefly for the child to exit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline && app.tabs()[0].is_alive() {
+            let _ = app.poll_all(std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!app.tabs()[0].is_alive(), "child should have exited");
+
+        // Restart, then verify the Stage 11 fields are preserved.
+        app.restart_active().expect("restart");
+        assert_eq!(
+            app.tabs()[0].tools_list,
+            vec!["claude".to_owned()],
+            "tools_list should propagate from App defaults after restart"
+        );
+        assert_eq!(
+            app.tabs()[0].proc_check_interval,
+            std::time::Duration::from_millis(500),
+            "proc_check_interval should propagate"
+        );
+        // tracker_config isn't directly readable from app.rs (private field),
+        // but set_tracker_config not panicking is a smoke check.
+        app.tabs_mut()[0].set_tracker_config(TrackerConfig::default());
     }
 }

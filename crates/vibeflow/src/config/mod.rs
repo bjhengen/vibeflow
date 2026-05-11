@@ -23,6 +23,16 @@ pub struct Config {
     pub fonts: FontsConfig,
     pub clipboard: ClipboardConfig,
     pub tabs: TabsConfig,
+    pub ai: Ai,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ai {
+    pub tools: Vec<String>,
+    pub heuristic_silence_ms: u64,
+    pub stale_state_timeout_s: u64,
+    pub debounce_ms: u64,
+    pub foreground_check_interval_ms: u64,
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -173,6 +183,19 @@ impl Config {
                 respect_osc_title: true,
                 title_strip_prefix: String::new(),
             },
+            ai: Ai {
+                tools: vec![
+                    "claude".to_owned(),
+                    "codex".to_owned(),
+                    "opencode".to_owned(),
+                    "aider".to_owned(),
+                    "cursor-agent".to_owned(),
+                ],
+                heuristic_silence_ms: 4000,
+                stale_state_timeout_s: 30,
+                debounce_ms: 100,
+                foreground_check_interval_ms: 250,
+            },
         }
     }
 
@@ -244,6 +267,9 @@ impl Config {
             if let Some(p) = t.title_strip_prefix {
                 defaults.tabs.title_strip_prefix = p;
             }
+        }
+        if let Some(a) = file.ai {
+            apply_ai(a, &mut defaults.ai);
         }
 
         (defaults, errors)
@@ -470,6 +496,24 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
         &mut out.menu_focus_bg,
         section.menu_focus_bg,
     );
+}
+
+fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
+    if let Some(tools) = schema.tools {
+        resolved.tools = tools;
+    }
+    if let Some(v) = schema.heuristic_silence_ms {
+        resolved.heuristic_silence_ms = v;
+    }
+    if let Some(v) = schema.stale_state_timeout_s {
+        resolved.stale_state_timeout_s = v;
+    }
+    if let Some(v) = schema.debounce_ms {
+        resolved.debounce_ms = v;
+    }
+    if let Some(v) = schema.foreground_check_interval_ms {
+        resolved.foreground_check_interval_ms = v;
+    }
 }
 
 /// Events delivered to the main thread via `EventLoopProxy::send_event`. The
@@ -830,5 +874,47 @@ menu_focus_bg      = "#0000ffff"
                 1.0
             ]
         );
+    }
+
+    #[test]
+    fn ai_defaults_match_spec() {
+        let cf = Config::default_values();
+        assert_eq!(
+            cf.ai.tools,
+            vec![
+                "claude".to_owned(),
+                "codex".to_owned(),
+                "opencode".to_owned(),
+                "aider".to_owned(),
+                "cursor-agent".to_owned(),
+            ]
+        );
+        assert_eq!(cf.ai.heuristic_silence_ms, 4000);
+        assert_eq!(cf.ai.stale_state_timeout_s, 30);
+        assert_eq!(cf.ai.debounce_ms, 100);
+        assert_eq!(cf.ai.foreground_check_interval_ms, 250);
+    }
+
+    #[test]
+    fn ai_load_overrides_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[ai]
+tools = ["mytool", "claude"]
+heuristic_silence_ms = 2500
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert_eq!(cf.ai.tools, vec!["mytool".to_owned(), "claude".to_owned()]);
+        assert_eq!(cf.ai.heuristic_silence_ms, 2500);
+        // Other fields keep their defaults.
+        assert_eq!(cf.ai.stale_state_timeout_s, 30);
+        assert_eq!(cf.ai.debounce_ms, 100);
+        assert_eq!(cf.ai.foreground_check_interval_ms, 250);
     }
 }
