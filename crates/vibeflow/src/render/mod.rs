@@ -26,16 +26,28 @@ fn build_selection_rects(
     cell_h: u32,
     bar_height_px: u32,
     selection_color: [f32; 4],
+    display_offset: usize,
 ) -> Vec<crate::render::tabs::RectInstance> {
+    use alacritty_terminal::grid::Dimensions;
+    let screen_lines = term.grid().screen_lines() as i32;
+    let display_offset_i = display_offset as i32;
     selection
         .cells(term)
         .filter_map(|p| {
-            if p.line.0 < 0 {
-                return None; // scrollback — skip in v0.1
+            // Stage 12: with display_offset > 0, scrollback rows are visible.
+            // `p.line.0` is negative for scrollback; we translate to on-screen
+            // y as: visible_row = p.line.0 + display_offset.
+            // - On live viewport (display_offset == 0): visible_row = p.line.0,
+            //   so negative lines map to negative visible_row and get filtered.
+            // - When scrolled up: scrollback lines that are now on-screen map
+            //   to non-negative visible_row in [0, screen_lines).
+            let visible_row = p.line.0 + display_offset_i;
+            if visible_row < 0 || visible_row >= screen_lines {
+                return None;
             }
             Some(crate::render::tabs::RectInstance::new(
                 (p.column.0 as u32 * cell_w) as f32,
-                (p.line.0 as u32 * cell_h + bar_height_px) as f32,
+                (visible_row as u32 * cell_h + bar_height_px) as f32,
                 cell_w as f32,
                 cell_h as f32,
                 selection_color,
@@ -301,6 +313,7 @@ impl Renderer {
         );
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {
+                let display_offset = active.display_offset();
                 build_selection_rects(
                     &active.selection,
                     active.term(),
@@ -308,6 +321,7 @@ impl Renderer {
                     cell_h,
                     layout.bar_height_px,
                     self.selection_color,
+                    display_offset,
                 )
             } else {
                 Vec::new()
