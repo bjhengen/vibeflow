@@ -89,6 +89,10 @@ pub struct Renderer {
     /// Stage 10: context-menu color palette. Written by `set_menu_colors` from hot-reload.
     /// Read by `build_rects` (Task 13). Defaults to all-zeros until `apply_config` fires.
     menu_colors: crate::render::context_menu::MenuColors,
+    /// Stage 12: scrollbar track + thumb colors. Defaults from
+    /// `Config::default_values()` at construction; overwritten by
+    /// `WindowApp::apply_config` from `[colors] scrollbar_*` keys.
+    scrollbar_colors: crate::render::scrollbar::ScrollbarColors,
 }
 
 impl Renderer {
@@ -210,6 +214,10 @@ impl Renderer {
                 text_disabled: defaults.colors.menu_text_disabled,
                 shortcut: defaults.colors.menu_shortcut,
                 focus_bg: defaults.colors.menu_focus_bg,
+            },
+            scrollbar_colors: crate::render::scrollbar::ScrollbarColors {
+                track: defaults.colors.scrollbar_track,
+                thumb: defaults.colors.scrollbar_thumb,
             },
         })
     }
@@ -611,5 +619,11 @@ impl Renderer {
     /// `WindowApp::apply_config` on every hot-reload.
     pub fn set_menu_colors(&mut self, colors: crate::render::context_menu::MenuColors) {
         self.menu_colors = colors;
+    }
+
+    /// Update the scrollbar color palette (live). Called from
+    /// `WindowApp::apply_config` on every hot-reload.
+    pub fn set_scrollbar_colors(&mut self, colors: crate::render::scrollbar::ScrollbarColors) {
+        self.scrollbar_colors = colors;
     }
 }

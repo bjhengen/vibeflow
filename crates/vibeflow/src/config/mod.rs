@@ -80,6 +80,8 @@ pub struct Colors {
     pub menu_text_disabled: [f32; 4],
     pub menu_shortcut: [f32; 4],
     pub menu_focus_bg: [f32; 4],
+    pub scrollbar_track: [f32; 4],
+    pub scrollbar_thumb: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,6 +179,8 @@ impl Config {
                 menu_text_disabled: rgba(0x5a, 0x5a, 0x65, 0xFF),
                 menu_shortcut: rgba(0x99, 0x99, 0xa5, 0xFF),
                 menu_focus_bg: rgba(0x2a, 0x35, 0x50, 0xFF),
+                scrollbar_track: [1.0, 1.0, 1.0, 0.04],
+                scrollbar_thumb: [1.0, 1.0, 1.0, 0.22],
             },
             cursor: CursorConfig { blink_ms: 500 },
             fonts: FontsConfig {
@@ -511,6 +515,16 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
         "menu_focus_bg",
         &mut out.menu_focus_bg,
         section.menu_focus_bg,
+    );
+    apply(
+        "scrollbar_track",
+        &mut out.scrollbar_track,
+        section.scrollbar_track,
+    );
+    apply(
+        "scrollbar_thumb",
+        &mut out.scrollbar_thumb,
+        section.scrollbar_thumb,
     );
 }
 
@@ -993,5 +1007,12 @@ history_lines = 0
             cf.scrollback.history_lines, 1,
             "0 should clamp to 1 per spec edge case"
         );
+    }
+
+    #[test]
+    fn scrollbar_colors_default_to_subtle_white() {
+        let cf = Config::default_values();
+        assert_eq!(cf.colors.scrollbar_track, [1.0, 1.0, 1.0, 0.04]);
+        assert_eq!(cf.colors.scrollbar_thumb, [1.0, 1.0, 1.0, 0.22]);
     }
 }

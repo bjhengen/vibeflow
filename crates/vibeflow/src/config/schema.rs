@@ -55,6 +55,8 @@ pub struct ColorsSection {
     pub menu_text_disabled: Option<String>,
     pub menu_shortcut: Option<String>,
     pub menu_focus_bg: Option<String>,
+    pub scrollbar_track: Option<String>,
+    pub scrollbar_thumb: Option<String>,
 }
 
 /// `[cursor]` table. `blink_ms = 0` disables blinking.
