@@ -16,6 +16,7 @@ pub struct ConfigFile {
     pub clipboard: Option<ClipboardSection>,
     pub tabs: Option<TabsSection>,
     pub ai: Option<AiSection>,
+    pub scrollback: Option<ScrollbackSection>,
 }
 
 /// `[shortcuts]` table. Each known action key (e.g. `new_tab`, `copy`) maps
@@ -107,6 +108,15 @@ pub struct AiSection {
     pub debounce_ms: Option<u64>,
     /// Interval in milliseconds for foreground activity checks.
     pub foreground_check_interval_ms: Option<u64>,
+}
+
+/// `[scrollback]` table. Stage 12: scrollbar + scrollback history configuration.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScrollbackSection {
+    pub history_lines: Option<u32>,
+    pub wheel_lines_per_detent: Option<u32>,
+    pub scrollbar_fade_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -255,5 +265,37 @@ bogus_key = 1
             result.is_err(),
             "unknown key should fail to parse with deny_unknown_fields"
         );
+    }
+
+    #[test]
+    fn scrollback_section_parses_all_fields() {
+        let toml = r#"
+[scrollback]
+history_lines = 5000
+wheel_lines_per_detent = 5
+scrollbar_fade_ms = 2000
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let sb = cs.scrollback.expect("scrollback section present");
+        assert_eq!(sb.history_lines, Some(5000));
+        assert_eq!(sb.wheel_lines_per_detent, Some(5));
+        assert_eq!(sb.scrollbar_fade_ms, Some(2000));
+    }
+
+    #[test]
+    fn scrollback_section_missing_keeps_none() {
+        let toml = "";
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        assert!(cs.scrollback.is_none());
+    }
+
+    #[test]
+    fn scrollback_section_rejects_unknown_field() {
+        let toml = r#"
+[scrollback]
+bogus_key = 1
+"#;
+        let r: Result<super::ConfigFile, _> = toml::from_str(toml);
+        assert!(r.is_err());
     }
 }
