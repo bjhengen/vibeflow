@@ -9,6 +9,7 @@ pub mod context_menu;
 pub mod cursor;
 pub mod mouse_encoder;
 pub mod quad; // formerly `text` — see Step 3
+pub(crate) mod scrollbar;
 pub mod selection;
 pub mod tabs;
 pub mod text_engine;
