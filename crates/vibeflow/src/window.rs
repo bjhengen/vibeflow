@@ -1422,7 +1422,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                         MouseScrollDelta::LineDelta(_, _) => {
                             crate::render::mouse_encoder::Button::WheelDown
                         }
-                        MouseScrollDelta::PixelDelta(p) if p.y < 0.0 => {
+                        MouseScrollDelta::PixelDelta(p) if p.y > 0.0 => {
                             crate::render::mouse_encoder::Button::WheelUp
                         }
                         MouseScrollDelta::PixelDelta(_) => {

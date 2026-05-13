@@ -278,6 +278,7 @@ impl App {
         s.proc_check_interval = self.default_proc_check_interval;
         s.set_tracker_config(self.tracker_config);
         s.scrollbar_fade.set_fade_ms(self.default_scrollbar_fade_ms);
+        s.history_lines = self.default_history_lines as usize;
 
         Ok(())
     }
@@ -620,5 +621,26 @@ mod tests {
         // tracker_config isn't directly readable from app.rs (private field),
         // but set_tracker_config not panicking is a smoke check.
         app.tabs_mut()[0].set_tracker_config(TrackerConfig::default());
+    }
+
+    #[test]
+    fn restart_active_picks_up_updated_history_lines() {
+        let mut app = App::new();
+        app.set_default_history_lines(5000);
+        let _ = app.new_tab(&["/bin/sh", "-c", "true"]).expect("spawn");
+        // Wait for the child to exit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline && app.tabs()[0].is_alive() {
+            let _ = app.poll_all(std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Update history_lines before restart.
+        app.set_default_history_lines(123);
+        app.restart_active().expect("restart");
+        assert_eq!(
+            app.tabs()[0].history_lines,
+            123,
+            "restart should pick up updated default_history_lines"
+        );
     }
 }
