@@ -500,6 +500,23 @@ impl WindowApp {
             s.tools_list = ai.tools.clone();
             s.proc_check_interval = proc_interval;
         }
+
+        // Stage 12: [scrollback] section.
+        let sb = &config.scrollback;
+        self.wheel_lines_per_detent = sb.wheel_lines_per_detent;
+        let fade_ms = sb.scrollbar_fade_ms;
+        self.app.set_default_scrollbar_fade_ms(fade_ms);
+        self.app.set_default_history_lines(sb.history_lines);
+        for s in self.app.tabs_mut().iter_mut() {
+            s.scrollbar_fade.set_fade_ms(fade_ms);
+        }
+        // Scrollbar colors (from [colors]).
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_scrollbar_colors(crate::render::scrollbar::ScrollbarColors {
+                track: config.colors.scrollbar_track,
+                thumb: config.colors.scrollbar_thumb,
+            });
+        }
     }
 
     fn handle_paste(&mut self) {
