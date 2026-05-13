@@ -297,10 +297,10 @@ mod tests {
         );
         assert_eq!(rects.len(), 2);
         // RectInstance fields are (x, y, w, h, color). Track is rects[0]; thumb is rects[1].
-        let track_y = rects[0].screen_rect_px[1];
-        let track_h = rects[0].screen_rect_px[3];
-        let thumb_y = rects[1].screen_rect_px[1];
-        let thumb_h = rects[1].screen_rect_px[3];
+        let track_y = rects[0].pos_size[1];
+        let track_h = rects[0].pos_size[3];
+        let thumb_y = rects[1].pos_size[1];
+        let thumb_h = rects[1].pos_size[3];
         let track_bottom = track_y + track_h;
         let thumb_bottom = thumb_y + thumb_h;
         assert!(
@@ -320,7 +320,7 @@ mod tests {
             40.0,
             ScrollbarColors::default(),
         );
-        let thumb_h = rects[1].screen_rect_px[3];
+        let thumb_h = rects[1].pos_size[3];
         assert!(
             thumb_h >= THUMB_MIN_HEIGHT_PX,
             "thumb should be >= MIN_HEIGHT_PX (20); got {thumb_h}"
@@ -347,7 +347,7 @@ mod tests {
 }
 ```
 
-**Note about `RectInstance` field access in tests:** the existing struct exposes `screen_rect_px: [f32; 4]` and `color: [f32; 4]` (verified earlier in Stage 10's T13). Confirm by reading `crates/vibeflow/src/render/tabs.rs:347-380` before writing the tests; if the field names differ, adapt the test assertions to match. The constructor `RectInstance::new(x, y, w, h, color)` is stable.
+**Verified by senior pre-execution review:** `RectInstance` at `crates/vibeflow/src/render/tabs.rs:349` exposes `pub pos_size: [f32; 4]` (layout `[x, y, w, h]`) and `pub color: [f32; 4]`. Constructor `RectInstance::new(x, y, w, h, color)` is stable. `RectInstance` derives `Copy + Clone`.
 
 - [ ] **Step 2: Add the module declaration to `render/mod.rs`.**
 
@@ -700,7 +700,7 @@ git commit -m "feat(stage12): [colors] scrollbar_track/thumb + Renderer setter"
 
 ---
 
-### Task 5: `PtySession` Stage 12 fields + scroll methods (TDD)
+### Task 5: `PtySession` Stage 12 fields + scroll methods + history_lines wiring (TDD)
 
 **Files:**
 - Modify: `crates/vibeflow/src/session/session.rs`
@@ -766,13 +766,43 @@ Expected: build error — `no method named 'scroll_by'`, etc.
     pub(crate) scrollbar_fade: crate::render::scrollbar::ScrollbarFade,
 ```
 
-Initialize in `PtySession::spawn`'s `Ok(Self { ... })` (after the Stage 11 fields):
+**Also extend `PtySession::spawn` signature to accept history_lines.** Senior pre-execution review caught this: without it, `[scrollback] history_lines` is silently ignored because `Term::new(TermConfig::default(), ...)` always uses the alacritty default (10000) regardless of user config.
+
+Current signature (`session.rs:131`):
+```rust
+pub fn spawn(argv: &[&str], config: TrackerConfig) -> std::io::Result<Self>
+```
+
+New signature:
+```rust
+pub fn spawn(argv: &[&str], config: TrackerConfig, history_lines: usize) -> std::io::Result<Self>
+```
+
+Inside `spawn`, when constructing the `TermConfig`, set scrolling_history:
+```rust
+let term_config = alacritty_terminal::term::Config {
+    scrolling_history: history_lines.max(1),
+    ..Default::default()
+};
+let term = alacritty_terminal::term::Term::new(term_config, &term_size, alacritty_terminal::event::VoidListener);
+```
+
+Read the existing `Term::new` call at `session.rs:173` first to confirm the exact path and field name. The crate's `Config` is at `alacritty_terminal::term::Config` per the import in session.rs.
+
+Initialize the new fields in `Ok(Self { ... })` after the Stage 11 fields:
 
 ```rust
             scrollbar_fade: crate::render::scrollbar::ScrollbarFade::new(1500),
 ```
 
-1500 ms is the same default `Config::default_values()` uses. `App::new_tab` will overwrite from current config.
+1500 ms is the same default `Config::default_values()` uses. `App::new_tab` will overwrite both `scrollbar_fade.fade_ms` and the scrolling_history (via the new spawn param) from current config.
+
+**All existing `PtySession::spawn(argv, tracker_config)` call sites need to be updated to pass a third argument.** Find via:
+```bash
+grep -n "PtySession::spawn" crates/vibeflow/src/ crates/vibeflow/tests/ 2>&1
+```
+
+Most likely call sites: `App::new_tab` (T6 covers this), `PtySession::restart` (also update — same default), and any existing test that spawns directly. For tests, pass `10000` as the third argument. For production code, pass `self.default_history_lines` (App field added in T6) or `Config::default_values().scrollback.history_lines`.
 
 - [ ] **Step 4: Add the methods.**
 
@@ -812,6 +842,14 @@ In `impl PtySession`, next to `set_tracker_config`:
         use alacritty_terminal::grid::Dimensions;
         self.term.grid().display_offset()
     }
+
+    /// Stage 12: read-only accessor for the scrollbar fade alpha at `now`.
+    /// `pub fn` (not `pub(crate)`) so integration tests at
+    /// `crates/vibeflow/tests/` can reach it across the compilation-unit
+    /// boundary. Same lesson Stage 11 learned for `last_proc_check`.
+    pub fn scrollbar_fade_alpha(&self, now: std::time::Instant) -> f32 {
+        self.scrollbar_fade.alpha(now)
+    }
 ```
 
 - [ ] **Step 5: Run tests.**
@@ -849,15 +887,14 @@ Append to `app::tests`:
         let mut app = App::new();
         app.set_default_scrollbar_fade_ms(2222);
         let _ = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
-        let alpha = app.tabs()[0].scrollbar_fade.alpha(std::time::Instant::now());
-        // Fade unarmed; just check the setter+field round-trips by calling mark + checking alpha.
-        let mut s = std::mem::take(&mut app.tabs_mut()[0]);  // Won't compile if PtySession isn't Default.
-        // Skip the take pattern; instead verify directly by reading the field via a debug printout.
-        // Simpler: mark fade and check alpha is 1.0 immediately, then 0.0 just past 2222ms.
         let now = std::time::Instant::now();
+        let s = &mut app.tabs_mut()[0];
         s.scrollbar_fade.mark_scrolled(now);
-        assert_eq!(s.scrollbar_fade.alpha(now), 1.0);
+        // 2300ms past should be elapsed past 2222ms threshold → 0.0.
         assert_eq!(s.scrollbar_fade.alpha(now + std::time::Duration::from_millis(2300)), 0.0);
+        // Just under threshold should still be > 0 (linear fade — small positive value).
+        let near_end = s.scrollbar_fade.alpha(now + std::time::Duration::from_millis(2100));
+        assert!(near_end > 0.0 && near_end < 0.1, "near-threshold fade alpha out of range: {near_end}");
     }
 
     #[test]
@@ -885,23 +922,7 @@ Append to `app::tests`:
     }
 ```
 
-The first test ended up convoluted because `PtySession` isn't `Default` — simplify to read via `app.tabs_mut()[0].scrollbar_fade` directly. Rewrite if needed during implementation; the key assertion is that the default propagates.
-
-Cleaner version:
-
-```rust
-    #[test]
-    fn new_tab_inherits_default_scrollbar_fade_ms() {
-        let mut app = App::new();
-        app.set_default_scrollbar_fade_ms(2222);
-        let _ = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
-        let now = std::time::Instant::now();
-        let s = &mut app.tabs_mut()[0];
-        s.scrollbar_fade.mark_scrolled(now);
-        // 2300ms past should be elapsed past 2222ms threshold → 0.0.
-        assert_eq!(s.scrollbar_fade.alpha(now + std::time::Duration::from_millis(2300)), 0.0);
-    }
-```
+Note: `PtySession` isn't `Default`, so `std::mem::take` won't work. The test above accesses `app.tabs_mut()[0]` directly via mutable indexing, which is the correct pattern.
 
 - [ ] **Step 2: Run; expect compile errors.**
 
@@ -917,12 +938,18 @@ In `pub struct App`, near the Stage 11 defaults:
     /// Stage 12: mirror of `Config.scrollback.scrollbar_fade_ms`. Applied to
     /// subsequently-spawned tabs AND to restarted sessions.
     default_scrollbar_fade_ms: u64,
+    /// Stage 12: mirror of `Config.scrollback.history_lines`. Passed to
+    /// `PtySession::spawn` to size each new session's scrollback buffer.
+    /// Existing tabs are NOT retroactively resized (alacritty_terminal's
+    /// grid is sized at construction).
+    default_history_lines: u32,
 ```
 
 In `App::new()`:
 
 ```rust
             default_scrollbar_fade_ms: 1500,
+            default_history_lines: 10000,
 ```
 
 In `impl App`, next to Stage 11 setters:
@@ -932,19 +959,42 @@ In `impl App`, next to Stage 11 setters:
     pub fn set_default_scrollbar_fade_ms(&mut self, ms: u64) {
         self.default_scrollbar_fade_ms = ms;
     }
+
+    /// Stage 12: update the default scrollback history size for subsequently-spawned tabs.
+    /// Existing tabs keep their original size — alacritty_terminal's grid is sized at construction.
+    pub fn set_default_history_lines(&mut self, n: u32) {
+        self.default_history_lines = n.max(1);
+    }
 ```
 
-In `App::new_tab`, after the existing Stage 11 propagation lines (`session.tools_list = ...; session.proc_check_interval = ...;`):
+In `App::new_tab`, REPLACE the existing call to `PtySession::spawn(argv, self.tracker_config)` with the three-arg version, then propagate the rest:
 
 ```rust
+        let mut session = PtySession::spawn(
+            argv,
+            self.tracker_config,
+            self.default_history_lines as usize,
+        )?;
+        session.respect_osc_title = self.default_respect_osc_title;
+        session.title_strip_prefix = self.default_title_strip_prefix.clone();
+        session.tools_list = self.default_tools_list.clone();
+        session.proc_check_interval = self.default_proc_check_interval;
         session.scrollbar_fade.set_fade_ms(self.default_scrollbar_fade_ms);
+        self.tabs.push(session);
 ```
 
-In `App::restart_active`, after the Stage 11 propagation block (around `s.tools_list = ...; s.proc_check_interval = ...; s.set_tracker_config(...);`):
+In `App::restart_active`, after `s.restart()?`:
 
 ```rust
+        s.tools_list = self.default_tools_list.clone();
+        s.proc_check_interval = self.default_proc_check_interval;
+        s.set_tracker_config(self.tracker_config);
         s.scrollbar_fade.set_fade_ms(self.default_scrollbar_fade_ms);
 ```
+
+Note: `PtySession::restart` rebuilds the session via `*self = new_session`. The new session's spawn call inside `restart` needs the same three-arg signature update. Read `restart()` body in `session.rs:484` and pass `self.default_history_lines as usize` (or thread it through). Alternative simpler approach: pass `history_lines` to `restart` by adding it to the method signature OR have `restart` read from a session-stored field (`PtySession.history_lines: usize` that spawn captures at construction).
+
+The cleanest path: store `history_lines: usize` as a `pub(crate)` field on PtySession in T5's spawn, then `restart()` re-uses `self.history_lines` to call spawn. This avoids threading the parameter through `restart`.
 
 - [ ] **Step 4: Run tests.**
 
@@ -986,33 +1036,29 @@ Append to `mouse_encoder::tests`:
 
 ```rust
     #[test]
-    fn encode_press_wheel_up_emits_button_code_4_sgr() {
+    fn encode_press_wheel_up_sgr() {
+        // SGR 1006 format: ESC [ < button ; col+1 ; row+1 M
+        // pt(10, 5) is Point { line: Line(5), column: Column(10) }.
+        // Existing tests show col+1, row+1 indexing — verify by reading the
+        // existing `encode_press_sgr_left_at_origin` test. Wheel-up uses
+        // SGR button code 64.
         let bytes = encode_press(Button::WheelUp, pt(10, 5), true);
-        // SGR format: ESC [ < button ; col ; row M
-        // Wheel up = button code 64 in SGR (button 4 + 60 for wheel flag) OR
-        // just code 4 depending on emulator convention. xterm uses 64 for SGR wheel-up.
-        // The test asserts the exact bytes we settle on; read the existing
-        // encode_press SGR format to see which convention vibeflow uses.
-        let s = std::str::from_utf8(&bytes).expect("utf8");
-        assert!(s.contains("64") || s.contains("4"), "got: {s}");
+        assert_eq!(bytes, b"\x1b[<64;11;6M".to_vec(), "got: {:?}", std::str::from_utf8(&bytes));
     }
 
     #[test]
-    fn encode_press_wheel_down_emits_button_code_5_sgr() {
+    fn encode_press_wheel_down_sgr() {
         let bytes = encode_press(Button::WheelDown, pt(10, 5), true);
-        let s = std::str::from_utf8(&bytes).expect("utf8");
-        assert!(s.contains("65") || s.contains("5"), "got: {s}");
+        assert_eq!(bytes, b"\x1b[<65;11;6M".to_vec(), "got: {:?}", std::str::from_utf8(&bytes));
     }
 
     #[test]
-    fn encode_press_wheel_up_legacy_format() {
+    fn encode_press_wheel_up_legacy() {
+        // Legacy x10 format: ESC [ M (button + 32) (col+1 + 32) (row+1 + 32)
+        // Wheel up button code is 64; legacy byte is 64 + 32 = 96 = b'`'.
+        // col+1+32 for col=10 is 43 = b'+'. row+1+32 for row=5 is 38 = b'&'.
         let bytes = encode_press(Button::WheelUp, pt(10, 5), false);
-        // Legacy format: ESC [ M (button + 32) (col + 32) (row + 32)
-        // Wheel up = 64 in xterm legacy (32 base + 32 wheel offset + 0 button index)
-        // OR 96 (32 base + 32 mode + 32 wheel + 0). Read existing implementation.
-        // Simplest check: 4 bytes after ESC [ M.
-        assert_eq!(&bytes[..3], b"\x1b[M");
-        assert_eq!(bytes.len(), 6, "legacy format = ESC[M + 3 bytes");
+        assert_eq!(bytes, b"\x1b[M`+&".to_vec(), "got: {:?}", &bytes);
     }
 ```
 
@@ -1036,20 +1082,20 @@ Expected: `cannot find Button::WheelUp` / `WheelDown`.
 In the `pub enum Button { ... }` definition, append:
 
 ```rust
-    /// Stage 12: wheel up — xterm button code 64 (SGR) / 96 (legacy with mode bits).
+    /// Stage 12: wheel up — xterm SGR button code 64.
     WheelUp,
-    /// Stage 12: wheel down — xterm button code 65 (SGR) / 97 (legacy with mode bits).
+    /// Stage 12: wheel down — xterm SGR button code 65.
     WheelDown,
 ```
 
-In `impl Button { fn code(self) -> u8 { match self { ... } } }` (or wherever the button-to-code conversion happens — read the existing helper):
+**Verified by senior pre-execution review:** `Button::code(self) -> u32` at `mouse_encoder.rs:33` returns the raw xterm SGR button code (0/1/2 for L/M/R). `encode_press` does the +32 transformation for legacy format internally. Wheel button codes 64 (up) and 65 (down) per xterm 1006 spec:
 
 ```rust
-            Button::WheelUp => 64,    // 0x40 base + 0 (wheel button index)
-            Button::WheelDown => 65,  // 0x40 base + 1
+            Button::WheelUp => 64,
+            Button::WheelDown => 65,
 ```
 
-If the existing helper returns the SAME code for SGR and legacy, that may not be quite right (legacy uses `(code + 32)` packed as a byte; SGR uses the raw number formatted as ASCII). Read `encode_press` to see if it does the right transformation per `sgr` flag. If it just returns the raw `0` / `1` / `2` for L/M/R, then we need 4 / 5 for wheels and the byte packing already happens in `encode_press`. Match whatever the existing pattern is.
+The legacy format then yields 64+32=96 (b'`') for wheel-up and 65+32=97 (b'a') for wheel-down. Verified consistent with the test expectations above.
 
 - [ ] **Step 5: Run tests.**
 
@@ -1120,7 +1166,7 @@ Inside `Renderer::render`, after the bell-flash rects extend and BEFORE the menu
                             self.surface_config.width as f32,
                             self.surface_config.height as f32,
                         ),
-                        layout.bar_height_px() as f32,
+                        layout.bar_height_px as f32,
                         self.scrollbar_colors,
                     )
                 }
@@ -1133,7 +1179,7 @@ Inside `Renderer::render`, after the bell-flash rects extend and BEFORE the menu
         }
 ```
 
-The `layout.bar_height_px()` accessor name needs verification — Stage 10 mentioned `TabBarLayout` has the bar height. If the accessor differs (e.g., `bar_height` or a field), match the real name. If TabBarLayout doesn't expose it as a method, use the constant or value the existing render code already references for "top of grid area".
+**Verified by senior pre-execution review:** `TabBarLayout::bar_height_px` is a `pub` FIELD (not a method) at `tabs.rs:39`. Use bare `layout.bar_height_px` — no parentheses.
 
 - [ ] **Step 3: Update offset accounting + draw-range chain.**
 
@@ -1397,7 +1443,7 @@ Add the new event arm to the `match event { ... }` in `window_event`:
                             .as_ref()
                             .map(|r| r.cell_pitch())
                             .unwrap_or((8, 16));
-                        let bar_h = (cell_h * 2) + 4; // approximate; see existing tab strip layout
+                        let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
                         pixel_to_grid_point(cell_w, cell_h, bar_h, px, py)
                     }).unwrap_or_else(|| {
                         alacritty_terminal::index::Point::new(
@@ -1449,7 +1495,7 @@ Add the new event arm to the `match event { ... }` in `window_event`:
             }
 ```
 
-The `bar_h` calculation in the cursor-point translation uses `(cell_h * 2) + 4` as a quick approximation matching the two-row tab strip. The exact value should come from `TabBarLayout` (Stage 6's accessor). If `TabBarLayout::bar_height_px()` exists, use it. If not, read the existing mouse handler (right-click etc.) to see how it computes `bar_h` and match that.
+**Verified by senior pre-execution review:** `crate::render::tabs::tab_bar_height_px(cell_h_px: u32) -> u32` exists at `tabs.rs:20-21` and returns `cell_h_px * 2 + 8`. Use it directly — do NOT hardcode an approximation.
 
 `TermMode::SGR_MOUSE` is the SGR-extension flag. Read `term/mod.rs` for the exact name. If different, adapt.
 
@@ -1601,6 +1647,7 @@ Find `WindowApp::apply_config`. After the existing `[ai]` propagation block (Sta
         self.wheel_lines_per_detent = sb.wheel_lines_per_detent;
         let fade_ms = sb.scrollbar_fade_ms;
         self.app.set_default_scrollbar_fade_ms(fade_ms);
+        self.app.set_default_history_lines(sb.history_lines);
         for s in self.app.tabs_mut().iter_mut() {
             s.scrollbar_fade.set_fade_ms(fade_ms);
         }
@@ -1613,7 +1660,7 @@ Find `WindowApp::apply_config`. After the existing `[ai]` propagation block (Sta
         }
 ```
 
-Note: `history_lines` is NOT propagated to existing tabs (alacritty_terminal's grid is sized at construction). The plan's spec calls this out. It applies via `App::new_tab` at spawn time. Stage 12 does NOT need to wire it through to `PtySession::spawn` if the default `TrackerConfig` + alacritty_terminal already use a sensible scrolling_history. **Check:** `crates/vibeflow/src/session/pty.rs` or wherever `Term::new` is called — the `TermConfig` probably uses a default `scrolling_history`. To honor `Config.scrollback.history_lines`, you may need to set `TermConfig::scrolling_history = history_lines` at spawn. If the senior pre-execution review confirms this is required, add it to either Task 5 (PtySession changes) or as a Task 12b sub-step here.
+Note: `history_lines` is NOT retroactively applied to existing tabs (alacritty_terminal's grid is sized at construction). The setter just updates the App default for newly-spawned tabs. Document this in the schema comment.
 
 - [ ] **Step 2: Build + test + commit.**
 
@@ -1675,13 +1722,13 @@ fn scrollbar_fade_arms_on_scroll_and_decays() {
     drive_until(&mut app, Instant::now() + Duration::from_millis(200));
 
     let now = Instant::now();
-    assert_eq!(app.tabs()[0].scrollbar_fade.alpha(now), 0.0);
+    assert_eq!(app.tabs()[0].scrollbar_fade_alpha(now), 0.0);
     app.tabs_mut()[0].scroll_by(-1, now);
-    assert_eq!(app.tabs()[0].scrollbar_fade.alpha(now), 1.0);
+    assert_eq!(app.tabs()[0].scrollbar_fade_alpha(now), 1.0);
 
     // Past default fade_ms (1500), should be 0.
     let later = now + Duration::from_millis(1600);
-    assert_eq!(app.tabs()[0].scrollbar_fade.alpha(later), 0.0);
+    assert_eq!(app.tabs()[0].scrollbar_fade_alpha(later), 0.0);
 }
 
 #[test]
