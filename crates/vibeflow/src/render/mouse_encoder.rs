@@ -27,6 +27,10 @@ pub enum Button {
     Left,
     Middle,
     Right,
+    /// Stage 12: wheel up — xterm SGR button code 64.
+    WheelUp,
+    /// Stage 12: wheel down — xterm SGR button code 65.
+    WheelDown,
 }
 
 impl Button {
@@ -35,6 +39,8 @@ impl Button {
             Button::Left => 0,
             Button::Middle => 1,
             Button::Right => 2,
+            Button::WheelUp => 64,
+            Button::WheelDown => 65,
         }
     }
 }
@@ -173,5 +179,45 @@ mod tests {
         assert_eq!(bytes[0..3], [0x1b, b'[', b'M']);
         assert_eq!(bytes[4], 255); // col saturates
         assert_eq!(bytes[5], 255); // row saturates
+    }
+
+    // Wheel button tests — Stage 12
+
+    #[test]
+    fn encode_press_wheel_up_sgr() {
+        // SGR 1006 format: ESC [ < button ; col+1 ; row+1 M
+        // pt(5, 10) is Point { line: Line(5), column: Column(10) }.
+        // After +1: col=11, row=6. Wheel-up uses SGR button code 64.
+        let bytes = encode_press(Button::WheelUp, pt(5, 10), true);
+        assert_eq!(
+            bytes,
+            b"\x1b[<64;11;6M".to_vec(),
+            "got: {:?}",
+            std::str::from_utf8(&bytes)
+        );
+    }
+
+    #[test]
+    fn encode_press_wheel_down_sgr() {
+        // SGR 1006 format: ESC [ < button ; col+1 ; row+1 M
+        // pt(5, 10) is Point { line: Line(5), column: Column(10) }.
+        // After +1: col=11, row=6. Wheel-down uses SGR button code 65.
+        let bytes = encode_press(Button::WheelDown, pt(5, 10), true);
+        assert_eq!(
+            bytes,
+            b"\x1b[<65;11;6M".to_vec(),
+            "got: {:?}",
+            std::str::from_utf8(&bytes)
+        );
+    }
+
+    #[test]
+    fn encode_press_wheel_up_legacy() {
+        // Legacy x10 format: ESC [ M (button + 32) (col+1 + 32) (row+1 + 32)
+        // pt(5, 10) is Point { line: Line(5), column: Column(10) }.
+        // Wheel up button code is 64; legacy byte is 64 + 32 = 96 = b'`'.
+        // col+1+32 for col=10 is 43 = b'+'. row+1+32 for row=5 is 38 = b'&'.
+        let bytes = encode_press(Button::WheelUp, pt(5, 10), false);
+        assert_eq!(bytes, b"\x1b[M`+&".to_vec(), "got: {:?}", &bytes);
     }
 }
