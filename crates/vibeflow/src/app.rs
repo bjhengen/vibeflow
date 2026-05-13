@@ -79,7 +79,7 @@ impl App {
     /// # Errors
     /// Propagates any failure from [`PtySession::spawn`].
     pub fn new_tab(&mut self, argv: &[&str]) -> std::io::Result<usize> {
-        let mut session = PtySession::spawn(argv, self.tracker_config)?;
+        let mut session = PtySession::spawn(argv, self.tracker_config, 10000)?;
         session.respect_osc_title = self.default_respect_osc_title;
         session.title_strip_prefix = self.default_title_strip_prefix.clone();
         session.tools_list = self.default_tools_list.clone();
