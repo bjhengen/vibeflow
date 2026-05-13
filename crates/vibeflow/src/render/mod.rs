@@ -411,6 +411,34 @@ impl Renderer {
         let banner_rect_count = u32::from(banner_rect.is_some());
         let bell_rect_offset = banner_rect_offset + banner_rect_count;
         let bell_rect_count = u32::from(bell_rect.is_some());
+        // Stage 12: scrollbar (fade-in on user scroll). Appended after bell flash
+        // so it sits above grid/banner; appended BEFORE menu so the context menu
+        // renders on top of it.
+        let scrollbar_rects: Vec<crate::render::tabs::RectInstance> = {
+            use alacritty_terminal::grid::Dimensions;
+            let active = app.active();
+            match app.tabs().get(active) {
+                Some(s) => {
+                    let fade_alpha = s.scrollbar_fade.alpha(now);
+                    let history_size = s.term().grid().history_size();
+                    let screen_lines = s.term().grid().screen_lines();
+                    let display_offset = s.display_offset();
+                    crate::render::scrollbar::build_scrollbar_rects(
+                        fade_alpha,
+                        display_offset,
+                        history_size,
+                        screen_lines,
+                        (
+                            self.surface_config.width as f32,
+                            self.surface_config.height as f32,
+                        ),
+                        layout.bar_height_px as f32,
+                        self.scrollbar_colors,
+                    )
+                }
+                None => Vec::new(),
+            }
+        };
         let menu_rects: Vec<crate::render::tabs::RectInstance> = context_menu
             .map(|m| crate::render::context_menu::build_rects(m, &self.menu_colors))
             .unwrap_or_default();
@@ -430,7 +458,11 @@ impl Renderer {
         let menu_glyph_offset = banner_glyph_offset + banner_glyph_count;
         let menu_glyph_count = menu_glyphs.len() as u32;
         let total_quads = menu_glyph_offset + menu_glyph_count;
-        let menu_rect_offset = bell_rect_offset + bell_rect_count;
+        let scrollbar_rect_count = scrollbar_rects.len() as u32;
+        let scrollbar_rect_offset = bell_rect_offset + bell_rect_count;
+        // Was previously `menu_rect_offset = bell_rect_offset + bell_rect_count`.
+        // Now scrollbar sits between bell flash and context menu.
+        let menu_rect_offset = scrollbar_rect_offset + scrollbar_rect_count;
         let menu_rect_count = menu_rects.len() as u32;
         let total_rects = menu_rect_offset + menu_rect_count;
 
@@ -456,6 +488,7 @@ impl Renderer {
         if let Some(r) = bell_rect {
             all_rects.push(r);
         }
+        all_rects.extend_from_slice(&scrollbar_rects);
         all_rects.extend_from_slice(&menu_rects);
 
         // Now grow the GPU buffers + write all instance data (still outside
@@ -547,7 +580,13 @@ impl Renderer {
             // ---- Bell flash overlay ----
             if bell_rect_count > 0 {
                 self.tab_bar_pipeline
-                    .draw_range(&mut pass, bell_rect_offset..menu_rect_offset);
+                    .draw_range(&mut pass, bell_rect_offset..scrollbar_rect_offset);
+            }
+
+            // ---- Scrollbar track + thumb ----
+            if scrollbar_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, scrollbar_rect_offset..menu_rect_offset);
             }
 
             // ---- Context menu rects ----
@@ -565,6 +604,15 @@ impl Renderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+
+        // Stage 12: if any session has an active scrollbar fade, schedule another
+        // redraw so the fade-out animates smoothly. Once all fades hit 0, the
+        // window returns to event-driven redraw mode.
+        let any_fade_active = app.tabs().iter().any(|s| s.scrollbar_fade.alpha(now) > 0.0);
+        if any_fade_active {
+            self._window.request_redraw();
+        }
+
         Ok(())
     }
 
