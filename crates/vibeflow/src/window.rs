@@ -986,6 +986,56 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     self.handle_shortcut(shortcut);
                     return;
                 }
+                // Stage 12: scrollback keyboard chords. These go AFTER Stage
+                // 10's menu intercept and AFTER Stage 9's rename handler (both
+                // return early above), but BEFORE key_to_bytes so chord keys
+                // are not double-handled as PTY bytes.
+                //
+                // Plain (no-modifier) PageUp/PageDown still fall through to
+                // key_to_bytes and emit \x1b[5~ / \x1b[6~ (Stage 8 behavior).
+                {
+                    let mods = self.current_modifiers;
+                    let shift = mods.shift_key();
+                    let ctrl = mods.control_key();
+
+                    let active_idx = self.app.active();
+                    if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
+                        let now = Instant::now();
+                        match &event.logical_key {
+                            Key::Named(NamedKey::PageUp) if shift => {
+                                let half = (self.last_grid_size_lines / 2).max(1) as i32;
+                                s.scroll_by(-half, now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::PageDown) if shift => {
+                                let half = (self.last_grid_size_lines / 2).max(1) as i32;
+                                s.scroll_by(half, now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::Home) if ctrl => {
+                                s.scroll_to_top(now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::End) if ctrl => {
+                                s.scroll_to_bottom(now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // Otherwise: typed-input fallthrough. Selection clears only
                 // when a key actually produces PTY bytes — bare modifier
                 // presses (Ctrl, Shift, Alt, Super) must NOT clear the
@@ -1002,6 +1052,19 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                         s.selection.clear();
                         if let Err(e) = s.send_input(&bytes) {
                             tracing::warn!(error = %e, "send_input failed");
+                        }
+                    }
+                    // Stage 12: any input-producing key snaps to bottom of
+                    // scrollback. This only runs when key_to_bytes returns
+                    // Some — bare modifier presses (Ctrl alone, Shift alone)
+                    // never reach here, per Stage 8 lesson.
+                    let active_idx = self.app.active();
+                    if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
+                        if s.display_offset() > 0 {
+                            s.scroll_to_bottom(Instant::now());
+                            if let Some(w) = self.window.as_ref() {
+                                w.request_redraw();
+                            }
                         }
                     }
                 } else {
