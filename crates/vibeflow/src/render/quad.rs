@@ -360,6 +360,12 @@ use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 /// `is_session_alive` gates the cursor swap. Dead sessions still keep their
 /// final term state on screen (so the user can read the "exit" line) but the
 /// cursor must stop blinking — the dead-tab banner is the affordance.
+///
+/// `display_offset` is the current scroll position (0 = live viewport).  When
+/// non-zero the viewport is showing scrollback: alacritty_terminal's
+/// `display_iter` yields cells with negative `line.0` for those scrollback rows
+/// and we translate them to on-screen rows the same way `build_selection_rects`
+/// does (Stage 9 fix).
 #[allow(clippy::too_many_arguments)]
 pub fn build_cell_instances(
     term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>,
@@ -370,8 +376,10 @@ pub fn build_cell_instances(
     cell_h: u32,
     y_offset_px: u32,
     is_session_alive: bool,
+    display_offset: usize,
 ) -> Vec<QuadInstance> {
     use crate::render::colors::resolve_color;
+    use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
     fn rgb_to_f32(rgb: Rgb) -> [f32; 4] {
@@ -382,6 +390,9 @@ pub fn build_cell_instances(
             1.0,
         ]
     }
+
+    let display_offset_i = display_offset as i32;
+    let screen_lines = term.grid().screen_lines() as i32;
 
     let cursor_visible_per_blink = cursor.visible(now);
     let content = term.renderable_content();
@@ -404,10 +415,16 @@ pub fn build_cell_instances(
     for cell in content.display_iter {
         let line = cell.point.line.0;
         let col = cell.point.column.0 as u32;
-        if line < 0 {
+        // Translate scrollback line indices to on-screen row.
+        // - At live viewport (display_offset == 0): visible_row == line, so
+        //   negative lines (above viewport) remain negative and are filtered.
+        // - Scrolled up (display_offset > 0): scrollback rows that are now
+        //   on-screen map to visible_row in [0, screen_lines).
+        let visible_row = line + display_offset_i;
+        if visible_row < 0 || visible_row >= screen_lines {
             continue;
         }
-        let row = line as u32;
+        let row = visible_row as u32;
 
         if should_skip_cell(cell.flags) {
             continue;
@@ -418,7 +435,9 @@ pub fn build_cell_instances(
         // and bg lookups.
         let fg_rgb = resolve_color(cell.fg, colors, fg_default, bg_default);
         let bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
-        let is_cursor = cell.point == cursor_state.point;
+        // Skip cursor highlight when scrolled into scrollback — the cursor
+        // lives on the live viewport, not in history.
+        let is_cursor = display_offset == 0 && cell.point == cursor_state.point;
         let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
         if is_cursor && is_session_alive && cursor_shape_visible && cursor_visible_per_blink {
             std::mem::swap(&mut fg, &mut bg);

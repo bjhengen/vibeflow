@@ -24,6 +24,7 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     pub tabs: TabsConfig,
     pub ai: Ai,
+    pub scrollback: Scrollback,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +34,13 @@ pub struct Ai {
     pub stale_state_timeout_s: u64,
     pub debounce_ms: u64,
     pub foreground_check_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scrollback {
+    pub history_lines: u32,
+    pub wheel_lines_per_detent: u32,
+    pub scrollbar_fade_ms: u64,
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -72,6 +80,8 @@ pub struct Colors {
     pub menu_text_disabled: [f32; 4],
     pub menu_shortcut: [f32; 4],
     pub menu_focus_bg: [f32; 4],
+    pub scrollbar_track: [f32; 4],
+    pub scrollbar_thumb: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -169,6 +179,8 @@ impl Config {
                 menu_text_disabled: rgba(0x5a, 0x5a, 0x65, 0xFF),
                 menu_shortcut: rgba(0x99, 0x99, 0xa5, 0xFF),
                 menu_focus_bg: rgba(0x2a, 0x35, 0x50, 0xFF),
+                scrollbar_track: [1.0, 1.0, 1.0, 0.04],
+                scrollbar_thumb: [1.0, 1.0, 1.0, 0.22],
             },
             cursor: CursorConfig { blink_ms: 500 },
             fonts: FontsConfig {
@@ -195,6 +207,11 @@ impl Config {
                 stale_state_timeout_s: 30,
                 debounce_ms: 100,
                 foreground_check_interval_ms: 250,
+            },
+            scrollback: Scrollback {
+                history_lines: 10000,
+                wheel_lines_per_detent: 3,
+                scrollbar_fade_ms: 1500,
             },
         }
     }
@@ -270,6 +287,9 @@ impl Config {
         }
         if let Some(a) = file.ai {
             apply_ai(a, &mut defaults.ai);
+        }
+        if let Some(s) = file.scrollback {
+            apply_scrollback(s, &mut defaults.scrollback);
         }
 
         (defaults, errors)
@@ -496,6 +516,16 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
         &mut out.menu_focus_bg,
         section.menu_focus_bg,
     );
+    apply(
+        "scrollbar_track",
+        &mut out.scrollbar_track,
+        section.scrollbar_track,
+    );
+    apply(
+        "scrollbar_thumb",
+        &mut out.scrollbar_thumb,
+        section.scrollbar_thumb,
+    );
 }
 
 fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
@@ -513,6 +543,19 @@ fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
     }
     if let Some(v) = schema.foreground_check_interval_ms {
         resolved.foreground_check_interval_ms = v;
+    }
+}
+
+fn apply_scrollback(schema: schema::ScrollbackSection, resolved: &mut Scrollback) {
+    if let Some(v) = schema.history_lines {
+        // Edge case: 0 would panic alacritty_terminal's grid construction. Clamp to 1.
+        resolved.history_lines = v.max(1);
+    }
+    if let Some(v) = schema.wheel_lines_per_detent {
+        resolved.wheel_lines_per_detent = v.max(1);
+    }
+    if let Some(v) = schema.scrollbar_fade_ms {
+        resolved.scrollbar_fade_ms = v;
     }
 }
 
@@ -916,5 +959,60 @@ heuristic_silence_ms = 2500
         assert_eq!(cf.ai.stale_state_timeout_s, 30);
         assert_eq!(cf.ai.debounce_ms, 100);
         assert_eq!(cf.ai.foreground_check_interval_ms, 250);
+    }
+
+    #[test]
+    fn scrollback_defaults_match_spec() {
+        let cf = Config::default_values();
+        assert_eq!(cf.scrollback.history_lines, 10000);
+        assert_eq!(cf.scrollback.wheel_lines_per_detent, 3);
+        assert_eq!(cf.scrollback.scrollbar_fade_ms, 1500);
+    }
+
+    #[test]
+    fn scrollback_load_overrides_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scrollback]
+history_lines = 500
+wheel_lines_per_detent = 1
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.scrollback.history_lines, 500);
+        assert_eq!(cf.scrollback.wheel_lines_per_detent, 1);
+        // Unspecified keys keep defaults.
+        assert_eq!(cf.scrollback.scrollbar_fade_ms, 1500);
+    }
+
+    #[test]
+    fn scrollback_history_lines_zero_clamps_to_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scrollback]
+history_lines = 0
+"#,
+        )
+        .expect("write");
+        let (cf, _) = Config::load(&path);
+        assert_eq!(
+            cf.scrollback.history_lines, 1,
+            "0 should clamp to 1 per spec edge case"
+        );
+    }
+
+    #[test]
+    fn scrollbar_colors_default_to_subtle_white() {
+        let cf = Config::default_values();
+        assert_eq!(cf.colors.scrollbar_track, [1.0, 1.0, 1.0, 0.04]);
+        assert_eq!(cf.colors.scrollbar_thumb, [1.0, 1.0, 1.0, 0.22]);
     }
 }

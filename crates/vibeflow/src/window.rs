@@ -157,6 +157,14 @@ pub struct WindowApp {
     rename_state: Option<RenameInputState>,
     /// Stage 10: open right-click context menu, if any. At most one open.
     context_menu: Option<crate::render::context_menu::ContextMenuState>,
+    /// Stage 12: how many lines a single wheel detent scrolls. Mirrors
+    /// `[scrollback] wheel_lines_per_detent`. Cached so `WindowEvent::MouseWheel`
+    /// can scale without re-reading config.
+    wheel_lines_per_detent: u32,
+    /// Stage 12: cached `term.grid().screen_lines()` for the active session.
+    /// Updated on `WindowEvent::Resized`. Used by Shift+PageUp/Down for
+    /// half-page scroll math.
+    last_grid_size_lines: usize,
 }
 
 impl WindowApp {
@@ -274,6 +282,8 @@ impl WindowApp {
             config_path,
             rename_state: None,
             context_menu: None,
+            wheel_lines_per_detent: 3,
+            last_grid_size_lines: 24,
         }
     }
 
@@ -489,6 +499,23 @@ impl WindowApp {
             s.set_tracker_config(tracker_cfg);
             s.tools_list = ai.tools.clone();
             s.proc_check_interval = proc_interval;
+        }
+
+        // Stage 12: [scrollback] section.
+        let sb = &config.scrollback;
+        self.wheel_lines_per_detent = sb.wheel_lines_per_detent;
+        let fade_ms = sb.scrollbar_fade_ms;
+        self.app.set_default_scrollbar_fade_ms(fade_ms);
+        self.app.set_default_history_lines(sb.history_lines);
+        for s in self.app.tabs_mut().iter_mut() {
+            s.scrollbar_fade.set_fade_ms(fade_ms);
+        }
+        // Scrollbar colors (from [colors]).
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_scrollbar_colors(crate::render::scrollbar::ScrollbarColors {
+                track: config.colors.scrollbar_track,
+                thumb: config.colors.scrollbar_thumb,
+            });
         }
     }
 
@@ -864,6 +891,11 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 for tab in self.app.tabs_mut().iter_mut() {
                     tab.selection.clear();
                 }
+                // Stage 12: cache for half-page scroll math.
+                if let Some(s) = self.app.tabs().get(self.app.active()) {
+                    use alacritty_terminal::grid::Dimensions;
+                    self.last_grid_size_lines = s.term().grid().screen_lines();
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.current_modifiers = modifiers.state();
@@ -971,6 +1003,56 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     self.handle_shortcut(shortcut);
                     return;
                 }
+                // Stage 12: scrollback keyboard chords. These go AFTER Stage
+                // 10's menu intercept and AFTER Stage 9's rename handler (both
+                // return early above), but BEFORE key_to_bytes so chord keys
+                // are not double-handled as PTY bytes.
+                //
+                // Plain (no-modifier) PageUp/PageDown still fall through to
+                // key_to_bytes and emit \x1b[5~ / \x1b[6~ (Stage 8 behavior).
+                {
+                    let mods = self.current_modifiers;
+                    let shift = mods.shift_key();
+                    let ctrl = mods.control_key();
+
+                    let active_idx = self.app.active();
+                    if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
+                        let now = Instant::now();
+                        match &event.logical_key {
+                            Key::Named(NamedKey::PageUp) if shift => {
+                                let half = (self.last_grid_size_lines / 2).max(1) as i32;
+                                s.scroll_by(-half, now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::PageDown) if shift => {
+                                let half = (self.last_grid_size_lines / 2).max(1) as i32;
+                                s.scroll_by(half, now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::Home) if ctrl => {
+                                s.scroll_to_top(now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::End) if ctrl => {
+                                s.scroll_to_bottom(now);
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // Otherwise: typed-input fallthrough. Selection clears only
                 // when a key actually produces PTY bytes — bare modifier
                 // presses (Ctrl, Shift, Alt, Super) must NOT clear the
@@ -987,6 +1069,19 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                         s.selection.clear();
                         if let Err(e) = s.send_input(&bytes) {
                             tracing::warn!(error = %e, "send_input failed");
+                        }
+                    }
+                    // Stage 12: any input-producing key snaps to bottom of
+                    // scrollback. This only runs when key_to_bytes returns
+                    // Some — bare modifier presses (Ctrl alone, Shift alone)
+                    // never reach here, per Stage 8 lesson.
+                    let active_idx = self.app.active();
+                    if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
+                        if s.display_offset() > 0 {
+                            s.scroll_to_bottom(Instant::now());
+                            if let Some(w) = self.window.as_ref() {
+                                w.request_redraw();
+                            }
                         }
                     }
                 } else {
@@ -1285,6 +1380,77 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 self.context_menu = None;
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                use alacritty_terminal::term::TermMode;
+                use winit::event::MouseScrollDelta;
+                let active_idx = self.app.active();
+                let Some(s) = self.app.tabs_mut().get_mut(active_idx) else {
+                    return;
+                };
+                let now = Instant::now();
+
+                // Stage 8: if mouse mode is on, encode wheel as mouse button press.
+                let mouse_mode = s.term().mode().intersects(
+                    TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION,
+                );
+                if mouse_mode {
+                    // Compute cursor point in grid coordinates.
+                    let cursor_point = self
+                        .cursor_pos
+                        .and_then(|(px, py)| {
+                            let (cell_w, cell_h) = self
+                                .renderer
+                                .as_ref()
+                                .map(|r| r.cell_pitch())
+                                .unwrap_or((8, 16));
+                            let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py)
+                        })
+                        .unwrap_or_else(|| {
+                            alacritty_terminal::index::Point::new(
+                                alacritty_terminal::index::Line(0),
+                                alacritty_terminal::index::Column(0),
+                            )
+                        });
+
+                    let button = match delta {
+                        MouseScrollDelta::LineDelta(_, y) if y > 0.0 => {
+                            crate::render::mouse_encoder::Button::WheelUp
+                        }
+                        MouseScrollDelta::LineDelta(_, _) => {
+                            crate::render::mouse_encoder::Button::WheelDown
+                        }
+                        MouseScrollDelta::PixelDelta(p) if p.y > 0.0 => {
+                            crate::render::mouse_encoder::Button::WheelUp
+                        }
+                        MouseScrollDelta::PixelDelta(_) => {
+                            crate::render::mouse_encoder::Button::WheelDown
+                        }
+                    };
+                    let sgr = s.term().mode().intersects(TermMode::SGR_MOUSE);
+                    let bytes =
+                        crate::render::mouse_encoder::encode_press(button, cursor_point, sgr);
+                    let _ = s.send_input(&bytes);
+                } else {
+                    // Plain shell: vibeflow scrollback.
+                    let lines_raw = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -(y.round() as i32),
+                        MouseScrollDelta::PixelDelta(p) => {
+                            let cell_h_f = self
+                                .renderer
+                                .as_ref()
+                                .map(|r| r.cell_pitch().1 as f64)
+                                .unwrap_or(16.0);
+                            -((p.y / cell_h_f).round() as i32)
+                        }
+                    };
+                    let lines = lines_raw * (self.wheel_lines_per_detent as i32);
+                    s.scroll_by(lines, now);
+                }
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
                 }
             }
             _ => {}

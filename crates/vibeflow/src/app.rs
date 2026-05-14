@@ -28,6 +28,14 @@ pub struct App {
     /// Stage 11: mirror of `Config.ai.foreground_check_interval_ms`. Applied
     /// to subsequently-spawned tabs.
     default_proc_check_interval: std::time::Duration,
+    /// Stage 12: mirror of `Config.scrollback.scrollbar_fade_ms`. Applied to
+    /// subsequently-spawned tabs AND to restarted sessions.
+    default_scrollbar_fade_ms: u64,
+    /// Stage 12: mirror of `Config.scrollback.history_lines`. Passed to
+    /// `PtySession::spawn` to size each new session's scrollback buffer.
+    /// Existing tabs are NOT retroactively resized (alacritty_terminal's
+    /// grid is sized at construction).
+    default_history_lines: u32,
 }
 
 impl App {
@@ -42,6 +50,8 @@ impl App {
             default_title_strip_prefix: String::new(),
             default_tools_list: Vec::new(),
             default_proc_check_interval: std::time::Duration::from_millis(250),
+            default_scrollbar_fade_ms: 1500,
+            default_history_lines: 10000,
         }
     }
 
@@ -73,17 +83,35 @@ impl App {
         self.default_proc_check_interval = interval;
     }
 
+    /// Stage 12: update the default scrollbar fade duration for subsequently-spawned tabs.
+    pub fn set_default_scrollbar_fade_ms(&mut self, ms: u64) {
+        self.default_scrollbar_fade_ms = ms;
+    }
+
+    /// Stage 12: update the default scrollback history size for subsequently-spawned tabs.
+    /// Existing tabs keep their original size — alacritty_terminal's grid is sized at construction.
+    pub fn set_default_history_lines(&mut self, n: u32) {
+        self.default_history_lines = n.max(1);
+    }
+
     /// Spawn a new tab. Returns the index of the new tab in [`Self::tabs`]. The new
     /// tab becomes the active tab.
     ///
     /// # Errors
     /// Propagates any failure from [`PtySession::spawn`].
     pub fn new_tab(&mut self, argv: &[&str]) -> std::io::Result<usize> {
-        let mut session = PtySession::spawn(argv, self.tracker_config)?;
+        let mut session = PtySession::spawn(
+            argv,
+            self.tracker_config,
+            self.default_history_lines as usize,
+        )?;
         session.respect_osc_title = self.default_respect_osc_title;
         session.title_strip_prefix = self.default_title_strip_prefix.clone();
         session.tools_list = self.default_tools_list.clone();
         session.proc_check_interval = self.default_proc_check_interval;
+        session
+            .scrollbar_fade
+            .set_fade_ms(self.default_scrollbar_fade_ms);
         self.tabs.push(session);
         let idx = self.tabs.len() - 1;
         self.active = idx;
@@ -249,6 +277,8 @@ impl App {
         s.tools_list = self.default_tools_list.clone();
         s.proc_check_interval = self.default_proc_check_interval;
         s.set_tracker_config(self.tracker_config);
+        s.scrollbar_fade.set_fade_ms(self.default_scrollbar_fade_ms);
+        s.history_lines = self.default_history_lines as usize;
 
         Ok(())
     }
@@ -507,6 +537,56 @@ mod tests {
     }
 
     #[test]
+    fn new_tab_inherits_default_scrollbar_fade_ms() {
+        let mut app = App::new();
+        app.set_default_scrollbar_fade_ms(2222);
+        let _ = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
+        let now = std::time::Instant::now();
+        let s = &mut app.tabs_mut()[0];
+        s.scrollbar_fade.mark_scrolled(now);
+        // 2300ms past should be elapsed past 2222ms threshold → 0.0.
+        assert_eq!(
+            s.scrollbar_fade
+                .alpha(now + std::time::Duration::from_millis(2300)),
+            0.0
+        );
+        // Just under threshold should still be > 0 (linear fade — small positive value).
+        let near_end = s
+            .scrollbar_fade
+            .alpha(now + std::time::Duration::from_millis(2100));
+        assert!(
+            near_end > 0.0 && near_end < 0.1,
+            "near-threshold fade alpha out of range: {near_end}"
+        );
+    }
+
+    #[test]
+    fn restart_active_propagates_scrollbar_fade() {
+        let mut app = App::new();
+        app.set_default_scrollbar_fade_ms(777);
+        // Spawn a short-lived child so it can be restarted.
+        let _ = app.new_tab(&["/bin/sh", "-c", "true"]).expect("spawn");
+        // Wait for the child to die.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline && app.tabs()[0].is_alive() {
+            let _ = app.poll_all(std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        app.restart_active().expect("restart");
+        // After restart, the scrollbar_fade should still use the App default.
+        let now = std::time::Instant::now();
+        app.tabs_mut()[0].scrollbar_fade.mark_scrolled(now);
+        assert_eq!(app.tabs_mut()[0].scrollbar_fade.alpha(now), 1.0);
+        assert_eq!(
+            app.tabs_mut()[0]
+                .scrollbar_fade
+                .alpha(now + std::time::Duration::from_millis(800)),
+            0.0,
+            "fade should have elapsed past the 777ms threshold"
+        );
+    }
+
+    #[test]
     fn restart_active_preserves_stage11_fields() {
         let mut app = App::new();
         app.set_default_tools_list(vec!["claude".to_owned()]);
@@ -541,5 +621,26 @@ mod tests {
         // tracker_config isn't directly readable from app.rs (private field),
         // but set_tracker_config not panicking is a smoke check.
         app.tabs_mut()[0].set_tracker_config(TrackerConfig::default());
+    }
+
+    #[test]
+    fn restart_active_picks_up_updated_history_lines() {
+        let mut app = App::new();
+        app.set_default_history_lines(5000);
+        let _ = app.new_tab(&["/bin/sh", "-c", "true"]).expect("spawn");
+        // Wait for the child to exit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline && app.tabs()[0].is_alive() {
+            let _ = app.poll_all(std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Update history_lines before restart.
+        app.set_default_history_lines(123);
+        app.restart_active().expect("restart");
+        assert_eq!(
+            app.tabs()[0].history_lines,
+            123,
+            "restart should pick up updated default_history_lines"
+        );
     }
 }

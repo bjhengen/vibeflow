@@ -134,6 +134,12 @@ pub struct PtySession {
     /// produce no immediate output (e.g., `python3 -c "sleep 30"`) never
     /// arm the silence guard because state stays Active.
     pub(crate) heuristic_was_active: bool,
+    /// Stage 12: per-session scrollbar fade-state. Marked on user scroll;
+    /// fades back to invisible after `scrollbar_fade_ms`.
+    pub(crate) scrollbar_fade: crate::render::scrollbar::ScrollbarFade,
+    /// Stage 12: scrollback history capacity this session was constructed with.
+    /// Stored so `restart()` can re-use the same value when rebuilding the Term.
+    pub(crate) history_lines: usize,
 }
 
 impl PtySession {
@@ -142,7 +148,11 @@ impl PtySession {
     ///
     /// # Errors
     /// Propagates PTY-spawn or thread-creation failures.
-    pub fn spawn(argv: &[&str], config: TrackerConfig) -> std::io::Result<Self> {
+    pub fn spawn(
+        argv: &[&str],
+        config: TrackerConfig,
+        history_lines: usize,
+    ) -> std::io::Result<Self> {
         let PtyHandles {
             reader,
             writer,
@@ -170,7 +180,11 @@ impl PtySession {
             })?;
 
         let term_size = TermSize::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize);
-        let term = Term::new(TermConfig::default(), &term_size, VoidListener);
+        let term_config = TermConfig {
+            scrolling_history: history_lines.max(1),
+            ..TermConfig::default()
+        };
+        let term = Term::new(term_config, &term_size, VoidListener);
 
         let label = TabLabel::default_for(argv[0], TabState::default());
 
@@ -195,6 +209,8 @@ impl PtySession {
             proc_check_interval: std::time::Duration::from_millis(250),
             last_proc_check: None,
             heuristic_was_active: false,
+            scrollbar_fade: crate::render::scrollbar::ScrollbarFade::new(1500),
+            history_lines,
         })
     }
 
@@ -387,6 +403,47 @@ impl PtySession {
         self.tracker.set_config(cfg);
     }
 
+    /// Stage 12: scroll the display by `lines`. Negative = into history; positive = toward live.
+    /// No-op when `lines == 0`. Marks the scrollbar fade timer when non-zero.
+    pub fn scroll_by(&mut self, lines: i32, now: std::time::Instant) {
+        if lines == 0 {
+            return;
+        }
+        use alacritty_terminal::grid::Scroll;
+        // alacritty Scroll::Delta convention: positive scrolls UP (increases display_offset).
+        // Our public convention: negative `lines` = into history; positive = toward live.
+        // So to scroll into history (lines < 0), we negate: -lines > 0 = increases display_offset.
+        self.term.scroll_display(Scroll::Delta(-lines));
+        self.scrollbar_fade.mark_scrolled(now);
+    }
+
+    /// Stage 12: jump to top of history.
+    pub fn scroll_to_top(&mut self, now: std::time::Instant) {
+        use alacritty_terminal::grid::Scroll;
+        self.term.scroll_display(Scroll::Top);
+        self.scrollbar_fade.mark_scrolled(now);
+    }
+
+    /// Stage 12: jump back to live viewport.
+    pub fn scroll_to_bottom(&mut self, now: std::time::Instant) {
+        use alacritty_terminal::grid::Scroll;
+        self.term.scroll_display(Scroll::Bottom);
+        self.scrollbar_fade.mark_scrolled(now);
+    }
+
+    /// Stage 12: current display_offset (0 = at live viewport).
+    pub fn display_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+
+    /// Stage 12: read-only accessor for the scrollbar fade alpha at `now`.
+    /// `pub fn` (not `pub(crate)`) so integration tests at
+    /// `crates/vibeflow/tests/` can reach it across the compilation-unit
+    /// boundary. Same lesson Stage 11 learned for `last_proc_check`.
+    pub fn scrollbar_fade_alpha(&self, now: std::time::Instant) -> f32 {
+        self.scrollbar_fade.alpha(now)
+    }
+
     /// Stage 11: read-only accessor for the most recent proc-check timestamp.
     /// Used by integration tests at `crates/vibeflow/tests/` to verify the
     /// throttled foreground-process detection actually fires; integration
@@ -471,7 +528,11 @@ impl PtySession {
         // The reader thread sees its tx invalidated when the new spawn
         // replaces self; we don't need to join it explicitly.
         let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
-        let mut new_session = PtySession::spawn(&[argv.as_str()], TrackerConfig::default())?;
+        let mut new_session = PtySession::spawn(
+            &[argv.as_str()],
+            TrackerConfig::default(),
+            self.history_lines,
+        )?;
         if let Some(s) = size {
             // PtySize uses u16 for rows/cols. Re-apply to the new master.
             let _ = new_session.resize(s.rows, s.cols);
@@ -519,6 +580,7 @@ mod tests {
                 &format!("import sys; sys.stdout.buffer.write(bytes([{bytes_repr}]))"),
             ],
             TrackerConfig::default(),
+            10000,
         )
         .unwrap();
 
@@ -550,6 +612,7 @@ mod tests {
                 "import sys, time; sys.stdout.buffer.write(b'hello'); sys.stdout.flush(); time.sleep(2)",
             ],
             TrackerConfig::default(),
+            10000,
         )
         .unwrap();
 
@@ -568,8 +631,12 @@ mod tests {
 
     #[test]
     fn tick_does_not_fire_within_timeout_windows() {
-        let mut s =
-            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         // Default config: stale_state 30s, heuristic_silence 4s — neither
         // fires within 1s of spawn.
         let evs = s.tick(Instant::now() + Duration::from_secs(1));
@@ -579,8 +646,12 @@ mod tests {
     #[test]
     fn set_heuristic_active_toggles_tier_3() {
         // Direct test that the toggle reaches the tracker.
-        let mut s =
-            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         s.set_heuristic_active(true);
         // No assertion on internal tracker state (it's a private field) —
         // exercise the path via tick after a Working transition + observed
@@ -608,6 +679,7 @@ mod tests {
                 "import sys; sys.stdout.buffer.write(b'hello'); sys.stdout.flush()",
             ],
             TrackerConfig::default(),
+            10000,
         )
         .unwrap();
 
@@ -628,7 +700,7 @@ mod tests {
         // Spawn `cat`, send some bytes to its stdin via send_input, verify
         // the same bytes come back through the reader channel (since cat
         // echoes its input to stdout). Send EOT (0x04) to make cat exit.
-        let mut s = PtySession::spawn(&["/bin/cat"], TrackerConfig::default()).unwrap();
+        let mut s = PtySession::spawn(&["/bin/cat"], TrackerConfig::default(), 10000).unwrap();
         s.send_input(b"hello\n").unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -653,8 +725,12 @@ mod tests {
         // ioctl semantics are portable-pty's responsibility. We just verify the
         // call succeeds end-to-end (no Mutex poisoning, no consumed-master
         // panic, no Result::Err path).
-        let mut s =
-            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         s.resize(40, 100).unwrap();
         // Issue a second resize to verify it's not a one-shot.
         s.resize(24, 80).unwrap();
@@ -671,6 +747,7 @@ mod tests {
                 "import sys, time; sys.stdout.buffer.write(b'hello\\n'); sys.stdout.flush(); time.sleep(2)",
             ],
             TrackerConfig::default(),
+            10000,
         )
         .unwrap();
 
@@ -704,6 +781,7 @@ mod tests {
                 "import sys, time; sys.stdout.buffer.write(b'hi'); sys.stdout.flush(); time.sleep(2)",
             ],
             TrackerConfig::default(),
+            10000,
         )
         .unwrap();
 
@@ -724,7 +802,12 @@ mod tests {
     fn session_spawns_and_reports_state() {
         // `sleep 5` exits cleanly; the session is alive immediately after spawn
         // and reports the default Active state.
-        let s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        let s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         assert!(s.is_alive());
         assert_eq!(s.state(), TabState::Active);
         // Drop `s` here — the Drop impl kills the child and joins the reader.
@@ -735,8 +818,12 @@ mod tests {
     fn session_reader_thread_pumps_bytes_to_channel() {
         // Spawn a child that prints predictable bytes, then read from the
         // session's channel directly to verify the reader thread is alive.
-        let s = PtySession::spawn(&["/bin/sh", "-c", "printf hello"], TrackerConfig::default())
-            .unwrap();
+        let s = PtySession::spawn(
+            &["/bin/sh", "-c", "printf hello"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         // Drain the channel for up to 2s and accumulate bytes.
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut buf = Vec::new();
@@ -751,8 +838,12 @@ mod tests {
 
     #[test]
     fn tick_fires_stale_state_timeout() {
-        let mut s =
-            PtySession::spawn(&["/bin/sh", "-c", "sleep 60"], TrackerConfig::default()).unwrap();
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 60"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         let now = Instant::now();
         // Simulate state change by feeding an AiFrame manually to set
         // last_event_at, then tick past the 30 s stale-state window.
@@ -807,15 +898,19 @@ mod tests {
     fn ptysession_default_label_is_bash_active() {
         // PtySession::spawn always starts with TabState::Active. The default
         // label tracks that.
-        let s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default()).unwrap();
+        let s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 10000).unwrap();
         assert_eq!(s.label().title, "bash");
         assert_eq!(s.label().subtitle, "active");
     }
 
     #[test]
     fn ptysession_set_label_overrides_default() {
-        let mut s =
-            PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default()).unwrap();
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
         s.set_label(TabLabel {
             title: "custom".into(),
             subtitle: "claude · waiting".into(),
@@ -829,6 +924,7 @@ mod tests {
         let mut s = PtySession::spawn(
             &["/bin/sh", "-c", "printf '\\007hi'; sleep 0.5"],
             TrackerConfig::default(),
+            10000,
         )
         .unwrap();
         // Wait for child output.
@@ -849,8 +945,8 @@ mod tests {
     fn restart_replaces_internals_with_fresh_spawn() {
         // Spawn a sleep then restart. After restart, the new session must
         // be alive (the new shell is freshly spawned).
-        let mut s =
-            PtySession::spawn(&["sleep", "10"], TrackerConfig::default()).expect("first spawn");
+        let mut s = PtySession::spawn(&["sleep", "10"], TrackerConfig::default(), 10000)
+            .expect("first spawn");
         s.restart().expect("restart");
         // Give the new PTY a moment to initialize before the liveness check
         // — `child.try_wait` can race against the spawn handshake on slower
@@ -867,7 +963,8 @@ mod tests {
 
     #[test]
     fn osc_0_updates_title_when_not_user_renamed() {
-        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        let mut s =
+            PtySession::spawn(&["sleep", "5"], TrackerConfig::default(), 10000).expect("spawn");
         // Feed the OSC sequence directly to the dispatcher to simulate it arriving
         // through the PTY. Handle the SetTitle event directly in the test.
         for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
@@ -882,7 +979,8 @@ mod tests {
 
     #[test]
     fn osc_0_dropped_when_user_renamed() {
-        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        let mut s =
+            PtySession::spawn(&["sleep", "5"], TrackerConfig::default(), 10000).expect("spawn");
         s.user_renamed = true;
         for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
             if let DispatchEvent::SetTitle(title) = ev {
@@ -896,7 +994,8 @@ mod tests {
 
     #[test]
     fn osc_0_strips_prefix_when_present() {
-        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        let mut s =
+            PtySession::spawn(&["sleep", "5"], TrackerConfig::default(), 10000).expect("spawn");
         s.title_strip_prefix = "user@host: ".to_string();
         for ev in s.dispatcher.feed(b"\x1b]0;user@host: ~/dev\x07") {
             if let DispatchEvent::SetTitle(title) = ev {
@@ -912,7 +1011,8 @@ mod tests {
 
     #[test]
     fn osc_0_passes_through_when_prefix_doesnt_match() {
-        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        let mut s =
+            PtySession::spawn(&["sleep", "5"], TrackerConfig::default(), 10000).expect("spawn");
         s.title_strip_prefix = "user@host: ".to_string();
         for ev in s.dispatcher.feed(b"\x1b]0;vim - foo.txt\x07") {
             if let DispatchEvent::SetTitle(title) = ev {
@@ -928,7 +1028,8 @@ mod tests {
 
     #[test]
     fn osc_0_dropped_when_respect_osc_title_false() {
-        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        let mut s =
+            PtySession::spawn(&["sleep", "5"], TrackerConfig::default(), 10000).expect("spawn");
         s.respect_osc_title = false;
         for ev in s.dispatcher.feed(b"\x1b]0;new_title\x07") {
             if let DispatchEvent::SetTitle(title) = ev {
@@ -942,7 +1043,8 @@ mod tests {
 
     #[test]
     fn restart_resets_user_renamed() {
-        let mut s = PtySession::spawn(&["sleep", "5"], TrackerConfig::default()).expect("spawn");
+        let mut s =
+            PtySession::spawn(&["sleep", "5"], TrackerConfig::default(), 10000).expect("spawn");
         s.user_renamed = true;
         s.set_label(TabLabel {
             title: "user_set".to_string(),
@@ -960,8 +1062,12 @@ mod tests {
 
     #[test]
     fn child_pid_returns_some_for_live_session() {
-        let s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default())
-            .expect("spawn");
+        let s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
         let pid = s.child_pid();
         assert!(pid.is_some(), "live session should report child pid");
         assert!(pid.unwrap() > 0, "pid should be positive");
@@ -969,8 +1075,12 @@ mod tests {
 
     #[test]
     fn set_tracker_config_propagates_to_tracker() {
-        let mut s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default())
-            .expect("spawn");
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
         let new_cfg = TrackerConfig {
             heuristic_silence: std::time::Duration::from_millis(1500),
             ..TrackerConfig::default()
@@ -991,8 +1101,12 @@ mod tests {
 
     #[test]
     fn tick_runs_proc_check_on_first_call() {
-        let mut s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default())
-            .expect("spawn");
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
         s.proc_check_interval = std::time::Duration::from_millis(250);
         s.last_proc_check = None;
         let t0 = std::time::Instant::now();
@@ -1005,8 +1119,12 @@ mod tests {
 
     #[test]
     fn tick_throttles_proc_check_within_interval() {
-        let mut s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default())
-            .expect("spawn");
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
         s.proc_check_interval = std::time::Duration::from_millis(250);
         let t0 = std::time::Instant::now();
         let _ = s.tick(t0);
@@ -1020,8 +1138,12 @@ mod tests {
 
     #[test]
     fn tick_runs_proc_check_again_past_interval() {
-        let mut s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default())
-            .expect("spawn");
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
         s.proc_check_interval = std::time::Duration::from_millis(100);
         let t0 = std::time::Instant::now();
         let _ = s.tick(t0);
@@ -1047,6 +1169,7 @@ mod tests {
                 heuristic_silence: std::time::Duration::from_millis(500),
                 ..TrackerConfig::default()
             },
+            10000,
         )
         .expect("spawn");
         // Initially tools_list is empty → heuristic stays off.
@@ -1092,8 +1215,12 @@ mod tests {
         // Spawn `bash`. The session's foreground command will be reported by /proc
         // as some shell-like name (likely "bash" but depends on env). Configure
         // tools_list to include "bash"; verify heuristic_active flips true.
-        let mut s = PtySession::spawn(&["/bin/sh", "-c", "sleep 5"], TrackerConfig::default())
-            .expect("spawn");
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
         s.tools_list = vec!["bash".to_owned()];
         s.proc_check_interval = std::time::Duration::from_millis(0); // always fire
         let t0 = std::time::Instant::now();
@@ -1120,5 +1247,68 @@ mod tests {
             s.last_proc_check.is_some(),
             "tick should have run the proc check"
         );
+    }
+
+    #[test]
+    fn scroll_by_zero_is_noop_no_fade() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        let now = std::time::Instant::now();
+        // Pre-fade state.
+        assert_eq!(s.scrollbar_fade.alpha(now), 0.0);
+        s.scroll_by(0, now);
+        // No fade triggered.
+        assert_eq!(
+            s.scrollbar_fade.alpha(now),
+            0.0,
+            "scroll_by(0) should not arm the fade timer"
+        );
+    }
+
+    #[test]
+    fn scroll_by_nonzero_arms_fade() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        let now = std::time::Instant::now();
+        s.scroll_by(-5, now);
+        assert!(
+            s.scrollbar_fade.alpha(now) > 0.0,
+            "fade should arm on nonzero scroll"
+        );
+    }
+
+    #[test]
+    fn scroll_to_top_then_bottom_round_trips_display_offset() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        let now = std::time::Instant::now();
+        // Without history content the round-trip is trivial — both yield 0.
+        // The test still validates the API does not panic.
+        s.scroll_to_top(now);
+        s.scroll_to_bottom(now);
+        assert_eq!(s.display_offset(), 0);
+    }
+
+    #[test]
+    fn display_offset_starts_at_zero() {
+        let s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        assert_eq!(s.display_offset(), 0);
     }
 }
