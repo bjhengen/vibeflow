@@ -165,6 +165,9 @@ pub struct WindowApp {
     /// Updated on `WindowEvent::Resized`. Used by Shift+PageUp/Down for
     /// half-page scroll math.
     last_grid_size_lines: usize,
+    /// Stage 13: mirror of `Config.scrollback.snap_on_esc`. When false, Esc
+    /// does NOT snap to bottom (only character-producing keys do).
+    snap_on_esc: bool,
 }
 
 impl WindowApp {
@@ -284,6 +287,7 @@ impl WindowApp {
             context_menu: None,
             wheel_lines_per_detent: 3,
             last_grid_size_lines: 24,
+            snap_on_esc: true,
         }
     }
 
@@ -1075,12 +1079,17 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     // scrollback. This only runs when key_to_bytes returns
                     // Some — bare modifier presses (Ctrl alone, Shift alone)
                     // never reach here, per Stage 8 lesson.
-                    let active_idx = self.app.active();
-                    if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
-                        if s.display_offset() > 0 {
-                            s.scroll_to_bottom(Instant::now());
-                            if let Some(w) = self.window.as_ref() {
-                                w.request_redraw();
+                    // Stage 13: when snap_on_esc is false, skip the snap for
+                    // Esc specifically. All other input-producing keys still snap.
+                    let is_esc = matches!(&event.logical_key, Key::Named(NamedKey::Escape));
+                    if !is_esc || self.snap_on_esc {
+                        let active_idx = self.app.active();
+                        if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
+                            if s.display_offset() > 0 {
+                                s.scroll_to_bottom(Instant::now());
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
                             }
                         }
                     }

@@ -119,6 +119,7 @@ pub struct ScrollbackSection {
     pub history_lines: Option<u32>,
     pub wheel_lines_per_detent: Option<u32>,
     pub scrollbar_fade_ms: Option<u64>,
+    pub snap_on_esc: Option<bool>,
 }
 
 #[cfg(test)]
@@ -299,5 +300,16 @@ bogus_key = 1
 "#;
         let r: Result<super::ConfigFile, _> = toml::from_str(toml);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn scrollback_snap_on_esc_field_parses() {
+        let toml = r#"
+[scrollback]
+snap_on_esc = false
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let sb = cs.scrollback.expect("scrollback present");
+        assert_eq!(sb.snap_on_esc, Some(false));
     }
 }

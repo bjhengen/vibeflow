@@ -41,6 +41,7 @@ pub struct Scrollback {
     pub history_lines: u32,
     pub wheel_lines_per_detent: u32,
     pub scrollbar_fade_ms: u64,
+    pub snap_on_esc: bool,
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -212,6 +213,7 @@ impl Config {
                 history_lines: 10000,
                 wheel_lines_per_detent: 3,
                 scrollbar_fade_ms: 1500,
+                snap_on_esc: true,
             },
         }
     }
@@ -556,6 +558,9 @@ fn apply_scrollback(schema: schema::ScrollbackSection, resolved: &mut Scrollback
     }
     if let Some(v) = schema.scrollbar_fade_ms {
         resolved.scrollbar_fade_ms = v;
+    }
+    if let Some(v) = schema.snap_on_esc {
+        resolved.snap_on_esc = v;
     }
 }
 
@@ -1014,5 +1019,28 @@ history_lines = 0
         let cf = Config::default_values();
         assert_eq!(cf.colors.scrollbar_track, [1.0, 1.0, 1.0, 0.04]);
         assert_eq!(cf.colors.scrollbar_thumb, [1.0, 1.0, 1.0, 0.22]);
+    }
+
+    #[test]
+    fn scrollback_snap_on_esc_defaults_true() {
+        let cf = Config::default_values();
+        assert!(cf.scrollback.snap_on_esc);
+    }
+
+    #[test]
+    fn scrollback_snap_on_esc_load_overrides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scrollback]
+snap_on_esc = false
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert!(!cf.scrollback.snap_on_esc);
     }
 }
