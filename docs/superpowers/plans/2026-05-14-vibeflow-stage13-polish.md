@@ -2,6 +2,137 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## ⚠️ PRE-EXECUTION AMENDMENTS (read FIRST — supersedes affected task bodies)
+
+The senior pre-execution Sonnet review caught 6 critical and 7 important issues against actual library + codebase source. These amendments override the relevant task bodies below. Implementers MUST apply these.
+
+### A1 (Critical) — `Term::colors_mut()` does not exist; theme apply must NOT mutate `Term`
+
+`alacritty_terminal::Term` only exposes `pub fn colors(&self) -> &Colors` (immutable). The `set_color`/`reset_color` methods that exist are private impls of the `vte::Handler` trait. Do not invent a `colors_mut()` accessor.
+
+**Replacement architecture** for T10/T14/T15/T16/T17/T18:
+
+- `ThemeData` (T10) stays as-is on disk (TOML form unchanged) and in memory.
+- A new helper `theme::apply_theme_to_colors(theme: &ThemeData) -> alacritty_terminal::term::color::Colors` BUILDS a fresh `Colors` struct (alacritty's; constructible via `Colors::default()` + `IndexMut<NamedColor>` assignments).
+- `PtySession` (T14) stores `pub(crate) theme_colors: Option<alacritty_terminal::term::color::Colors>` (the resolved Colors, not just the name). Keep `pub(crate) theme: Option<String>` so restart can re-apply.
+- `PtySession::set_theme(name, &ThemeRegistry)` looks up name → calls `apply_theme_to_colors` → stores `Some(colors)`; on `None`, stores `None`.
+- Renderer ripple (T14, in `quad.rs`): `build_cell_instances` gains parameter `theme_colors: Option<&Colors>`. Line ~401 changes:
+  ```rust
+  // BEFORE
+  let colors = content.colors;
+  // AFTER
+  let colors = theme_colors.unwrap_or(content.colors);
+  ```
+- Caller of `build_cell_instances` (search `grep -n "build_cell_instances(" crates/vibeflow/src/render/`) passes `session.theme_colors.as_ref()`.
+- T18 integration test must NOT call `term.colors()[NamedColor::Foreground]` after `set_theme` — there's nothing to verify there (Term is untouched). Instead, assert `session.theme_colors.is_some()` and that the stored `Colors` has the expected slot: `session.theme_colors.as_ref().unwrap()[NamedColor::Foreground] == Some(Rgb { r: 255, g: 0, b: 0 })`.
+
+### A2 (Critical) — `NamedColor::Bold` and `NamedColor::CursorText` do NOT exist
+
+The actual `NamedColor` enum (`vte-0.13.1/src/ansi.rs`) has ANSI 0–15, `Foreground`, `Background`, `Cursor`, `DimBlack..DimWhite`, `BrightForeground`, `DimForeground`. **No `Bold` or `CursorText` variant.**
+
+`apply_theme_to_colors` (T14): drop both writes. KEEP `bold`/`cursor_text`/`link`/`selection` fields on `ThemeData` (still serialized to TOML) but DO NOT write them into `Colors`. Add a one-line comment: `// bold/cursor_text/link/selection: stored on ThemeData; no NamedColor slot in v0.1`.
+
+### A3 (Critical) — `MenuAction` derives `Copy`; adding `SetTheme(String)` breaks it
+
+Adding `SetTheme(String)` makes `MenuAction` non-`Copy`. The dispatch site in `window.rs` (`let action = item.action;`) becomes a move out of a borrow → compile error.
+
+T16 amended:
+1. Remove `Copy` from `MenuAction`'s derive list — keep `Clone, Debug, PartialEq, Eq`.
+2. In `window.rs` find `let action = item.action;` (`grep -n 'let action = item\.action' crates/vibeflow/src/window.rs`) and change to `let action = item.action.clone();`.
+3. The compiler will list any other accidental copies; convert each to `.clone()`.
+
+### A4 (Critical) — `MenuItem.label: &'static str` cannot hold runtime theme names
+
+T16 MANDATORY migration (not optional):
+
+1. Change `MenuItem.label: &'static str` → `MenuItem.label: String`.
+2. Every literal `MenuItem { label: "Rename Tab", ... }` becomes `MenuItem { label: "Rename Tab".to_owned(), ... }` (grep: `grep -n 'label: "' crates/vibeflow/src/render/context_menu.rs`).
+3. In tests, `fn assert_action(item: &MenuItem, label: &'static str, ...)` → change parameter to `&str`; callers compare via `item.label.as_str() == label`.
+4. The renderer's text-emission reading `item.label` derefs `&String` → `&str` for cosmic-text — no change. Verify on test pass.
+5. Theme items: `MenuItem { label: format!("Theme: {}", name), ... }`.
+
+### A5 (Critical) — `main()` returns `Result<()>` not `ExitCode`
+
+T13 amended: KEEP `Result<()>` return. The `--import-colors` branch returns `Ok(())` on success; on user-error paths calls `std::process::exit(n)` directly:
+
+```rust
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--import-colors") {
+        let Some(path_str) = args.get(pos + 1) else {
+            eprintln!("usage: vibeflow --import-colors <path> [--overwrite]");
+            std::process::exit(2);
+        };
+        let overwrite = args.iter().any(|a| a == "--overwrite");
+        run_import_colors(path_str, overwrite);
+        return Ok(());
+    }
+    // ... existing main body unchanged
+}
+
+fn run_import_colors(path_str: &str, overwrite: bool) {
+    // every plan body returning `ExitCode::from(N)` → call `std::process::exit(N)` instead
+    // success path: function returns `()`, caller returns `Ok(())`
+}
+```
+
+### A6 (Critical) — `tab_menu` signature change breaks 6 existing tests
+
+Existing callers in `context_menu.rs` tests at approx lines 542, 563, 582, 595, 604, 606 (`tab_menu(0, false, 2)` style). T16 step 3/4 already covers updating callers; make explicit: pass `&[]` as the 4th arg in all 6 sites.
+
+### B1 (Important) — Existing `mouse_down` ALREADY handles shift-extend correctly
+
+T6 says "add shift-extend logic." But `selection.rs:108-128` already has:
+
+```rust
+if shift_held && self.selection.is_some() {
+    if let Some(sel) = &mut self.selection {
+        let (start, end) = order(sel.start, point);
+        sel.start = start;
+        sel.end = end;
+    }
+    self.drag_anchor = Some(self.selection.unwrap().start);
+    return;
+}
+```
+
+This is correct (uses `order()` to normalize). DO NOT replace with the plan's snippet (which would regress mode to Cell).
+
+T6 amended: ONLY add `alt: bool` as a new parameter (threaded through; consumed in T7). Update window.rs + existing test callers to pass `false`. Adjust the new tests to match the existing `order()` normalization behavior, OR drop them (the existing tests in selection.rs already cover shift-extend). Recommended: drop the T6-step-1 shift-extend tests — they're already covered. Keep only the parameter-threading change.
+
+### B2 (Important) — `BellFlash` exposes `note(now)` not `trigger(now)`
+
+T4 already uses `renderer.note_bell()` (correct). The plan's prose mentions "trigger" once — ignore that; use `renderer.note_bell()`.
+
+### B3 (Important) — `SelectionTracker::cells()` already exists at `selection.rs:207-215`
+
+T7 step 5: ADAPT the existing `cells()` method, don't replace it. Add a `SelectionMode::Block => Box::new(cells_in_range_block(sel.start, sel.end))` arm to whatever match shape is already there.
+
+### B4 (Important) — `ConfigError` uses variant constructors, not `::new`
+
+T3's `apply_bell` snippet uses `ConfigError::new("bell.mode", &e)` — doesn't exist. Read `config/errors.rs` (or wherever `ConfigError` is defined) and use the existing variant pattern. Mimic the existing `apply_colors` error-push pattern verbatim.
+
+### B5 (Important) — Font live-reload also invalidates SwashCache
+
+T9: when rebuilding `FontSystem::new()`, also rebuild `SwashCache::new()` (or whatever the cache field is named). Otherwise stale glyph IDs reference the old FontSystem's faces.
+
+### B6 (Verified-already-present) — `dirs` and `tempfile` are already deps
+
+Cargo.toml already has `dirs = "5"` (line ~29) and `tempfile = "3"` dev-dep (line ~43). T11 step 1 and T13 setup: VERIFY only; no edit required.
+
+### B7 (Minor) — `bell.rs` IS getting new code (`play_audible_bell` fn)
+
+The plan's module-layout table says bell.rs has "No code change." That's wrong — T4 adds the `play_audible_bell` function. Add it per T4 spec; ignore the table entry.
+
+### Implementer pre-flight checklist (before T1)
+
+- [ ] Read all amendments above
+- [ ] Confirm understanding: theme system writes to its own `Colors` struct, never to `Term`
+- [ ] Confirm `MenuAction` losing `Copy` + `MenuItem.label` → `String` are required (not optional)
+
+---
+
+
 **Goal:** Land 8 polish features in one stage — indicator prominence bump, bell mode config + audible bell, iTerm2 theme system (CLI + registry + per-tab override), modifier arrow keys, block selection, shift-extend anchor, Esc snap config knob, font live-reload.
 
 **Architecture:** Theme system is the only meaty piece — a new `theme/` module with `ThemeData` + iTerm2 plist parser + filesystem-backed registry, plus per-tab `Term::colors_mut()` application via context menu. Everything else is small and independent: single-constant bumps, config additions following Stage 11/12 patterns, `key_to_bytes` extensions, `SelectionMode::Block` variant.
