@@ -3029,6 +3029,7 @@ dependencies = [
  "proptest",
  "serde",
  "tempfile",
+ "thiserror 1.0.69",
  "toml",
  "tracing",
  "tracing-subscriber",
