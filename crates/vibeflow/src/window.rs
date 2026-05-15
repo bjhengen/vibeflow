@@ -1471,7 +1471,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 if pressed {
                     let now = std::time::Instant::now();
                     let (sel, term) = s.split_borrow_mouse();
-                    sel.mouse_down(point, shift, false, term, now);
+                    sel.mouse_down(point, shift, self.current_modifiers.alt_key(), term, now);
                 } else if released {
                     s.selection.mouse_up();
                     // Stage 9: if a finalized selection exists AND PRIMARY is
