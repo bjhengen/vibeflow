@@ -157,6 +157,20 @@ pub struct TextEngine {
     device: Arc<wgpu::Device>,
 }
 
+/// Build (or rebuild) the cosmic-text font subsystem with the embedded
+/// primary font loaded.  Returns a fresh `(FontSystem, SwashCache)` pair.
+///
+/// Called by `TextEngine::new` at construction and by
+/// `TextEngine::set_font_priorities` on live config reload — keeping the
+/// embedded-font load in exactly one place so a future second embedded font
+/// cannot be silently lost on reload.
+fn build_font_subsystem() -> (FontSystem, SwashCache) {
+    let mut font_system = FontSystem::new();
+    font_system.db_mut().load_font_data(PRIMARY_FONT.to_vec());
+    let swash_cache = SwashCache::new();
+    (font_system, swash_cache)
+}
+
 impl TextEngine {
     /// Build a `TextEngine`. Allocates the initial 256×256 R8Unorm atlas
     /// texture + sampler.
@@ -164,9 +178,7 @@ impl TextEngine {
     /// # Errors
     /// Fails if the embedded font is corrupt or the wgpu allocator fails.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Result<Self> {
-        let mut font_system = FontSystem::new();
-        font_system.db_mut().load_font_data(PRIMARY_FONT.to_vec());
-        let swash_cache = SwashCache::new();
+        let (mut font_system, swash_cache) = build_font_subsystem();
 
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut font_system, metrics);
@@ -274,16 +286,25 @@ impl TextEngine {
         self.baseline_y
     }
 
-    /// Stage 9: receive new font priority order. Live-reload of cosmic-text's
-    /// `FontSystem` priority chain isn't directly supported by 0.12.1's API;
-    /// a config change that reorders priorities takes effect on next startup.
-    /// What we do now: log the new priority list and clear the glyph cache so
-    /// existing shaping is re-evaluated (in case the font on disk changed).
-    pub fn set_font_priorities(&mut self, priority: Vec<String>) {
-        tracing::info!(
-            ?priority,
-            "font priorities updated (full reorder applies on next startup)"
-        );
+    /// Stage 13: rebuild the cosmic-text `FontSystem` (and `SwashCache`) so a
+    /// font config change takes effect without restart. `FontSystem::new()`
+    /// re-scans system fonts; we then reload the embedded primary font to
+    /// ensure it is never lost (a fresh `FontSystem` does NOT include it).
+    ///
+    /// **Limitation:** cosmic-text 0.12.1 has no API to impose an explicit
+    /// family *priority order* on fontdb, so `priority` is advisory only —
+    /// the rebuild picks up on-disk/system font changes and resets fontdb
+    /// state, but does not reorder the fallback chain. Tracked as a v0.1
+    /// limitation in the Stage 13 spec risks.
+    ///
+    /// **Performance:** `FontSystem::new()` scans system fonts (~hundreds of
+    /// ms). That cost is acceptable because config reloads are infrequent
+    /// (triggered only by an explicit user edit of the config file).
+    pub fn set_font_priorities(&mut self, priority: &[String]) {
+        tracing::info!(?priority, "font priorities updated — rebuilding FontSystem");
+        let (fs, sc) = build_font_subsystem();
+        self.font_system = fs;
+        self.swash_cache = sc;
         self.invalidate_glyph_cache();
     }
 

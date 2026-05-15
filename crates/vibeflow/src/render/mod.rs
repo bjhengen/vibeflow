@@ -673,8 +673,9 @@ impl Renderer {
         self.cursor.set_blink_ms(ms);
     }
 
-    /// Update the font priority order (takes effect on next startup).
-    pub fn set_font_priorities(&mut self, priority: Vec<String>) {
+    /// Stage 13: live-reload the font subsystem with the new priority list.
+    /// Rebuilds cosmic-text's FontSystem/SwashCache (see TextEngine::set_font_priorities).
+    pub fn set_font_priorities(&mut self, priority: &[String]) {
         self.text_engine.set_font_priorities(priority);
     }
 

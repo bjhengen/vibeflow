@@ -567,7 +567,7 @@ impl WindowApp {
                 config.colors.indicator_inactive,
             ]);
             r.set_cursor_blink_ms(config.cursor.blink_ms);
-            r.set_font_priorities(config.fonts.priority.clone());
+            r.set_font_priorities(&config.fonts.priority);
             r.set_menu_colors(crate::render::context_menu::MenuColors {
                 bg: config.colors.menu_bg,
                 border: config.colors.menu_border,
