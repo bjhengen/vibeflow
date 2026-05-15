@@ -168,6 +168,11 @@ pub struct WindowApp {
     /// Stage 13: mirror of `Config.scrollback.snap_on_esc`. When false, Esc
     /// does NOT snap to bottom (only character-producing keys do).
     snap_on_esc: bool,
+    /// Stage 13: bell behavior config cache.
+    // Stage 13: bell_mode/bell_debounce updated by apply_config in T17.
+    bell_mode: crate::config::BellMode,
+    bell_debounce: std::time::Duration,
+    last_bell_at: Option<std::time::Instant>,
 }
 
 impl WindowApp {
@@ -288,6 +293,9 @@ impl WindowApp {
             wheel_lines_per_detent: 3,
             last_grid_size_lines: 24,
             snap_on_esc: true,
+            bell_mode: crate::config::BellMode::Visual,
+            bell_debounce: std::time::Duration::from_millis(100),
+            last_bell_at: None,
         }
     }
 
@@ -331,13 +339,41 @@ impl WindowApp {
             }
             SessionEvent::Bell => {
                 tracing::trace!(tab = idx, "bell rung");
-                // Only flash for the active tab to avoid background tabs spamming.
-                if idx == self.app.active() {
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        renderer.note_bell();
+                // Stage 13: only react if this is the active tab.
+                if idx != self.app.active() {
+                    return;
+                }
+                // Debounce — drop bells closer than `bell_debounce`.
+                let now = std::time::Instant::now();
+                if let Some(last) = self.last_bell_at {
+                    if now.saturating_duration_since(last) < self.bell_debounce {
+                        return;
                     }
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
+                }
+                self.last_bell_at = Some(now);
+
+                use crate::config::BellMode;
+                match self.bell_mode {
+                    BellMode::Silent => {}
+                    BellMode::Visual => {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.note_bell();
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                    BellMode::Audible => {
+                        crate::render::bell::play_audible_bell();
+                    }
+                    BellMode::Both => {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.note_bell();
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        crate::render::bell::play_audible_bell();
                     }
                 }
             }

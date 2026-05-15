@@ -41,6 +41,23 @@ impl BellFlash {
     }
 }
 
+/// Stage 13: play the system bell sound via `paplay`. Spawned detached;
+/// never blocks the event loop. If `paplay` isn't installed, logs at debug
+/// level. If the sound file is missing, `paplay` exits silently (stderr
+/// discarded). Either way the event loop is never blocked.
+pub fn play_audible_bell() {
+    use std::process::{Command, Stdio};
+    let result = Command::new("paplay")
+        .arg("/usr/share/sounds/freedesktop/stereo/bell.oga")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(e) = result {
+        tracing::debug!("paplay not available; audible bell skipped: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
