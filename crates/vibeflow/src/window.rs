@@ -99,6 +99,75 @@ fn key_to_bytes(
         // through `Character(" ")` — so without this arm it falls into the
         // `_ => None` catch-all and the byte never reaches the PTY.
         Key::Named(NamedKey::Space) => Some(vec![b' ']),
+        // Stage 13: Ctrl + arrow keys → xterm modifier code 5 sequences.
+        // Guards require exactly Ctrl (no Shift/Alt/Super) so they don't shadow
+        // future Ctrl+Shift or other combos.
+        Key::Named(NamedKey::ArrowUp)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5A".to_vec())
+        }
+        Key::Named(NamedKey::ArrowDown)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5B".to_vec())
+        }
+        Key::Named(NamedKey::ArrowRight)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5C".to_vec())
+        }
+        Key::Named(NamedKey::ArrowLeft)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5D".to_vec())
+        }
+        // Stage 13: Shift + arrow keys → xterm modifier code 2 sequences.
+        Key::Named(NamedKey::ArrowUp)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2A".to_vec())
+        }
+        Key::Named(NamedKey::ArrowDown)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2B".to_vec())
+        }
+        Key::Named(NamedKey::ArrowRight)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2C".to_vec())
+        }
+        Key::Named(NamedKey::ArrowLeft)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2D".to_vec())
+        }
+        // Plain (unmodified) arrow keys.
         Key::Named(NamedKey::ArrowUp) if modifiers.is_empty() => Some(b"\x1b[A".to_vec()),
         Key::Named(NamedKey::ArrowDown) if modifiers.is_empty() => Some(b"\x1b[B".to_vec()),
         Key::Named(NamedKey::ArrowRight) if modifiers.is_empty() => Some(b"\x1b[C".to_vec()),
@@ -1933,17 +2002,113 @@ mod tests {
     }
 
     #[test]
-    fn key_to_bytes_arrow_up_with_ctrl_returns_none() {
-        // Ctrl+ArrowUp is reserved for word-jump in Stage 10+. Until then,
-        // we return None so the byte path doesn't accidentally pick up the
-        // plain `\x1b[A` for a modified chord.
+    fn key_to_bytes_arrow_up_with_ctrl_emits_modifier_5() {
+        // Stage 13: Ctrl+ArrowUp now emits the xterm modifier-5 sequence.
+        // Previously this returned None as a placeholder "until Stage 10+";
+        // T5 is that implementation — the placeholder behavior is now replaced.
         assert_eq!(
             key_to_bytes(
                 &Key::Named(NamedKey::ArrowUp),
                 ElementState::Pressed,
                 ModifiersState::CONTROL
             ),
-            None
+            Some(b"\x1b[1;5A".to_vec())
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_emit_xterm_modifier_5_sequences() {
+        let pressed = ElementState::Pressed;
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowLeft),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5D".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowRight),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5C".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowDown),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5B".to_vec())
+        );
+    }
+
+    #[test]
+    fn shift_arrows_emit_xterm_modifier_2_sequences() {
+        let pressed = ElementState::Pressed;
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowLeft),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2D".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowRight),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2C".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowDown),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2B".to_vec())
+        );
+    }
+
+    #[test]
+    fn plain_arrows_still_emit_unmodified_sequences() {
+        let pressed = ElementState::Pressed;
+        let none = ModifiersState::empty();
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowUp), pressed, none),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowDown), pressed, none),
+            Some(b"\x1b[B".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowRight), pressed, none),
+            Some(b"\x1b[C".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowLeft), pressed, none),
+            Some(b"\x1b[D".to_vec())
         );
     }
 }
