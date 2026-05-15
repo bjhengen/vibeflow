@@ -25,6 +25,7 @@ pub struct Config {
     pub tabs: TabsConfig,
     pub ai: Ai,
     pub scrollback: Scrollback,
+    pub bell: Bell,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +43,34 @@ pub struct Scrollback {
     pub wheel_lines_per_detent: u32,
     pub scrollbar_fade_ms: u64,
     pub snap_on_esc: bool,
+}
+
+/// Terminal bell behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BellMode {
+    Visual,
+    Audible,
+    Both,
+    Silent,
+}
+
+impl std::str::FromStr for BellMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "visual" => Ok(BellMode::Visual),
+            "audible" => Ok(BellMode::Audible),
+            "both" => Ok(BellMode::Both),
+            "silent" => Ok(BellMode::Silent),
+            other => Err(format!("unknown bell mode: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bell {
+    pub mode: BellMode,
+    pub debounce_ms: u64,
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -215,6 +244,10 @@ impl Config {
                 scrollbar_fade_ms: 1500,
                 snap_on_esc: true,
             },
+            bell: Bell {
+                mode: BellMode::Visual,
+                debounce_ms: 100,
+            },
         }
     }
 
@@ -292,6 +325,9 @@ impl Config {
         }
         if let Some(s) = file.scrollback {
             apply_scrollback(s, &mut defaults.scrollback);
+        }
+        if let Some(b) = file.bell {
+            apply_bell(b, &mut defaults.bell, &mut errors);
         }
 
         (defaults, errors)
@@ -545,6 +581,22 @@ fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
     }
     if let Some(v) = schema.foreground_check_interval_ms {
         resolved.foreground_check_interval_ms = v;
+    }
+}
+
+fn apply_bell(schema: schema::BellSection, resolved: &mut Bell, errors: &mut Vec<ConfigError>) {
+    if let Some(m) = schema.mode {
+        match m.parse::<BellMode>() {
+            Ok(mode) => resolved.mode = mode,
+            Err(e) => errors.push(ConfigError::InvalidValue {
+                key: "bell.mode".to_string(),
+                expected: "visual | audible | both | silent".to_string(),
+                got: e,
+            }),
+        }
+    }
+    if let Some(v) = schema.debounce_ms {
+        resolved.debounce_ms = v;
     }
 }
 
@@ -1019,6 +1071,49 @@ history_lines = 0
         let cf = Config::default_values();
         assert_eq!(cf.colors.scrollbar_track, [1.0, 1.0, 1.0, 0.04]);
         assert_eq!(cf.colors.scrollbar_thumb, [1.0, 1.0, 1.0, 0.22]);
+    }
+
+    #[test]
+    fn bell_defaults_match_spec() {
+        let cf = Config::default_values();
+        assert_eq!(cf.bell.mode, BellMode::Visual);
+        assert_eq!(cf.bell.debounce_ms, 100);
+    }
+
+    #[test]
+    fn bell_load_overrides_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[bell]
+mode = "audible"
+debounce_ms = 50
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.bell.mode, BellMode::Audible);
+        assert_eq!(cf.bell.debounce_ms, 50);
+    }
+
+    #[test]
+    fn bell_mode_invalid_string_logs_error_keeps_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[bell]
+mode = "blinking-lights"
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(!errors.is_empty(), "expected error for invalid mode");
+        assert_eq!(cf.bell.mode, BellMode::Visual); // default preserved
     }
 
     #[test]

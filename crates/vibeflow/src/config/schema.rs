@@ -17,6 +17,7 @@ pub struct ConfigFile {
     pub tabs: Option<TabsSection>,
     pub ai: Option<AiSection>,
     pub scrollback: Option<ScrollbackSection>,
+    pub bell: Option<BellSection>,
 }
 
 /// `[shortcuts]` table. Each known action key (e.g. `new_tab`, `copy`) maps
@@ -110,6 +111,14 @@ pub struct AiSection {
     pub debounce_ms: Option<u64>,
     /// Interval in milliseconds for foreground activity checks.
     pub foreground_check_interval_ms: Option<u64>,
+}
+
+/// `[bell]` table. Stage 13: terminal bell configuration.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BellSection {
+    pub mode: Option<String>,
+    pub debounce_ms: Option<u64>,
 }
 
 /// `[scrollback]` table. Stage 12: scrollbar + scrollback history configuration.
@@ -311,5 +320,34 @@ snap_on_esc = false
         let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
         let sb = cs.scrollback.expect("scrollback present");
         assert_eq!(sb.snap_on_esc, Some(false));
+    }
+
+    #[test]
+    fn bell_section_parses_all_fields() {
+        let toml = r#"
+[bell]
+mode = "audible"
+debounce_ms = 200
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let b = cs.bell.expect("bell present");
+        assert_eq!(b.mode.as_deref(), Some("audible"));
+        assert_eq!(b.debounce_ms, Some(200));
+    }
+
+    #[test]
+    fn bell_section_missing_keeps_none() {
+        let cs: super::ConfigFile = toml::from_str("").expect("parse");
+        assert!(cs.bell.is_none());
+    }
+
+    #[test]
+    fn bell_section_rejects_unknown_field() {
+        let toml = r#"
+[bell]
+bogus = 1
+"#;
+        let r: Result<super::ConfigFile, _> = toml::from_str(toml);
+        assert!(r.is_err());
     }
 }
