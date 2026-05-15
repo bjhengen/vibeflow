@@ -493,7 +493,7 @@ impl PtySession {
     /// Split-borrow helper for mouse event routing. Returns a mutable reference
     /// to the selection tracker and an immutable reference to the terminal grid
     /// in a single call, avoiding the aliasing problem that arises when calling
-    /// `s.selection.mouse_down(point, shift, s.term(), now)` — that expression
+    /// `s.selection.mouse_down(point, shift, alt, s.term(), now)` — that expression
     /// would simultaneously borrow `s` mutably (for `selection`) and immutably
     /// (for `term()`), which the borrow checker rejects.
     ///
