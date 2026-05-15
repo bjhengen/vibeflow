@@ -659,7 +659,7 @@ impl TabBarRenderer {
                 bg,
             ));
 
-            // Notice indicator stripe (3px on the left edge).
+            // Notice indicator stripe (6px on the left edge).
             let session = match app.tabs().get(tab.idx) {
                 Some(s) => s,
                 None => continue,
