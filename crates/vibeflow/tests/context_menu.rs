@@ -87,7 +87,7 @@ fn tab_menu_for_dead_tab_includes_restart() {
     assert!(died, "expected SessionEvent::Died for `true`");
     let is_dead = !app.tabs()[0].is_alive();
     assert!(is_dead, "expected `true` child to have exited");
-    let items = context_menu::tab_menu(0, is_dead, app.tabs().len());
+    let items = context_menu::tab_menu(0, is_dead, app.tabs().len(), &[]);
     assert!(
         items.iter().any(|i| i.label == "Restart Tab"),
         "tab_menu(is_dead=true) must include a 'Restart Tab' item"

@@ -595,7 +595,13 @@ impl PtySession {
         // user_renamed is intentionally NOT preserved — the new shell is fresh.
         new_session.respect_osc_title = self.respect_osc_title;
         new_session.title_strip_prefix = std::mem::take(&mut self.title_strip_prefix);
-        // Stage 13: preserve per-tab theme across restart.
+        // Stage 13: transfer theme/theme_colors to the new session so this
+        // method is self-consistent if called standalone. NOTE: in the normal
+        // restart path this transfer is immediately superseded — App::restart_active
+        // overwrites `theme` with the app default and WindowApp's RestartTab
+        // handler re-resolves `theme_colors` via set_theme. A per-tab theme
+        // override is therefore NOT preserved across a user-initiated restart
+        // (the tab adopts the current app default, like history_lines/tools_list).
         new_session.theme = self.theme.take();
         new_session.theme_colors = self.theme_colors.take();
         *self = new_session;

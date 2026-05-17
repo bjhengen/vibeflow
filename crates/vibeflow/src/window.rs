@@ -242,6 +242,9 @@ pub struct WindowApp {
     bell_mode: crate::config::BellMode,
     bell_debounce: std::time::Duration,
     last_bell_at: Option<std::time::Instant>,
+    /// Stage 13: theme registry loaded at startup from
+    /// ~/.config/vibeflow/themes/, refreshed on config reload (T17).
+    theme_registry: crate::theme::registry::ThemeRegistry,
 }
 
 impl WindowApp {
@@ -256,7 +259,7 @@ impl WindowApp {
             // Re-arm: defensive — should never happen if focus invariants hold.
             return;
         }
-        let action = item.action;
+        let action = item.action.clone();
         let target_idx = menu.target_idx;
         self.dispatch_menu_action(action, target_idx);
         if let Some(window) = self.window.as_ref() {
@@ -323,6 +326,12 @@ impl WindowApp {
                         tracing::warn!("xdg-open {REPO_URL} failed: {e}");
                     });
             }
+            MenuAction::SetTheme(name) => {
+                let target = target_idx.unwrap_or_else(|| self.app.active());
+                if let Some(s) = self.app.tabs_mut().get_mut(target) {
+                    s.set_theme(Some(name), &self.theme_registry);
+                }
+            }
         }
     }
 
@@ -365,6 +374,11 @@ impl WindowApp {
             bell_mode: crate::config::BellMode::Visual,
             bell_debounce: std::time::Duration::from_millis(100),
             last_bell_at: None,
+            theme_registry: crate::theme::registry::ThemeRegistry::load(
+                dirs::config_dir()
+                    .map(|d| d.join("vibeflow").join("themes"))
+                    .unwrap_or_default(),
+            ),
         }
     }
 
@@ -519,6 +533,17 @@ impl WindowApp {
             Shortcut::RestartTab => {
                 if let Err(e) = self.app.restart_active() {
                     tracing::warn!("restart failed: {e}");
+                }
+                // Stage 13 FN2: re-resolve the (app-default) theme onto the
+                // freshly-restarted session. Note: a per-tab theme override
+                // selected via the context menu is intentionally NOT
+                // preserved across restart — the restarted tab adopts the
+                // current app default, consistent with how history_lines /
+                // tools_list propagate (App::restart_active).
+                let active = self.app.active();
+                let theme_name = self.app.tabs().get(active).and_then(|s| s.theme.clone());
+                if let Some(s) = self.app.tabs_mut().get_mut(active) {
+                    s.set_theme(theme_name, &self.theme_registry);
                 }
             }
             Shortcut::Copy => self.handle_copy(),
@@ -739,7 +764,8 @@ impl WindowApp {
                     .map(|s| !s.is_alive())
                     .unwrap_or(true);
                 let tab_count = self.app.tabs().len();
-                context_menu::tab_menu(idx, is_dead, tab_count)
+                let theme_names = self.theme_registry.names();
+                context_menu::tab_menu(idx, is_dead, tab_count, &theme_names)
             }
             None => {
                 let active = self.app.active();

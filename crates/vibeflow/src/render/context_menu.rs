@@ -21,7 +21,7 @@ pub struct MenuColors {
 pub type SessionIdx = usize;
 
 /// What the user can invoke from a menu item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
     /// Reuse Stage 9's existing per-shortcut handler. Tab-menu items pass
     /// the menu's `target_idx`; grid-menu items target the active tab.
@@ -36,6 +36,8 @@ pub enum MenuAction {
     OpenConfig,
     /// Spawn `xdg-open <repo_url>` detached. URL is hardcoded.
     OpenRepoUrl,
+    /// Stage 13: apply a named theme to the target tab (per-tab override).
+    SetTheme(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +48,7 @@ pub enum ItemKind {
 
 #[derive(Debug, Clone)]
 pub struct MenuItem {
-    pub label: &'static str,
+    pub label: String,
     pub shortcut_hint: Option<&'static str>,
     pub action: MenuAction,
     pub enabled: bool,
@@ -56,7 +58,7 @@ pub struct MenuItem {
 impl MenuItem {
     pub fn separator() -> Self {
         Self {
-            label: "",
+            label: String::new(),
             shortcut_hint: None,
             action: MenuAction::Shortcut(Shortcut::NewTab), // unused for separators
             enabled: false,
@@ -66,10 +68,15 @@ impl MenuItem {
 }
 
 /// Pure-logic builder for the tab right-click menu.
-pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec<MenuItem> {
-    let mut items = Vec::with_capacity(7);
+pub fn tab_menu(
+    _target_idx: SessionIdx,
+    is_dead: bool,
+    tab_count: usize,
+    theme_names: &[String],
+) -> Vec<MenuItem> {
+    let mut items = Vec::with_capacity(7 + theme_names.len() + 1);
     items.push(MenuItem {
-        label: "Rename Tab",
+        label: "Rename Tab".to_owned(),
         shortcut_hint: Some("Ctrl+Shift+E"),
         action: MenuAction::Shortcut(Shortcut::RenameTab),
         enabled: true,
@@ -77,7 +84,7 @@ pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec
     });
     if is_dead {
         items.push(MenuItem {
-            label: "Restart Tab",
+            label: "Restart Tab".to_owned(),
             shortcut_hint: Some("Ctrl+Shift+R"),
             action: MenuAction::Shortcut(Shortcut::RestartTab),
             enabled: true,
@@ -86,7 +93,7 @@ pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec
     }
     items.push(MenuItem::separator());
     items.push(MenuItem {
-        label: "New Tab",
+        label: "New Tab".to_owned(),
         shortcut_hint: Some("Ctrl+Shift+T"),
         action: MenuAction::Shortcut(Shortcut::NewTab),
         enabled: true,
@@ -94,19 +101,31 @@ pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec
     });
     items.push(MenuItem::separator());
     items.push(MenuItem {
-        label: "Close Tab",
+        label: "Close Tab".to_owned(),
         shortcut_hint: Some("Ctrl+Shift+W"),
         action: MenuAction::Shortcut(Shortcut::CloseTab),
         enabled: true,
         kind: ItemKind::Action,
     });
     items.push(MenuItem {
-        label: "Close Other Tabs",
+        label: "Close Other Tabs".to_owned(),
         shortcut_hint: None,
         action: MenuAction::CloseOtherTabs,
         enabled: tab_count > 1,
         kind: ItemKind::Action,
     });
+    if !theme_names.is_empty() {
+        items.push(MenuItem::separator());
+        for name in theme_names {
+            items.push(MenuItem {
+                label: format!("Theme: {name}"),
+                shortcut_hint: None,
+                action: MenuAction::SetTheme(name.clone()),
+                enabled: true,
+                kind: ItemKind::Action,
+            });
+        }
+    }
     items
 }
 
@@ -114,21 +133,21 @@ pub fn tab_menu(_target_idx: SessionIdx, is_dead: bool, tab_count: usize) -> Vec
 pub fn grid_menu(has_selection: bool) -> Vec<MenuItem> {
     vec![
         MenuItem {
-            label: "Copy",
+            label: "Copy".to_owned(),
             shortcut_hint: Some("Ctrl+Shift+C"),
             action: MenuAction::Shortcut(Shortcut::Copy),
             enabled: has_selection,
             kind: ItemKind::Action,
         },
         MenuItem {
-            label: "Paste",
+            label: "Paste".to_owned(),
             shortcut_hint: Some("Ctrl+Shift+V"),
             action: MenuAction::Shortcut(Shortcut::Paste),
             enabled: true,
             kind: ItemKind::Action,
         },
         MenuItem {
-            label: "Paste Selection",
+            label: "Paste Selection".to_owned(),
             shortcut_hint: Some("Mid-click"),
             action: MenuAction::PastePrimary,
             enabled: true,
@@ -136,14 +155,14 @@ pub fn grid_menu(has_selection: bool) -> Vec<MenuItem> {
         },
         MenuItem::separator(),
         MenuItem {
-            label: "Select All",
+            label: "Select All".to_owned(),
             shortcut_hint: Some("Ctrl+Shift+A"),
             action: MenuAction::Shortcut(Shortcut::SelectAll),
             enabled: true,
             kind: ItemKind::Action,
         },
         MenuItem {
-            label: "Clear Buffer",
+            label: "Clear Buffer".to_owned(),
             shortcut_hint: None,
             action: MenuAction::ClearBuffer,
             enabled: true,
@@ -151,14 +170,14 @@ pub fn grid_menu(has_selection: bool) -> Vec<MenuItem> {
         },
         MenuItem::separator(),
         MenuItem {
-            label: "Open Config…",
+            label: "Open Config…".to_owned(),
             shortcut_hint: None,
             action: MenuAction::OpenConfig,
             enabled: true,
             kind: ItemKind::Action,
         },
         MenuItem {
-            label: "About vibeflow",
+            label: "About vibeflow".to_owned(),
             shortcut_hint: None,
             action: MenuAction::OpenRepoUrl,
             enabled: true,
@@ -486,7 +505,7 @@ pub fn build_glyphs(
         crate::render::tabs::push_text_glyphs(
             &mut glyphs,
             text_engine,
-            item.label,
+            &item.label,
             (label_x, text_y),
             cell_w_f,
             label_fg,
@@ -521,8 +540,8 @@ mod tests {
     use super::*;
     use crate::keymap::Shortcut;
 
-    fn assert_action(item: &MenuItem, label: &'static str, action: MenuAction) {
-        assert_eq!(item.label, label, "label mismatch");
+    fn assert_action(item: &MenuItem, label: &str, action: MenuAction) {
+        assert_eq!(item.label.as_str(), label, "label mismatch");
         assert_eq!(item.action, action, "action mismatch on {label}");
         assert_eq!(
             item.kind,
@@ -539,7 +558,7 @@ mod tests {
 
     #[test]
     fn tab_menu_alive_excludes_restart_tab() {
-        let items = tab_menu(0, /* is_dead */ false, /* tab_count */ 2);
+        let items = tab_menu(0, /* is_dead */ false, /* tab_count */ 2, &[]);
         // Rename, ───, New Tab, ───, Close Tab, Close Other Tabs.
         assert_eq!(items.len(), 6);
         assert_action(
@@ -560,7 +579,7 @@ mod tests {
 
     #[test]
     fn tab_menu_dead_includes_restart_tab() {
-        let items = tab_menu(0, /* is_dead */ true, /* tab_count */ 2);
+        let items = tab_menu(0, /* is_dead */ true, /* tab_count */ 2, &[]);
         // Rename, Restart, ───, New Tab, ───, Close Tab, Close Other Tabs.
         assert_eq!(items.len(), 7);
         assert_action(
@@ -579,7 +598,7 @@ mod tests {
 
     #[test]
     fn tab_menu_single_tab_disables_close_other_tabs() {
-        let items = tab_menu(0, false, 1);
+        let items = tab_menu(0, false, 1, &[]);
         let close_others = items
             .iter()
             .find(|i| i.label == "Close Other Tabs")
@@ -592,7 +611,7 @@ mod tests {
 
     #[test]
     fn tab_menu_multi_tab_enables_close_other_tabs() {
-        let items = tab_menu(0, false, 3);
+        let items = tab_menu(0, false, 3, &[]);
         let close_others = items
             .iter()
             .find(|i| i.label == "Close Other Tabs")
@@ -602,7 +621,7 @@ mod tests {
 
     #[test]
     fn tab_menu_shortcut_hints() {
-        let items = tab_menu(0, true, 2);
+        let items = tab_menu(0, true, 2, &[]);
         let by_label = |l: &str| items.iter().find(|i| i.label == l).unwrap();
         assert_eq!(by_label("Rename Tab").shortcut_hint, Some("Ctrl+Shift+E"));
         assert_eq!(by_label("Restart Tab").shortcut_hint, Some("Ctrl+Shift+R"));
@@ -675,7 +694,7 @@ mod tests {
         // the width clamp away from the floor.
         vec![
             MenuItem {
-                label: "A_very_wide_action_label_for_width",
+                label: "A_very_wide_action_label_for_width".to_owned(),
                 shortcut_hint: Some("Ctrl+Shift+E"),
                 action: MenuAction::Shortcut(Shortcut::RenameTab),
                 enabled: true,
@@ -683,7 +702,7 @@ mod tests {
             },
             MenuItem::separator(),
             MenuItem {
-                label: "Short",
+                label: "Short".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: true,
@@ -696,14 +715,14 @@ mod tests {
         // All labels < 220 px to exercise the width floor clamp.
         vec![
             MenuItem {
-                label: "Hi",
+                label: "Hi".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: true,
                 kind: ItemKind::Action,
             },
             MenuItem {
-                label: "Yo",
+                label: "Yo".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: true,
@@ -841,7 +860,7 @@ mod tests {
         // Action 0, Separator 1, Action 2 (disabled), Action 3, Action 4.
         vec![
             MenuItem {
-                label: "A0",
+                label: "A0".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: true,
@@ -849,21 +868,21 @@ mod tests {
             },
             MenuItem::separator(),
             MenuItem {
-                label: "A2-disabled",
+                label: "A2-disabled".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: false,
                 kind: ItemKind::Action,
             },
             MenuItem {
-                label: "A3",
+                label: "A3".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: true,
                 kind: ItemKind::Action,
             },
             MenuItem {
-                label: "A4",
+                label: "A4".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: true,
@@ -906,7 +925,7 @@ mod tests {
     #[test]
     fn focus_next_on_single_enabled_item_is_idempotent() {
         let items = vec![MenuItem {
-            label: "Only",
+            label: "Only".to_owned(),
             shortcut_hint: None,
             action: MenuAction::ClearBuffer,
             enabled: true,
@@ -924,7 +943,7 @@ mod tests {
         // All disabled — defensive: don't loop forever.
         let items = vec![
             MenuItem {
-                label: "Off1",
+                label: "Off1".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: false,
@@ -932,7 +951,7 @@ mod tests {
             },
             MenuItem::separator(),
             MenuItem {
-                label: "Off2",
+                label: "Off2".to_owned(),
                 shortcut_hint: None,
                 action: MenuAction::ClearBuffer,
                 enabled: false,
@@ -943,5 +962,28 @@ mod tests {
         s.focus_next();
         // Should remain at 0 (no enabled item to move to).
         assert_eq!(s.focused, 0);
+    }
+
+    // ---- tab_menu theme items ---------------------------------------------
+
+    #[test]
+    fn tab_menu_appends_theme_items_when_names_present() {
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        let items = tab_menu(0, false, 2, &names);
+        // Last two items are the theme entries, preceded by a separator.
+        let themes: Vec<_> = items
+            .iter()
+            .filter(|i| matches!(&i.action, MenuAction::SetTheme(_)))
+            .collect();
+        assert_eq!(themes.len(), 2);
+        assert_eq!(themes[0].label.as_str(), "Theme: alpha");
+        assert!(matches!(&themes[0].action, MenuAction::SetTheme(n) if n == "alpha"));
+        assert_eq!(themes[1].label.as_str(), "Theme: beta");
+        assert!(matches!(&themes[1].action, MenuAction::SetTheme(n) if n == "beta"));
+        // Empty names → no theme items / no extra trailing separator.
+        let none = tab_menu(0, false, 2, &[]);
+        assert!(none
+            .iter()
+            .all(|i| !matches!(i.action, MenuAction::SetTheme(_))));
     }
 }
