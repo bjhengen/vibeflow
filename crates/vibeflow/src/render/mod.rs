@@ -288,6 +288,14 @@ impl Renderer {
             .get(app.active())
             .map(|s| (s.is_alive(), s.display_offset()))
             .unwrap_or((false, 0));
+        // Stage 13: copy the active session's optional theme colors so the
+        // borrow of `app` ends before the `build_cell_instances` call (which
+        // also mutably borrows `self.text_engine`). `Colors` is `Copy`
+        // (fixed-size array of `Copy` elements), so this is a cheap stack copy.
+        let active_theme_colors: Option<alacritty_terminal::term::color::Colors> = app
+            .tabs()
+            .get(app.active())
+            .and_then(|s| s.theme_colors);
         let cell_instances = if let Some(term) = term {
             crate::render::quad::build_cell_instances(
                 term,
@@ -299,6 +307,7 @@ impl Renderer {
                 layout.bar_height_px,
                 is_active_session_alive,
                 active_display_offset,
+                active_theme_colors.as_ref(),
             )
         } else {
             Vec::new()

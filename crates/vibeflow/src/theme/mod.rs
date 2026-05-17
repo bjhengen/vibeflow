@@ -193,6 +193,54 @@ impl ThemeData {
     }
 }
 
+/// Stage 13: build a fresh alacritty `Colors` table from a [`ThemeData`].
+///
+/// `Term` has no `colors_mut()`, so the renderer consults this struct
+/// instead of mutating the terminal. bold/cursor_text/link/selection are
+/// kept on `ThemeData` (serialized) but have NO `NamedColor` slot in
+/// alacritty 0.24 / vte 0.13, so they are intentionally not written here.
+pub fn apply_theme_to_colors(theme: &ThemeData) -> alacritty_terminal::term::color::Colors {
+    use alacritty_terminal::term::color::Colors;
+    use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+
+    fn to_rgb(c: [f32; 4]) -> Rgb {
+        Rgb {
+            r: (c[0].clamp(0.0, 1.0) * 255.0) as u8,
+            g: (c[1].clamp(0.0, 1.0) * 255.0) as u8,
+            b: (c[2].clamp(0.0, 1.0) * 255.0) as u8,
+        }
+    }
+    let named_for_ansi = |i: usize| -> NamedColor {
+        match i {
+            0 => NamedColor::Black,
+            1 => NamedColor::Red,
+            2 => NamedColor::Green,
+            3 => NamedColor::Yellow,
+            4 => NamedColor::Blue,
+            5 => NamedColor::Magenta,
+            6 => NamedColor::Cyan,
+            7 => NamedColor::White,
+            8 => NamedColor::BrightBlack,
+            9 => NamedColor::BrightRed,
+            10 => NamedColor::BrightGreen,
+            11 => NamedColor::BrightYellow,
+            12 => NamedColor::BrightBlue,
+            13 => NamedColor::BrightMagenta,
+            14 => NamedColor::BrightCyan,
+            _ => NamedColor::BrightWhite, // index 15; ansi is [_;16] so no other value reaches here
+        }
+    };
+    let mut colors = Colors::default();
+    for (i, slot) in theme.ansi.iter().enumerate() {
+        colors[named_for_ansi(i)] = Some(to_rgb(*slot));
+    }
+    colors[NamedColor::Foreground] = Some(to_rgb(theme.foreground));
+    colors[NamedColor::Background] = Some(to_rgb(theme.background));
+    colors[NamedColor::Cursor] = Some(to_rgb(theme.cursor));
+    // bold/cursor_text/link/selection: stored on ThemeData; no NamedColor slot in v0.1.
+    colors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +333,18 @@ ansi_0 = "#000000"
 "##;
         let r = ThemeData::from_toml(bad);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn apply_theme_to_colors_maps_slots() {
+        use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+        let mut t = sample_theme();
+        t.foreground = [1.0, 0.0, 0.0, 1.0];
+        t.background = [0.0, 1.0, 0.0, 1.0];
+        t.ansi[1] = [0.0, 0.0, 1.0, 1.0]; // red slot -> blue
+        let c = apply_theme_to_colors(&t);
+        assert_eq!(c[NamedColor::Foreground], Some(Rgb { r: 255, g: 0, b: 0 }));
+        assert_eq!(c[NamedColor::Background], Some(Rgb { r: 0, g: 255, b: 0 }));
+        assert_eq!(c[NamedColor::Red], Some(Rgb { r: 0, g: 0, b: 255 }));
     }
 }
