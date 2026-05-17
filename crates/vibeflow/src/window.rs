@@ -44,6 +44,7 @@ fn pixel_to_grid_point(
     bar_height_px: u32,
     px: u32,
     py: u32,
+    display_offset: usize,
 ) -> Option<alacritty_terminal::index::Point> {
     use alacritty_terminal::index::{Column, Line, Point};
     if cell_w == 0 || cell_h == 0 {
@@ -54,7 +55,10 @@ fn pixel_to_grid_point(
     }
     let py_local = py - bar_height_px;
     let col = (px / cell_w) as usize;
-    let line = (py_local / cell_h) as i32;
+    // Stage 12 lesson: the input path is the third parallel offset path — render adds
+    // display_offset, input subtracts it, so the grid Point lands on the scrolled-up
+    // row the user actually sees.
+    let line = (py_local / cell_h) as i32 - display_offset as i32;
     Some(Point::new(Line(line), Column(col)))
 }
 
@@ -1284,12 +1288,23 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 if py < bar_h {
                     return; // tab bar — no drag tracking
                 }
-                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                // Fetch display_offset via an immutable tabs() borrow BEFORE tabs_mut() below —
+                // and before pixel_to_grid_point — so selection lands on the scrolled-up row.
+                // Do not move this down next to tabs_mut().
+                let active = self.app.active();
+                let display_offset = self
+                    .app
+                    .tabs()
+                    .get(active)
+                    .map(|s| s.display_offset())
+                    .unwrap_or(0);
+                let Some(point) =
+                    pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, display_offset)
+                else {
                     return;
                 };
                 let shift = self.current_modifiers.shift_key();
 
-                let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
                     return;
                 };
@@ -1438,7 +1453,19 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 }
 
                 // Below the tab bar: cell-grid mouse routing.
-                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                // Fetch display_offset via an immutable tabs() borrow BEFORE tabs_mut() below —
+                // and before pixel_to_grid_point — so selection lands on the scrolled-up row.
+                // Do not move this down next to tabs_mut().
+                let active = self.app.active();
+                let display_offset = self
+                    .app
+                    .tabs()
+                    .get(active)
+                    .map(|s| s.display_offset())
+                    .unwrap_or(0);
+                let Some(point) =
+                    pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, display_offset)
+                else {
                     return;
                 };
                 let pressed = state == ElementState::Pressed;
@@ -1460,7 +1487,6 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     return; // consumed
                 }
 
-                let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
                     return;
                 };
@@ -1566,7 +1592,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                                 .map(|r| r.cell_pitch())
                                 .unwrap_or((8, 16));
                             let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
-                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py)
+                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, 0 /* mouse-report: cursor coords must be viewport-relative (the TUI defines row 0); the vibeflow scrollback offset is intentionally not reported to the app */)
                         })
                         .unwrap_or_else(|| {
                             alacritty_terminal::index::Point::new(
@@ -2155,6 +2181,25 @@ mod tests {
         assert_eq!(
             key_to_bytes(&Key::Named(NamedKey::ArrowLeft), pressed, none),
             Some(b"\x1b[D".to_vec())
+        );
+    }
+
+    #[test]
+    fn pixel_to_grid_point_subtracts_scrollback_offset() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        // cell 10x20, bar 30. Click at py=30+2*20=70 -> screen row 2.
+        // offset 0 -> Line(2); offset 5 -> Line(2-5) = Line(-3) (scrollback).
+        assert_eq!(
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 0),
+            Some(Point::new(Line(2), Column(0)))
+        );
+        assert_eq!(
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 1),
+            Some(Point::new(Line(1), Column(0)))
+        );
+        assert_eq!(
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 5),
+            Some(Point::new(Line(-3), Column(0)))
         );
     }
 }
