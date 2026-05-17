@@ -498,6 +498,21 @@ impl PtySession {
         &self.term
     }
 
+    /// Stage 13: the requested theme NAME for this tab (the "intent" —
+    /// may not be currently resolvable). `None` = Stage 9 defaults.
+    #[must_use]
+    pub fn theme(&self) -> Option<&str> {
+        self.theme.as_deref()
+    }
+
+    /// Stage 13: the resolved color table for this tab, if a theme was
+    /// successfully applied. `None` = render with alacritty defaults.
+    /// (Renderer consults this; `Term` is never mutated — see set_theme.)
+    #[must_use]
+    pub fn theme_colors(&self) -> Option<&alacritty_terminal::term::color::Colors> {
+        self.theme_colors.as_ref()
+    }
+
     /// Split-borrow helper for mouse event routing. Returns a mutable reference
     /// to the selection tracker and an immutable reference to the terminal grid
     /// in a single call, avoiding the aliasing problem that arises when calling

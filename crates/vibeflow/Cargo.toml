@@ -42,5 +42,6 @@ wgpu = "0.20"
 winit = "0.30"
 
 [dev-dependencies]
+alacritty_terminal = "0.24"
 proptest = "1"
 tempfile = "3"
