@@ -12,4 +12,5 @@ pub mod config;
 pub mod keymap;
 pub mod render;
 pub mod session;
+pub mod theme;
 pub mod window;

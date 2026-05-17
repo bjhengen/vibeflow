@@ -579,8 +579,8 @@ pub fn pulse_alpha(t_secs: f32) -> f32 {
     0.7 + 0.3 * sin // 0.4 to 1.0
 }
 
-/// Width of the Notice indicator stripe in pixels. Spec: 3px.
-pub const INDICATOR_STRIPE_WIDTH_PX: u32 = 3;
+/// Width of the Notice indicator stripe in pixels. Spec: 6px.
+pub const INDICATOR_STRIPE_WIDTH_PX: u32 = 6;
 
 /// Tab background colors (active vs inactive). Spec: active is "slightly lighter".
 const BG_ACTIVE: [f32; 4] = [
@@ -659,7 +659,7 @@ impl TabBarRenderer {
                 bg,
             ));
 
-            // Notice indicator stripe (3px on the left edge).
+            // Notice indicator stripe (6px on the left edge).
             let session = match app.tabs().get(tab.idx) {
                 Some(s) => s,
                 None => continue,

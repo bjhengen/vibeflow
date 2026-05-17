@@ -44,6 +44,7 @@ fn pixel_to_grid_point(
     bar_height_px: u32,
     px: u32,
     py: u32,
+    display_offset: usize,
 ) -> Option<alacritty_terminal::index::Point> {
     use alacritty_terminal::index::{Column, Line, Point};
     if cell_w == 0 || cell_h == 0 {
@@ -54,7 +55,10 @@ fn pixel_to_grid_point(
     }
     let py_local = py - bar_height_px;
     let col = (px / cell_w) as usize;
-    let line = (py_local / cell_h) as i32;
+    // Stage 12 lesson: the input path is the third parallel offset path — render adds
+    // display_offset, input subtracts it, so the grid Point lands on the scrolled-up
+    // row the user actually sees.
+    let line = (py_local / cell_h) as i32 - display_offset as i32;
     Some(Point::new(Line(line), Column(col)))
 }
 
@@ -99,6 +103,75 @@ fn key_to_bytes(
         // through `Character(" ")` — so without this arm it falls into the
         // `_ => None` catch-all and the byte never reaches the PTY.
         Key::Named(NamedKey::Space) => Some(vec![b' ']),
+        // Stage 13: Ctrl + arrow keys → xterm modifier code 5 sequences.
+        // Guards require exactly Ctrl (no Shift/Alt/Super) so they don't shadow
+        // future Ctrl+Shift or other combos.
+        Key::Named(NamedKey::ArrowUp)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5A".to_vec())
+        }
+        Key::Named(NamedKey::ArrowDown)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5B".to_vec())
+        }
+        Key::Named(NamedKey::ArrowRight)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5C".to_vec())
+        }
+        Key::Named(NamedKey::ArrowLeft)
+            if modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;5D".to_vec())
+        }
+        // Stage 13: Shift + arrow keys → xterm modifier code 2 sequences.
+        Key::Named(NamedKey::ArrowUp)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2A".to_vec())
+        }
+        Key::Named(NamedKey::ArrowDown)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2B".to_vec())
+        }
+        Key::Named(NamedKey::ArrowRight)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2C".to_vec())
+        }
+        Key::Named(NamedKey::ArrowLeft)
+            if modifiers.contains(ModifiersState::SHIFT)
+                && !modifiers.contains(ModifiersState::CONTROL)
+                && !modifiers.contains(ModifiersState::ALT)
+                && !modifiers.contains(ModifiersState::SUPER) =>
+        {
+            Some(b"\x1b[1;2D".to_vec())
+        }
+        // Plain (unmodified) arrow keys.
         Key::Named(NamedKey::ArrowUp) if modifiers.is_empty() => Some(b"\x1b[A".to_vec()),
         Key::Named(NamedKey::ArrowDown) if modifiers.is_empty() => Some(b"\x1b[B".to_vec()),
         Key::Named(NamedKey::ArrowRight) if modifiers.is_empty() => Some(b"\x1b[C".to_vec()),
@@ -165,6 +238,17 @@ pub struct WindowApp {
     /// Updated on `WindowEvent::Resized`. Used by Shift+PageUp/Down for
     /// half-page scroll math.
     last_grid_size_lines: usize,
+    /// Stage 13: mirror of `Config.scrollback.snap_on_esc`. When false, Esc
+    /// does NOT snap to bottom (only character-producing keys do).
+    snap_on_esc: bool,
+    /// Stage 13: bell behavior config cache.
+    // Stage 13: bell_mode/bell_debounce updated by apply_config in T17.
+    bell_mode: crate::config::BellMode,
+    bell_debounce: std::time::Duration,
+    last_bell_at: Option<std::time::Instant>,
+    /// Stage 13: theme registry loaded at startup from
+    /// ~/.config/vibeflow/themes/, refreshed on config reload (T17).
+    theme_registry: crate::theme::registry::ThemeRegistry,
 }
 
 impl WindowApp {
@@ -179,7 +263,7 @@ impl WindowApp {
             // Re-arm: defensive — should never happen if focus invariants hold.
             return;
         }
-        let action = item.action;
+        let action = item.action.clone();
         let target_idx = menu.target_idx;
         self.dispatch_menu_action(action, target_idx);
         if let Some(window) = self.window.as_ref() {
@@ -246,6 +330,12 @@ impl WindowApp {
                         tracing::warn!("xdg-open {REPO_URL} failed: {e}");
                     });
             }
+            MenuAction::SetTheme(name) => {
+                let target = target_idx.unwrap_or_else(|| self.app.active());
+                if let Some(s) = self.app.tabs_mut().get_mut(target) {
+                    s.set_theme(Some(name), &self.theme_registry);
+                }
+            }
         }
     }
 
@@ -284,6 +374,15 @@ impl WindowApp {
             context_menu: None,
             wheel_lines_per_detent: 3,
             last_grid_size_lines: 24,
+            snap_on_esc: true,
+            bell_mode: crate::config::BellMode::Visual,
+            bell_debounce: std::time::Duration::from_millis(100),
+            last_bell_at: None,
+            theme_registry: crate::theme::registry::ThemeRegistry::load(
+                dirs::config_dir()
+                    .map(|d| d.join("vibeflow").join("themes"))
+                    .unwrap_or_default(),
+            ),
         }
     }
 
@@ -327,13 +426,41 @@ impl WindowApp {
             }
             SessionEvent::Bell => {
                 tracing::trace!(tab = idx, "bell rung");
-                // Only flash for the active tab to avoid background tabs spamming.
-                if idx == self.app.active() {
-                    if let Some(renderer) = self.renderer.as_mut() {
-                        renderer.note_bell();
+                // Stage 13: only react if this is the active tab.
+                if idx != self.app.active() {
+                    return;
+                }
+                // Debounce — drop bells closer than `bell_debounce`.
+                let now = std::time::Instant::now();
+                if let Some(last) = self.last_bell_at {
+                    if now.saturating_duration_since(last) < self.bell_debounce {
+                        return;
                     }
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
+                }
+                self.last_bell_at = Some(now);
+
+                use crate::config::BellMode;
+                match self.bell_mode {
+                    BellMode::Silent => {}
+                    BellMode::Visual => {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.note_bell();
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                    BellMode::Audible => {
+                        crate::render::bell::play_audible_bell();
+                    }
+                    BellMode::Both => {
+                        if let Some(renderer) = self.renderer.as_mut() {
+                            renderer.note_bell();
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        crate::render::bell::play_audible_bell();
                     }
                 }
             }
@@ -411,6 +538,17 @@ impl WindowApp {
                 if let Err(e) = self.app.restart_active() {
                     tracing::warn!("restart failed: {e}");
                 }
+                // Stage 13 FN2: re-resolve the (app-default) theme onto the
+                // freshly-restarted session. Note: a per-tab theme override
+                // selected via the context menu is intentionally NOT
+                // preserved across restart — the restarted tab adopts the
+                // current app default, consistent with how history_lines /
+                // tools_list propagate (App::restart_active).
+                let active = self.app.active();
+                let theme_name = self.app.tabs().get(active).and_then(|s| s.theme.clone());
+                if let Some(s) = self.app.tabs_mut().get_mut(active) {
+                    s.set_theme(theme_name, &self.theme_registry);
+                }
             }
             Shortcut::Copy => self.handle_copy(),
             Shortcut::Paste => self.handle_paste(),
@@ -458,7 +596,7 @@ impl WindowApp {
                 config.colors.indicator_inactive,
             ]);
             r.set_cursor_blink_ms(config.cursor.blink_ms);
-            r.set_font_priorities(config.fonts.priority.clone());
+            r.set_font_priorities(&config.fonts.priority);
             r.set_menu_colors(crate::render::context_menu::MenuColors {
                 bg: config.colors.menu_bg,
                 border: config.colors.menu_border,
@@ -510,12 +648,32 @@ impl WindowApp {
         for s in self.app.tabs_mut().iter_mut() {
             s.scrollbar_fade.set_fade_ms(fade_ms);
         }
+        // Stage 13 (T2 carryover): mirror snap_on_esc into the runtime cache
+        // so the Esc-snap gate honors config reloads.
+        self.snap_on_esc = sb.snap_on_esc;
         // Scrollbar colors (from [colors]).
         if let Some(r) = self.renderer.as_mut() {
             r.set_scrollbar_colors(crate::render::scrollbar::ScrollbarColors {
                 track: config.colors.scrollbar_track,
                 thumb: config.colors.scrollbar_thumb,
             });
+        }
+        // Stage 13 (T4 carryover): [bell] section → runtime cache.
+        self.bell_mode = config.bell.mode;
+        self.bell_debounce = std::time::Duration::from_millis(config.bell.debounce_ms);
+
+        // Stage 13: theme preset. Reload the registry FIRST (so freshly
+        // imported themes resolve), set the app default for new/restarted
+        // tabs, then propagate to every existing tab.
+        let new_preset = config.color_preset.clone();
+        self.theme_registry.reload();
+        self.app.set_default_theme(new_preset.clone());
+        let tab_count = self.app.tabs().len();
+        for i in 0..tab_count {
+            let preset = new_preset.clone();
+            if let Some(s) = self.app.tabs_mut().get_mut(i) {
+                s.set_theme(preset, &self.theme_registry);
+            }
         }
     }
 
@@ -630,7 +788,8 @@ impl WindowApp {
                     .map(|s| !s.is_alive())
                     .unwrap_or(true);
                 let tab_count = self.app.tabs().len();
-                context_menu::tab_menu(idx, is_dead, tab_count)
+                let theme_names = self.theme_registry.names();
+                context_menu::tab_menu(idx, is_dead, tab_count, &theme_names)
             }
             None => {
                 let active = self.app.active();
@@ -1075,12 +1234,17 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     // scrollback. This only runs when key_to_bytes returns
                     // Some — bare modifier presses (Ctrl alone, Shift alone)
                     // never reach here, per Stage 8 lesson.
-                    let active_idx = self.app.active();
-                    if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
-                        if s.display_offset() > 0 {
-                            s.scroll_to_bottom(Instant::now());
-                            if let Some(w) = self.window.as_ref() {
-                                w.request_redraw();
+                    // Stage 13: when snap_on_esc is false, skip the snap for
+                    // Esc specifically. All other input-producing keys still snap.
+                    let is_esc = matches!(&event.logical_key, Key::Named(NamedKey::Escape));
+                    if !is_esc || self.snap_on_esc {
+                        let active_idx = self.app.active();
+                        if let Some(s) = self.app.tabs_mut().get_mut(active_idx) {
+                            if s.display_offset() > 0 {
+                                s.scroll_to_bottom(Instant::now());
+                                if let Some(w) = self.window.as_ref() {
+                                    w.request_redraw();
+                                }
                             }
                         }
                     }
@@ -1124,12 +1288,23 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 if py < bar_h {
                     return; // tab bar — no drag tracking
                 }
-                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                // Fetch display_offset via an immutable tabs() borrow BEFORE tabs_mut() below —
+                // and before pixel_to_grid_point — so selection lands on the scrolled-up row.
+                // Do not move this down next to tabs_mut().
+                let active = self.app.active();
+                let display_offset = self
+                    .app
+                    .tabs()
+                    .get(active)
+                    .map(|s| s.display_offset())
+                    .unwrap_or(0);
+                let Some(point) =
+                    pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, display_offset)
+                else {
                     return;
                 };
                 let shift = self.current_modifiers.shift_key();
 
-                let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
                     return;
                 };
@@ -1278,7 +1453,19 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 }
 
                 // Below the tab bar: cell-grid mouse routing.
-                let Some(point) = pixel_to_grid_point(cell_w, cell_h, bar_h, px, py) else {
+                // Fetch display_offset via an immutable tabs() borrow BEFORE tabs_mut() below —
+                // and before pixel_to_grid_point — so selection lands on the scrolled-up row.
+                // Do not move this down next to tabs_mut().
+                let active = self.app.active();
+                let display_offset = self
+                    .app
+                    .tabs()
+                    .get(active)
+                    .map(|s| s.display_offset())
+                    .unwrap_or(0);
+                let Some(point) =
+                    pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, display_offset)
+                else {
                     return;
                 };
                 let pressed = state == ElementState::Pressed;
@@ -1300,7 +1487,6 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     return; // consumed
                 }
 
-                let active = self.app.active();
                 let Some(s) = self.app.tabs_mut().get_mut(active) else {
                     return;
                 };
@@ -1357,7 +1543,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 if pressed {
                     let now = std::time::Instant::now();
                     let (sel, term) = s.split_borrow_mouse();
-                    sel.mouse_down(point, shift, term, now);
+                    sel.mouse_down(point, shift, self.current_modifiers.alt_key(), term, now);
                 } else if released {
                     s.selection.mouse_up();
                     // Stage 9: if a finalized selection exists AND PRIMARY is
@@ -1406,7 +1592,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                                 .map(|r| r.cell_pitch())
                                 .unwrap_or((8, 16));
                             let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
-                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py)
+                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, 0 /* mouse-report: cursor coords must be viewport-relative (the TUI defines row 0); the vibeflow scrollback offset is intentionally not reported to the app */)
                         })
                         .unwrap_or_else(|| {
                             alacritty_terminal::index::Point::new(
@@ -1888,17 +2074,132 @@ mod tests {
     }
 
     #[test]
-    fn key_to_bytes_arrow_up_with_ctrl_returns_none() {
-        // Ctrl+ArrowUp is reserved for word-jump in Stage 10+. Until then,
-        // we return None so the byte path doesn't accidentally pick up the
-        // plain `\x1b[A` for a modified chord.
+    fn key_to_bytes_arrow_up_with_ctrl_emits_modifier_5() {
+        // Stage 13: Ctrl+ArrowUp now emits the xterm modifier-5 sequence.
+        // Previously this returned None as a placeholder "until Stage 10+";
+        // T5 is that implementation — the placeholder behavior is now replaced.
         assert_eq!(
             key_to_bytes(
                 &Key::Named(NamedKey::ArrowUp),
                 ElementState::Pressed,
                 ModifiersState::CONTROL
             ),
-            None
+            Some(b"\x1b[1;5A".to_vec())
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_emit_xterm_modifier_5_sequences() {
+        let pressed = ElementState::Pressed;
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowLeft),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5D".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowRight),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5C".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowDown),
+                pressed,
+                ModifiersState::CONTROL
+            ),
+            Some(b"\x1b[1;5B".to_vec())
+        );
+    }
+
+    #[test]
+    fn shift_arrows_emit_xterm_modifier_2_sequences() {
+        let pressed = ElementState::Pressed;
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowLeft),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2D".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowRight),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2C".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowUp),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(
+                &Key::Named(NamedKey::ArrowDown),
+                pressed,
+                ModifiersState::SHIFT
+            ),
+            Some(b"\x1b[1;2B".to_vec())
+        );
+    }
+
+    #[test]
+    fn plain_arrows_still_emit_unmodified_sequences() {
+        let pressed = ElementState::Pressed;
+        let none = ModifiersState::empty();
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowUp), pressed, none),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowDown), pressed, none),
+            Some(b"\x1b[B".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowRight), pressed, none),
+            Some(b"\x1b[C".to_vec())
+        );
+        assert_eq!(
+            key_to_bytes(&Key::Named(NamedKey::ArrowLeft), pressed, none),
+            Some(b"\x1b[D".to_vec())
+        );
+    }
+
+    #[test]
+    fn pixel_to_grid_point_subtracts_scrollback_offset() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        // cell 10x20, bar 30. Click at py=30+2*20=70 -> screen row 2.
+        // offset 0 -> Line(2); offset 5 -> Line(2-5) = Line(-3) (scrollback).
+        assert_eq!(
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 0),
+            Some(Point::new(Line(2), Column(0)))
+        );
+        assert_eq!(
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 1),
+            Some(Point::new(Line(1), Column(0)))
+        );
+        assert_eq!(
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 5),
+            Some(Point::new(Line(-3), Column(0)))
         );
     }
 }

@@ -36,6 +36,10 @@ pub struct App {
     /// Existing tabs are NOT retroactively resized (alacritty_terminal's
     /// grid is sized at construction).
     default_history_lines: u32,
+    /// Stage 13: mirror of `Config.colors.preset`. Applied (as the theme
+    /// NAME only) to subsequently-spawned tabs AND to restarted sessions.
+    /// Color resolution happens in WindowApp, which owns the ThemeRegistry.
+    default_theme: Option<String>,
 }
 
 impl App {
@@ -52,6 +56,7 @@ impl App {
             default_proc_check_interval: std::time::Duration::from_millis(250),
             default_scrollbar_fade_ms: 1500,
             default_history_lines: 10000,
+            default_theme: None,
         }
     }
 
@@ -94,6 +99,12 @@ impl App {
         self.default_history_lines = n.max(1);
     }
 
+    /// Stage 13: update the default theme name for subsequently-spawned tabs
+    /// and restarted sessions. WindowApp::apply_config calls this on reload.
+    pub fn set_default_theme(&mut self, name: Option<String>) {
+        self.default_theme = name;
+    }
+
     /// Spawn a new tab. Returns the index of the new tab in [`Self::tabs`]. The new
     /// tab becomes the active tab.
     ///
@@ -112,6 +123,7 @@ impl App {
         session
             .scrollbar_fade
             .set_fade_ms(self.default_scrollbar_fade_ms);
+        session.theme = self.default_theme.clone();
         self.tabs.push(session);
         let idx = self.tabs.len() - 1;
         self.active = idx;
@@ -279,6 +291,7 @@ impl App {
         s.set_tracker_config(self.tracker_config);
         s.scrollbar_fade.set_fade_ms(self.default_scrollbar_fade_ms);
         s.history_lines = self.default_history_lines as usize;
+        s.theme = self.default_theme.clone();
 
         Ok(())
     }
@@ -642,5 +655,13 @@ mod tests {
             123,
             "restart should pick up updated default_history_lines"
         );
+    }
+
+    #[test]
+    fn new_tab_inherits_default_theme() {
+        let mut app = App::new();
+        app.set_default_theme(Some("solarized".to_owned()));
+        let idx = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
+        assert_eq!(app.tabs()[idx].theme.as_deref(), Some("solarized"));
     }
 }

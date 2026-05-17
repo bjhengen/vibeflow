@@ -19,12 +19,16 @@ use crate::keymap::Shortcut;
 pub struct Config {
     pub shortcuts: ShortcutBindings,
     pub colors: Colors,
+    /// Stage 13: name of the active color preset (from `[colors] preset = "…"`).
+    /// Stored here (not in `Colors`) so `Colors` can remain `Copy`.
+    pub color_preset: Option<String>,
     pub cursor: CursorConfig,
     pub fonts: FontsConfig,
     pub clipboard: ClipboardConfig,
     pub tabs: TabsConfig,
     pub ai: Ai,
     pub scrollback: Scrollback,
+    pub bell: Bell,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +45,35 @@ pub struct Scrollback {
     pub history_lines: u32,
     pub wheel_lines_per_detent: u32,
     pub scrollbar_fade_ms: u64,
+    pub snap_on_esc: bool,
+}
+
+/// Terminal bell behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BellMode {
+    Visual,
+    Audible,
+    Both,
+    Silent,
+}
+
+impl std::str::FromStr for BellMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "visual" => Ok(BellMode::Visual),
+            "audible" => Ok(BellMode::Audible),
+            "both" => Ok(BellMode::Both),
+            "silent" => Ok(BellMode::Silent),
+            other => Err(format!("unknown bell mode: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bell {
+    pub mode: BellMode,
+    pub debounce_ms: u64,
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -182,6 +215,7 @@ impl Config {
                 scrollbar_track: [1.0, 1.0, 1.0, 0.04],
                 scrollbar_thumb: [1.0, 1.0, 1.0, 0.22],
             },
+            color_preset: None,
             cursor: CursorConfig { blink_ms: 500 },
             fonts: FontsConfig {
                 priority: vec![
@@ -212,6 +246,11 @@ impl Config {
                 history_lines: 10000,
                 wheel_lines_per_detent: 3,
                 scrollbar_fade_ms: 1500,
+                snap_on_esc: true,
+            },
+            bell: Bell {
+                mode: BellMode::Visual,
+                debounce_ms: 100,
             },
         }
     }
@@ -260,6 +299,7 @@ impl Config {
             apply_shortcuts(&mut defaults.shortcuts, s, &mut errors);
         }
         if let Some(c) = file.colors {
+            defaults.color_preset = c.preset.clone();
             apply_colors(&mut defaults.colors, c, &mut errors);
         }
         if let Some(c) = file.cursor {
@@ -290,6 +330,9 @@ impl Config {
         }
         if let Some(s) = file.scrollback {
             apply_scrollback(s, &mut defaults.scrollback);
+        }
+        if let Some(b) = file.bell {
+            apply_bell(b, &mut defaults.bell, &mut errors);
         }
 
         (defaults, errors)
@@ -546,6 +589,22 @@ fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
     }
 }
 
+fn apply_bell(schema: schema::BellSection, resolved: &mut Bell, errors: &mut Vec<ConfigError>) {
+    if let Some(m) = schema.mode {
+        match m.parse::<BellMode>() {
+            Ok(mode) => resolved.mode = mode,
+            Err(e) => errors.push(ConfigError::InvalidValue {
+                key: "bell.mode".to_string(),
+                expected: "visual | audible | both | silent".to_string(),
+                got: e,
+            }),
+        }
+    }
+    if let Some(v) = schema.debounce_ms {
+        resolved.debounce_ms = v;
+    }
+}
+
 fn apply_scrollback(schema: schema::ScrollbackSection, resolved: &mut Scrollback) {
     if let Some(v) = schema.history_lines {
         // Edge case: 0 would panic alacritty_terminal's grid construction. Clamp to 1.
@@ -556,6 +615,9 @@ fn apply_scrollback(schema: schema::ScrollbackSection, resolved: &mut Scrollback
     }
     if let Some(v) = schema.scrollbar_fade_ms {
         resolved.scrollbar_fade_ms = v;
+    }
+    if let Some(v) = schema.snap_on_esc {
+        resolved.snap_on_esc = v;
     }
 }
 
@@ -1014,5 +1076,87 @@ history_lines = 0
         let cf = Config::default_values();
         assert_eq!(cf.colors.scrollbar_track, [1.0, 1.0, 1.0, 0.04]);
         assert_eq!(cf.colors.scrollbar_thumb, [1.0, 1.0, 1.0, 0.22]);
+    }
+
+    #[test]
+    fn bell_defaults_match_spec() {
+        let cf = Config::default_values();
+        assert_eq!(cf.bell.mode, BellMode::Visual);
+        assert_eq!(cf.bell.debounce_ms, 100);
+    }
+
+    #[test]
+    fn bell_load_overrides_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[bell]
+mode = "audible"
+debounce_ms = 50
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.bell.mode, BellMode::Audible);
+        assert_eq!(cf.bell.debounce_ms, 50);
+    }
+
+    #[test]
+    fn bell_mode_invalid_string_logs_error_keeps_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[bell]
+mode = "blinking-lights"
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(!errors.is_empty(), "expected error for invalid mode");
+        assert_eq!(cf.bell.mode, BellMode::Visual); // default preserved
+    }
+
+    #[test]
+    fn scrollback_snap_on_esc_defaults_true() {
+        let cf = Config::default_values();
+        assert!(cf.scrollback.snap_on_esc);
+    }
+
+    #[test]
+    fn scrollback_snap_on_esc_load_overrides() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scrollback]
+snap_on_esc = false
+"#,
+        )
+        .expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert!(!cf.scrollback.snap_on_esc);
+    }
+
+    #[test]
+    fn color_preset_defaults_none() {
+        let cf = Config::default_values();
+        assert_eq!(cf.color_preset, None);
+    }
+
+    #[test]
+    fn color_preset_load_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[colors]\npreset = \"gruvbox\"\n").expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.color_preset.as_deref(), Some("gruvbox"));
     }
 }

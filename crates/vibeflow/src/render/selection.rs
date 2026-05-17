@@ -56,6 +56,9 @@ pub enum SelectionMode {
     Word,
     /// Whole-line (triple-click). `start.column = 0`, `end.column = cols-1`.
     Line,
+    /// Rectangular column selection (Alt+drag). Each row is clipped to the
+    /// [min_col, max_col] span; rows are joined with `\n` on copy.
+    Block,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,6 +112,7 @@ impl SelectionTracker {
         &mut self,
         point: Point,
         shift_held: bool,
+        alt: bool,
         term: &Term<VoidListener>,
         now: Instant,
     ) {
@@ -127,12 +131,17 @@ impl SelectionTracker {
             return;
         }
 
-        // Fresh selection. Mode follows the click count.
-        let mode = match count {
-            1 => SelectionMode::Cell,
-            2 => SelectionMode::Word,
-            3 => SelectionMode::Line,
-            _ => SelectionMode::Cell, // 4th click wraps back to single
+        // Fresh selection. Alt forces sticky Block mode; otherwise mode
+        // follows the click count (single/double/triple = Cell/Word/Line).
+        let mode = if alt && !shift_held {
+            SelectionMode::Block
+        } else {
+            match count {
+                1 => SelectionMode::Cell,
+                2 => SelectionMode::Word,
+                3 => SelectionMode::Line,
+                _ => SelectionMode::Cell, // 4th click wraps back to single
+            }
         };
         self.drag_anchor = Some(point);
         self.selection = Some(Selection {
@@ -141,7 +150,7 @@ impl SelectionTracker {
             mode,
         });
         // For Word/Line, immediately snap so a click without drag selects
-        // the word/line under the cursor.
+        // the word/line under the cursor. Block's snap arm is a no-op.
         self.snap_to_mode(term);
     }
 
@@ -211,7 +220,10 @@ impl SelectionTracker {
         let Some(sel) = self.selection else {
             return Box::new(std::iter::empty());
         };
-        Box::new(cells_in_range(sel.start, sel.end, term.columns()))
+        match sel.mode {
+            SelectionMode::Block => Box::new(cells_in_range_block(sel.start, sel.end)),
+            _ => Box::new(cells_in_range(sel.start, sel.end, term.columns())),
+        }
     }
 
     /// Materialize the selection as a `String`. Returns `None` if there's
@@ -219,12 +231,18 @@ impl SelectionTracker {
     pub fn text(&self, term: &Term<VoidListener>) -> Option<String> {
         let sel = self.selection?;
         let mut out = String::new();
-        let mut current_line = sel.start.line;
-        for p in cells_in_range(sel.start, sel.end, term.columns()) {
-            if p.line != current_line {
-                out.push('\n');
-                current_line = p.line;
+        let cells_iter: Box<dyn Iterator<Item = Point>> = match sel.mode {
+            SelectionMode::Block => Box::new(cells_in_range_block(sel.start, sel.end)),
+            _ => Box::new(cells_in_range(sel.start, sel.end, term.columns())),
+        };
+        let mut current_line: Option<Line> = None;
+        for p in cells_iter {
+            if let Some(l) = current_line {
+                if l != p.line {
+                    out.push('\n');
+                }
             }
+            current_line = Some(p.line);
             // alacritty `Term::grid()[p].c` gives the character at the cell.
             // For empty cells it's typically `' '`.
             let cell = &term.grid()[p];
@@ -266,6 +284,7 @@ impl SelectionTracker {
                 let last_col = term.columns().saturating_sub(1);
                 sel.end.column = Column(last_col);
             }
+            SelectionMode::Block => {} // no snap — rectangular region follows the mouse
         }
     }
 }
@@ -285,6 +304,23 @@ fn cell_distance(a: Point, b: Point) -> u32 {
     let line_diff = (a.line.0 - b.line.0).unsigned_abs();
     let col_diff = a.column.0.abs_diff(b.column.0) as u32;
     line_diff + col_diff
+}
+
+/// Stage 13: rectangular cell iteration for block-selection mode.
+/// Normalizes start/end so any pair of corners works. Row-major order.
+fn cells_in_range_block(start: Point, end: Point) -> impl Iterator<Item = Point> {
+    let (top, bottom) = if start.line.0 <= end.line.0 {
+        (start.line.0, end.line.0)
+    } else {
+        (end.line.0, start.line.0)
+    };
+    let (left, right) = if start.column.0 <= end.column.0 {
+        (start.column.0, end.column.0)
+    } else {
+        (end.column.0, start.column.0)
+    };
+    (top..=bottom)
+        .flat_map(move |line| (left..=right).map(move |col| Point::new(Line(line), Column(col))))
 }
 
 /// Iterate the cells covered by a selection from `start` to `end` (inclusive)
@@ -341,7 +377,7 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let now = Instant::now();
-        t.mouse_down(pt(5, 10), false, &term, now);
+        t.mouse_down(pt(5, 10), false, false, &term, now);
         // Drag-anchor set; selection points to the single cell.
         assert!(t.is_dragging());
         assert_eq!(t.current().map(|s| s.start), Some(pt(5, 10)));
@@ -358,7 +394,7 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let now = Instant::now();
-        t.mouse_down(pt(2, 3), false, &term, now);
+        t.mouse_down(pt(2, 3), false, false, &term, now);
         t.mouse_drag(pt(2, 8), &term);
         t.mouse_up();
         let s = t.current().expect("selection finalized");
@@ -373,7 +409,7 @@ mod tests {
         let term = make_term(80, 24);
         let now = Instant::now();
         // Drag from (5, 20) to (2, 5) — backward.
-        t.mouse_down(pt(5, 20), false, &term, now);
+        t.mouse_down(pt(5, 20), false, false, &term, now);
         t.mouse_drag(pt(2, 5), &term);
         let s = t.current().unwrap();
         assert_eq!(s.start, pt(2, 5));
@@ -395,11 +431,11 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let t0 = Instant::now();
-        t.mouse_down(pt(0, 5), false, &term, t0);
+        t.mouse_down(pt(0, 5), false, false, &term, t0);
         t.mouse_up();
         // Within 500ms and same point → count = 2 → Word mode.
         let t1 = t0 + Duration::from_millis(100);
-        t.mouse_down(pt(0, 5), false, &term, t1);
+        t.mouse_down(pt(0, 5), false, false, &term, t1);
         let s = t.current().unwrap();
         assert_eq!(s.mode, SelectionMode::Word);
     }
@@ -409,11 +445,23 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let t0 = Instant::now();
-        t.mouse_down(pt(0, 5), false, &term, t0);
+        t.mouse_down(pt(0, 5), false, false, &term, t0);
         t.mouse_up();
-        t.mouse_down(pt(0, 5), false, &term, t0 + Duration::from_millis(50));
+        t.mouse_down(
+            pt(0, 5),
+            false,
+            false,
+            &term,
+            t0 + Duration::from_millis(50),
+        );
         t.mouse_up();
-        t.mouse_down(pt(0, 5), false, &term, t0 + Duration::from_millis(100));
+        t.mouse_down(
+            pt(0, 5),
+            false,
+            false,
+            &term,
+            t0 + Duration::from_millis(100),
+        );
         let s = t.current().unwrap();
         assert_eq!(s.mode, SelectionMode::Line);
     }
@@ -423,11 +471,11 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let t0 = Instant::now();
-        t.mouse_down(pt(0, 5), false, &term, t0);
+        t.mouse_down(pt(0, 5), false, false, &term, t0);
         t.mouse_up();
         // 600ms later — gap exceeds window.
         let t1 = t0 + Duration::from_millis(600);
-        t.mouse_down(pt(0, 5), false, &term, t1);
+        t.mouse_down(pt(0, 5), false, false, &term, t1);
         let s = t.current().unwrap();
         // Counter reset → count=1 → Cell mode.
         assert_eq!(s.mode, SelectionMode::Cell);
@@ -438,10 +486,16 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let t0 = Instant::now();
-        t.mouse_down(pt(0, 5), false, &term, t0);
+        t.mouse_down(pt(0, 5), false, false, &term, t0);
         t.mouse_up();
         // Same time, different cell (>1 away).
-        t.mouse_down(pt(0, 50), false, &term, t0 + Duration::from_millis(50));
+        t.mouse_down(
+            pt(0, 50),
+            false,
+            false,
+            &term,
+            t0 + Duration::from_millis(50),
+        );
         let s = t.current().unwrap();
         assert_eq!(s.mode, SelectionMode::Cell);
     }
@@ -453,11 +507,17 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let now = Instant::now();
-        t.mouse_down(pt(2, 5), false, &term, now);
+        t.mouse_down(pt(2, 5), false, false, &term, now);
         t.mouse_drag(pt(2, 10), &term);
         t.mouse_up();
         // Shift-click further out — should extend the end.
-        t.mouse_down(pt(2, 20), true, &term, now + Duration::from_millis(50));
+        t.mouse_down(
+            pt(2, 20),
+            true,
+            false,
+            &term,
+            now + Duration::from_millis(50),
+        );
         let s = t.current().unwrap();
         assert_eq!(s.start, pt(2, 5));
         assert_eq!(s.end, pt(2, 20));
@@ -470,7 +530,7 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let now = Instant::now();
-        t.mouse_down(pt(0, 5), false, &term, now);
+        t.mouse_down(pt(0, 5), false, false, &term, now);
         t.mouse_drag(pt(0, 10), &term);
         // Mid-drag clear (e.g. user typed something).
         t.clear();
@@ -485,7 +545,7 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(80, 24);
         let now = Instant::now();
-        t.mouse_down(pt(0, 3), false, &term, now);
+        t.mouse_down(pt(0, 3), false, false, &term, now);
         t.mouse_drag(pt(0, 6), &term);
         t.mouse_up();
         let cells: Vec<Point> = t.cells(&term).collect();
@@ -497,7 +557,7 @@ mod tests {
         let mut t = SelectionTracker::new();
         let term = make_term(5, 24); // 5 cols
         let now = Instant::now();
-        t.mouse_down(pt(0, 3), false, &term, now);
+        t.mouse_down(pt(0, 3), false, false, &term, now);
         t.mouse_drag(pt(2, 1), &term);
         t.mouse_up();
         let cells: Vec<Point> = t.cells(&term).collect();
@@ -556,7 +616,7 @@ mod tests {
         let term = make_term(80, 24);
         // Establish a small selection first.
         let now = Instant::now();
-        t.mouse_down(pt(2, 3), false, &term, now);
+        t.mouse_down(pt(2, 3), false, false, &term, now);
         t.mouse_drag(pt(2, 8), &term);
         t.mouse_up();
         assert!(t.current().is_some());
@@ -565,5 +625,56 @@ mod tests {
         let s = t.current().expect("replaced");
         assert_eq!(s.end.line.0, 23);
         assert_eq!(s.end.column.0, 79);
+    }
+
+    // ---- Block (column) selection (Stage 13, Task 7) ----------------------
+
+    #[test]
+    fn cells_in_range_block_yields_rectangle() {
+        // pt(1, 2) → pt(3, 4): rows 1..=3, cols 2..=4 → 3×3 = 9 cells
+        let cells: Vec<_> = cells_in_range_block(pt(1, 2), pt(3, 4)).collect();
+        assert_eq!(cells.len(), 9);
+        assert_eq!(cells[0], pt(1, 2));
+        assert_eq!(cells[2], pt(1, 4));
+        assert_eq!(cells[3], pt(2, 2));
+        assert_eq!(cells[8], pt(3, 4));
+    }
+
+    #[test]
+    fn cells_in_range_block_handles_reverse_order() {
+        // Dragging from bottom-right to top-left should normalize.
+        let cells: Vec<_> = cells_in_range_block(pt(3, 4), pt(1, 2)).collect();
+        assert_eq!(cells.len(), 9);
+        assert_eq!(cells[0], pt(1, 2));
+    }
+
+    #[test]
+    fn cells_in_range_block_single_cell() {
+        let cells: Vec<_> = cells_in_range_block(pt(5, 5), pt(5, 5)).collect();
+        assert_eq!(cells, vec![pt(5, 5)]);
+    }
+
+    #[test]
+    fn alt_drag_sets_block_mode() {
+        let mut t = SelectionTracker::new();
+        let term = make_term(80, 24);
+        let now = Instant::now();
+        t.mouse_down(pt(2, 3), false, true, &term, now); // shift=false, alt=true
+        t.mouse_drag(pt(5, 7), &term);
+        t.mouse_up();
+        let sel = t.current().expect("selection");
+        assert_eq!(sel.mode, SelectionMode::Block);
+    }
+
+    #[test]
+    fn alt_drag_block_yields_block_shaped_cells() {
+        let mut t = SelectionTracker::new();
+        let term = make_term(80, 24);
+        let now = Instant::now();
+        t.mouse_down(pt(0, 0), false, true, &term, now);
+        t.mouse_drag(pt(1, 2), &term); // 2 rows × 3 cols = 6 cells
+        t.mouse_up();
+        let collected: Vec<_> = t.cells(&term).collect();
+        assert_eq!(collected.len(), 6);
     }
 }

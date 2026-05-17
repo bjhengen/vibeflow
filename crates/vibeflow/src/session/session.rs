@@ -140,6 +140,12 @@ pub struct PtySession {
     /// Stage 12: scrollback history capacity this session was constructed with.
     /// Stored so `restart()` can re-use the same value when rebuilding the Term.
     pub(crate) history_lines: usize,
+    /// Stage 13: theme name (None = Stage 9 hardcoded defaults). Mirror of
+    /// `Config.colors.preset`; per-tab override via the Stage 10 context menu.
+    pub(crate) theme: Option<String>,
+    /// Stage 13: resolved color table for `theme`, consulted by the renderer
+    /// (`Term` has no colors_mut(), so we keep colors here, not on `term`).
+    pub(crate) theme_colors: Option<alacritty_terminal::term::color::Colors>,
 }
 
 impl PtySession {
@@ -211,6 +217,8 @@ impl PtySession {
             heuristic_was_active: false,
             scrollbar_fade: crate::render::scrollbar::ScrollbarFade::new(1500),
             history_lines,
+            theme: None,
+            theme_colors: None,
         })
     }
 
@@ -490,10 +498,25 @@ impl PtySession {
         &self.term
     }
 
+    /// Stage 13: the requested theme NAME for this tab (the "intent" —
+    /// may not be currently resolvable). `None` = Stage 9 defaults.
+    #[must_use]
+    pub fn theme(&self) -> Option<&str> {
+        self.theme.as_deref()
+    }
+
+    /// Stage 13: the resolved color table for this tab, if a theme was
+    /// successfully applied. `None` = render with alacritty defaults.
+    /// (Renderer consults this; `Term` is never mutated — see set_theme.)
+    #[must_use]
+    pub fn theme_colors(&self) -> Option<&alacritty_terminal::term::color::Colors> {
+        self.theme_colors.as_ref()
+    }
+
     /// Split-borrow helper for mouse event routing. Returns a mutable reference
     /// to the selection tracker and an immutable reference to the terminal grid
     /// in a single call, avoiding the aliasing problem that arises when calling
-    /// `s.selection.mouse_down(point, shift, s.term(), now)` — that expression
+    /// `s.selection.mouse_down(point, shift, alt, s.term(), now)` — that expression
     /// would simultaneously borrow `s` mutably (for `selection`) and immutably
     /// (for `term()`), which the borrow checker rejects.
     ///
@@ -506,6 +529,51 @@ impl PtySession {
         &Term<VoidListener>,
     ) {
         (&mut self.selection, &self.term)
+    }
+
+    /// Stage 13: apply a named theme to this session, or clear to Stage 9
+    /// defaults when `name` is None.
+    ///
+    /// - Hit (`name` is `Some` and the registry contains it): `theme_colors`
+    ///   is populated from the registry entry.
+    /// - Miss (`name` is `Some` but the registry has no matching entry): logs
+    ///   a warning and reverts `theme_colors` to `None` (alacritty default
+    ///   palette). `self.theme` is still set to the requested name as recorded
+    ///   *intent* — a later registry reload can re-resolve it.
+    /// - Clear (`name` is `None`): both `self.theme` and `self.theme_colors`
+    ///   are set to `None` (Stage 9 hardcoded defaults).
+    ///
+    /// Invariant: `theme_colors.is_some()` iff a theme was successfully
+    /// resolved; `self.theme` holds the last *requested* name regardless of
+    /// whether it is currently resolvable.
+    pub fn set_theme(
+        &mut self,
+        name: Option<String>,
+        registry: &crate::theme::registry::ThemeRegistry,
+    ) {
+        self.theme = name.clone();
+        let Some(theme_name) = name else {
+            self.theme_colors = None;
+            return;
+        };
+        match registry.get(&theme_name) {
+            Some(td) => {
+                self.theme_colors = Some(crate::theme::apply_theme_to_colors(td));
+            }
+            None => {
+                // Stage 13: requested theme isn't in the registry (deleted,
+                // typo'd, or not yet imported). Keep `self.theme` as the
+                // recorded *intent* (a later registry reload can re-resolve
+                // it), but drop `theme_colors` so we render alacritty's
+                // default palette instead of whatever theme was applied
+                // before. Invariant: theme_colors.is_some() iff a theme
+                // was successfully resolved.
+                tracing::warn!(
+                    "theme '{theme_name}' not in registry; reverting to default colors (name retained)"
+                );
+                self.theme_colors = None;
+            }
+        }
     }
 
     /// Re-spawn the session in place. Kills the existing child (if alive),
@@ -542,6 +610,15 @@ impl PtySession {
         // user_renamed is intentionally NOT preserved — the new shell is fresh.
         new_session.respect_osc_title = self.respect_osc_title;
         new_session.title_strip_prefix = std::mem::take(&mut self.title_strip_prefix);
+        // Stage 13: transfer theme/theme_colors to the new session so this
+        // method is self-consistent if called standalone. NOTE: in the normal
+        // restart path this transfer is immediately superseded — App::restart_active
+        // overwrites `theme` with the app default and WindowApp's RestartTab
+        // handler re-resolves `theme_colors` via set_theme. A per-tab theme
+        // override is therefore NOT preserved across a user-initiated restart
+        // (the tab adopts the current app default, like history_lines/tools_list).
+        new_session.theme = self.theme.take();
+        new_session.theme_colors = self.theme_colors.take();
         *self = new_session;
         Ok(())
     }
@@ -1310,5 +1387,83 @@ mod tests {
         )
         .expect("spawn");
         assert_eq!(s.display_offset(), 0);
+    }
+
+    #[test]
+    fn set_theme_none_clears_colors() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        let reg = crate::theme::registry::ThemeRegistry::new_empty();
+        s.set_theme(None, &reg);
+        assert_eq!(s.theme, None);
+        assert!(s.theme_colors.is_none());
+    }
+
+    #[test]
+    fn set_theme_missing_name_records_name_reverts_colors() {
+        // On a fresh session (theme_colors starts as None), a miss from an
+        // empty registry retains the requested name but leaves colors at None
+        // (already-default). Invariant: theme_colors.is_none() on miss.
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        let reg = crate::theme::registry::ThemeRegistry::new_empty();
+        s.set_theme(Some("ghost".to_owned()), &reg);
+        assert_eq!(s.theme.as_deref(), Some("ghost"));
+        assert!(s.theme_colors.is_none()); // empty registry -> miss -> reverted to default (None)
+    }
+
+    #[test]
+    fn set_theme_miss_after_hit_reverts_stale_colors() {
+        // The key bug fix: a miss AFTER a successful hit must clear theme_colors
+        // (revert to alacritty default) rather than leaving the previous theme's
+        // colors in place. Without the fix, the session would render the old
+        // theme's colors while self.theme claimed a different name.
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+
+        // Build a minimal registry containing exactly one real theme.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let td = crate::theme::ThemeData {
+            name: "real".into(),
+            ansi: [[0.5; 4]; 16],
+            foreground: [1.0, 0.0, 0.0, 1.0],
+            background: [0.0; 4],
+            cursor: [0.5, 0.5, 0.5, 1.0],
+            cursor_text: [0.0; 4],
+            bold: None,
+            link: None,
+            selection: None,
+        };
+        std::fs::write(tmp.path().join("real.toml"), td.to_toml()).expect("write theme file");
+        let reg = crate::theme::registry::ThemeRegistry::load(tmp.path().to_path_buf());
+
+        // Hit: "real" resolves → theme_colors must be populated.
+        s.set_theme(Some("real".to_owned()), &reg);
+        assert!(s.theme_colors.is_some(), "hit must populate theme_colors");
+
+        // Miss after hit: "ghost" is not in the registry.
+        // Requested name must be retained; stale colors must be cleared.
+        s.set_theme(Some("ghost".to_owned()), &reg);
+        assert_eq!(
+            s.theme.as_deref(),
+            Some("ghost"),
+            "requested name must be retained on miss"
+        );
+        assert!(
+            s.theme_colors.is_none(),
+            "stale colors from prior hit must be cleared on miss"
+        );
     }
 }

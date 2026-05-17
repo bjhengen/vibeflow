@@ -377,6 +377,7 @@ pub fn build_cell_instances(
     y_offset_px: u32,
     is_session_alive: bool,
     display_offset: usize,
+    theme_colors: Option<&alacritty_terminal::term::color::Colors>,
 ) -> Vec<QuadInstance> {
     use crate::render::colors::resolve_color;
     use alacritty_terminal::grid::Dimensions;
@@ -398,7 +399,10 @@ pub fn build_cell_instances(
     let content = term.renderable_content();
     let cursor_state = content.cursor;
     let cursor_shape_visible = cursor_state.shape != CursorShape::Hidden;
-    let colors = content.colors;
+    // Stage 13: a per-tab theme (if set) overrides alacritty's default
+    // palette. `Term` has no colors_mut(); the resolved table lives on
+    // PtySession and is threaded in here.
+    let colors = theme_colors.unwrap_or(content.colors);
     let fg_default = Rgb {
         r: 0xe5,
         g: 0xe5,

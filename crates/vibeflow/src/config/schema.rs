@@ -17,6 +17,7 @@ pub struct ConfigFile {
     pub tabs: Option<TabsSection>,
     pub ai: Option<AiSection>,
     pub scrollback: Option<ScrollbackSection>,
+    pub bell: Option<BellSection>,
 }
 
 /// `[shortcuts]` table. Each known action key (e.g. `new_tab`, `copy`) maps
@@ -57,6 +58,7 @@ pub struct ColorsSection {
     pub menu_focus_bg: Option<String>,
     pub scrollbar_track: Option<String>,
     pub scrollbar_thumb: Option<String>,
+    pub preset: Option<String>,
 }
 
 /// `[cursor]` table. `blink_ms = 0` disables blinking.
@@ -112,6 +114,14 @@ pub struct AiSection {
     pub foreground_check_interval_ms: Option<u64>,
 }
 
+/// `[bell]` table. Stage 13: terminal bell configuration.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BellSection {
+    pub mode: Option<String>,
+    pub debounce_ms: Option<u64>,
+}
+
 /// `[scrollback]` table. Stage 12: scrollbar + scrollback history configuration.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +129,7 @@ pub struct ScrollbackSection {
     pub history_lines: Option<u32>,
     pub wheel_lines_per_detent: Option<u32>,
     pub scrollbar_fade_ms: Option<u64>,
+    pub snap_on_esc: Option<bool>,
 }
 
 #[cfg(test)]
@@ -299,5 +310,56 @@ bogus_key = 1
 "#;
         let r: Result<super::ConfigFile, _> = toml::from_str(toml);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn scrollback_snap_on_esc_field_parses() {
+        let toml = r#"
+[scrollback]
+snap_on_esc = false
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let sb = cs.scrollback.expect("scrollback present");
+        assert_eq!(sb.snap_on_esc, Some(false));
+    }
+
+    #[test]
+    fn bell_section_parses_all_fields() {
+        let toml = r#"
+[bell]
+mode = "audible"
+debounce_ms = 200
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let b = cs.bell.expect("bell present");
+        assert_eq!(b.mode.as_deref(), Some("audible"));
+        assert_eq!(b.debounce_ms, Some(200));
+    }
+
+    #[test]
+    fn bell_section_missing_keeps_none() {
+        let cs: super::ConfigFile = toml::from_str("").expect("parse");
+        assert!(cs.bell.is_none());
+    }
+
+    #[test]
+    fn bell_section_rejects_unknown_field() {
+        let toml = r#"
+[bell]
+bogus = 1
+"#;
+        let r: Result<super::ConfigFile, _> = toml::from_str(toml);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn colors_section_parses_preset() {
+        let toml = r#"
+[colors]
+preset = "solarized"
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let c = cs.colors.expect("colors present");
+        assert_eq!(c.preset.as_deref(), Some("solarized"));
     }
 }
