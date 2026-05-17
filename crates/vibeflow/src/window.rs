@@ -644,12 +644,32 @@ impl WindowApp {
         for s in self.app.tabs_mut().iter_mut() {
             s.scrollbar_fade.set_fade_ms(fade_ms);
         }
+        // Stage 13 (T2 carryover): mirror snap_on_esc into the runtime cache
+        // so the Esc-snap gate honors config reloads.
+        self.snap_on_esc = sb.snap_on_esc;
         // Scrollbar colors (from [colors]).
         if let Some(r) = self.renderer.as_mut() {
             r.set_scrollbar_colors(crate::render::scrollbar::ScrollbarColors {
                 track: config.colors.scrollbar_track,
                 thumb: config.colors.scrollbar_thumb,
             });
+        }
+        // Stage 13 (T4 carryover): [bell] section → runtime cache.
+        self.bell_mode = config.bell.mode;
+        self.bell_debounce = std::time::Duration::from_millis(config.bell.debounce_ms);
+
+        // Stage 13: theme preset. Reload the registry FIRST (so freshly
+        // imported themes resolve), set the app default for new/restarted
+        // tabs, then propagate to every existing tab.
+        let new_preset = config.color_preset.clone();
+        self.theme_registry.reload();
+        self.app.set_default_theme(new_preset.clone());
+        let tab_count = self.app.tabs().len();
+        for i in 0..tab_count {
+            let preset = new_preset.clone();
+            if let Some(s) = self.app.tabs_mut().get_mut(i) {
+                s.set_theme(preset, &self.theme_registry);
+            }
         }
     }
 

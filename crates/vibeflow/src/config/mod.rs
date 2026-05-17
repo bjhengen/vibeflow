@@ -19,6 +19,9 @@ use crate::keymap::Shortcut;
 pub struct Config {
     pub shortcuts: ShortcutBindings,
     pub colors: Colors,
+    /// Stage 13: name of the active color preset (from `[colors] preset = "…"`).
+    /// Stored here (not in `Colors`) so `Colors` can remain `Copy`.
+    pub color_preset: Option<String>,
     pub cursor: CursorConfig,
     pub fonts: FontsConfig,
     pub clipboard: ClipboardConfig,
@@ -212,6 +215,7 @@ impl Config {
                 scrollbar_track: [1.0, 1.0, 1.0, 0.04],
                 scrollbar_thumb: [1.0, 1.0, 1.0, 0.22],
             },
+            color_preset: None,
             cursor: CursorConfig { blink_ms: 500 },
             fonts: FontsConfig {
                 priority: vec![
@@ -295,6 +299,7 @@ impl Config {
             apply_shortcuts(&mut defaults.shortcuts, s, &mut errors);
         }
         if let Some(c) = file.colors {
+            defaults.color_preset = c.preset.clone();
             apply_colors(&mut defaults.colors, c, &mut errors);
         }
         if let Some(c) = file.cursor {
@@ -1137,5 +1142,21 @@ snap_on_esc = false
         let (cf, errors) = Config::load(&path);
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert!(!cf.scrollback.snap_on_esc);
+    }
+
+    #[test]
+    fn color_preset_defaults_none() {
+        let cf = Config::default_values();
+        assert_eq!(cf.color_preset, None);
+    }
+
+    #[test]
+    fn color_preset_load_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[colors]\npreset = \"gruvbox\"\n").expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.color_preset.as_deref(), Some("gruvbox"));
     }
 }

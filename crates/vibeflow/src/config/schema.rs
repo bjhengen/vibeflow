@@ -58,6 +58,7 @@ pub struct ColorsSection {
     pub menu_focus_bg: Option<String>,
     pub scrollbar_track: Option<String>,
     pub scrollbar_thumb: Option<String>,
+    pub preset: Option<String>,
 }
 
 /// `[cursor]` table. `blink_ms = 0` disables blinking.
@@ -349,5 +350,16 @@ bogus = 1
 "#;
         let r: Result<super::ConfigFile, _> = toml::from_str(toml);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn colors_section_parses_preset() {
+        let toml = r#"
+[colors]
+preset = "solarized"
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let c = cs.colors.expect("colors present");
+        assert_eq!(c.preset.as_deref(), Some("solarized"));
     }
 }
