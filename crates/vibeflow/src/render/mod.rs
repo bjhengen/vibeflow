@@ -292,10 +292,8 @@ impl Renderer {
         // borrow of `app` ends before the `build_cell_instances` call (which
         // also mutably borrows `self.text_engine`). `Colors` is `Copy`
         // (fixed-size array of `Copy` elements), so this is a cheap stack copy.
-        let active_theme_colors: Option<alacritty_terminal::term::color::Colors> = app
-            .tabs()
-            .get(app.active())
-            .and_then(|s| s.theme_colors);
+        let active_theme_colors: Option<alacritty_terminal::term::color::Colors> =
+            app.tabs().get(app.active()).and_then(|s| s.theme_colors);
         let cell_instances = if let Some(term) = term {
             crate::render::quad::build_cell_instances(
                 term,
