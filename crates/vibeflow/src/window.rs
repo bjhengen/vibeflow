@@ -628,6 +628,7 @@ impl WindowApp {
             debounce: std::time::Duration::from_millis(ai.debounce_ms),
             heuristic_silence: std::time::Duration::from_millis(ai.heuristic_silence_ms),
             stale_state: std::time::Duration::from_secs(ai.stale_state_timeout_s),
+            explicit_stale_state: std::time::Duration::from_secs(ai.explicit_stale_state_s),
         };
         let proc_interval = std::time::Duration::from_millis(ai.foreground_check_interval_ms);
         self.app.set_default_tracker_config(tracker_cfg);

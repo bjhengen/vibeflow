@@ -112,6 +112,11 @@ pub struct AiSection {
     pub debounce_ms: Option<u64>,
     /// Interval in milliseconds for foreground activity checks.
     pub foreground_check_interval_ms: Option<u64>,
+    /// Stage 13 follow-up: for an explicit (OSC-1338) session, after this
+    /// many seconds with no new frame the tab "de-escalates" — a stuck
+    /// Working resets to Active and Tier-3 re-arms (see tracker). `0`
+    /// disables (keeps Q1 "explicit = authoritative forever").
+    pub explicit_stale_state_s: Option<u64>,
 }
 
 /// `[bell]` table. Stage 13: terminal bell configuration.
@@ -361,5 +366,16 @@ preset = "solarized"
         let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
         let c = cs.colors.expect("colors present");
         assert_eq!(c.preset.as_deref(), Some("solarized"));
+    }
+
+    #[test]
+    fn ai_section_parses_explicit_stale_state_s() {
+        let toml = r#"
+[ai]
+explicit_stale_state_s = 120
+"#;
+        let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
+        let a = cs.ai.expect("ai present");
+        assert_eq!(a.explicit_stale_state_s, Some(120));
     }
 }

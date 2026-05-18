@@ -49,6 +49,10 @@ pub struct TrackerConfig {
     /// Reset to `Active` if a tool emits a state but never updates again — guards
     /// against stuck indicators when a tool dies mid-task. Spec default 30 s.
     pub stale_state: Duration,
+    /// Stage 13 follow-up: for an explicit (OSC-1338) session, after this
+    /// long with no new frame the fuse de-escalates the session (Working→
+    /// Active, Tier-3 re-arms). `Duration::ZERO` disables (Q1 behavior).
+    pub explicit_stale_state: Duration,
 }
 
 impl Default for TrackerConfig {
@@ -57,6 +61,7 @@ impl Default for TrackerConfig {
             debounce: Duration::from_millis(100),
             heuristic_silence: Duration::from_millis(4000),
             stale_state: Duration::from_secs(30),
+            explicit_stale_state: Duration::from_secs(300),
         }
     }
 }

@@ -38,6 +38,7 @@ pub struct Ai {
     pub stale_state_timeout_s: u64,
     pub debounce_ms: u64,
     pub foreground_check_interval_ms: u64,
+    pub explicit_stale_state_s: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -241,6 +242,7 @@ impl Config {
                 stale_state_timeout_s: 30,
                 debounce_ms: 100,
                 foreground_check_interval_ms: 250,
+                explicit_stale_state_s: 300,
             },
             scrollback: Scrollback {
                 history_lines: 10000,
@@ -586,6 +588,9 @@ fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
     }
     if let Some(v) = schema.foreground_check_interval_ms {
         resolved.foreground_check_interval_ms = v;
+    }
+    if let Some(v) = schema.explicit_stale_state_s {
+        resolved.explicit_stale_state_s = v;
     }
 }
 
@@ -1158,5 +1163,31 @@ snap_on_esc = false
         let (cf, errors) = Config::load(&path);
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(cf.color_preset.as_deref(), Some("gruvbox"));
+    }
+
+    #[test]
+    fn ai_explicit_stale_state_default_is_300() {
+        let cf = Config::default_values();
+        assert_eq!(cf.ai.explicit_stale_state_s, 300);
+    }
+
+    #[test]
+    fn ai_explicit_stale_state_load_override_and_zero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[ai]\nexplicit_stale_state_s = 0\n").expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.ai.explicit_stale_state_s, 0);
+    }
+
+    #[test]
+    fn ai_explicit_stale_state_load_override_nonzero() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[ai]\nexplicit_stale_state_s = 120\n").expect("write");
+        let (cf, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "errors: {errors:?}");
+        assert_eq!(cf.ai.explicit_stale_state_s, 120);
     }
 }
