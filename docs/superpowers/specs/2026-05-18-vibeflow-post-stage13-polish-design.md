@@ -155,11 +155,16 @@ no stale-state, no `OutputObserved`→Working promotion. Consequences:
 - **Stuck Working** (dead hook): after `explicit_stale_state` with no new OSC
   frame → reset to **Active**. Self-heals the real failure mode.
 - **Stuck Waiting**: the amber "needs you" headline cue **persists** (per the
-  brainstorm decision — its whole value is persisting until the user acts). It
-  is no longer *permanently* frozen: `explicit_seen` is cleared, so Tier-3 +
-  prompt-marker transitions are live again and the next shell prompt/activity
-  naturally moves it; user interaction (next prompt → `UserPromptSubmit` →
-  `working`) also re-syncs.
+  brainstorm decision — its whole value is persisting until the user acts). On
+  the fuse, the Waiting branch clears `explicit_seen` AND sets
+  `last_event_at = None`. Clearing `explicit_seen` re-arms Tier-3 + prompt
+  markers; nulling `last_event_at` removes the stale-state baseline so the
+  now-ungated stale-state timeout **cannot** silently reclaim Waiting→Active
+  absent activity (without this, Waiting would be reclaimed ~`stale_state`
+  after de-escalation — contradicting "persists"). Net: amber stays until a
+  real transition moves it — the next shell prompt-marker / heuristic
+  transition, or user interaction (next prompt → `UserPromptSubmit` →
+  `working`). State is **not** force-changed by the fuse for Waiting.
 - While explicit frames keep arriving (normal operation, incl. the 5-hook
   config refreshing on every PreToolUse/PostToolUse), `last_explicit_at` is
   refreshed and the fuse never fires — zero behavior change for healthy tools.
