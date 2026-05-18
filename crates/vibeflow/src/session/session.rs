@@ -34,6 +34,20 @@ pub struct TabLabel {
 }
 
 impl TabLabel {
+    /// The activity subtitle word for a tracker state. Single source of
+    /// truth shared by [`Self::default_for`] and
+    /// [`PtySession::refresh_default_subtitle`].
+    #[must_use]
+    pub fn subtitle_for(state: TabState) -> &'static str {
+        match state {
+            TabState::Active => "active",
+            TabState::Working => "working",
+            TabState::Waiting => "waiting",
+            TabState::Done => "done",
+            TabState::Idle => "idle",
+        }
+    }
+
     /// Default label for a freshly-spawned session: shell binary basename for
     /// the title, lowercased tracker-state name for the subtitle.
     #[must_use]
@@ -43,14 +57,7 @@ impl TabLabel {
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or(argv0)
             .to_string();
-        let subtitle = match state {
-            TabState::Active => "active",
-            TabState::Working => "working",
-            TabState::Waiting => "waiting",
-            TabState::Done => "done",
-            TabState::Idle => "idle",
-        }
-        .to_string();
+        let subtitle = Self::subtitle_for(state).to_string();
         Self { title, subtitle }
     }
 }
@@ -236,6 +243,16 @@ impl PtySession {
 
     /// Override the tab's label. Stage 9's TOML config uses this to apply
     /// templates like `default_title_from = "cwd"`.
+    ///
+    /// NOTE (Q2): `refresh_default_subtitle` unconditionally overwrites
+    /// `subtitle` from tracker state on every state change. `set_label` is
+    /// currently unused in production, so that is safe today. WHEN a real
+    /// `set_label` call site is added (e.g. Stage 9 TOML config supplying a
+    /// custom subtitle), `refresh_default_subtitle` MUST gain a guard (e.g.
+    /// skip when a custom subtitle is set) or the config subtitle will be
+    /// stomped every tick.
+    // TODO(stage9-config): add a guard in refresh_default_subtitle before wiring
+    // this method from the config layer (see NOTE above).
     pub fn set_label(&mut self, label: TabLabel) {
         self.label = label;
     }
@@ -247,19 +264,17 @@ impl PtySession {
         self.label.title = title;
     }
 
-    /// Recompute the default subtitle from the current tracker state. Called
-    /// internally on every state transition. Public so `App` (or future
-    /// config layers) can refresh the label when policy changes; most users
-    /// won't need to call this directly.
+    /// Recompute the activity subtitle (line 2) from the current tracker
+    /// state. Called on every state transition. The subtitle is ALWAYS
+    /// activity-driven (interactive rename via [`Self::set_title`] overrides
+    /// only the title, never the subtitle — see its doc); [`Self::set_label`]
+    /// is not used in production. The previous `!title.contains(' ')` heuristic
+    /// wrongly froze the subtitle once any spaced OSC/PS1 title arrived (e.g.
+    /// bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`), and re-deriving via
+    /// `default_for` here also clobbered OSC-set titles — both fixed by only
+    /// touching `subtitle`.
     pub fn refresh_default_subtitle(&mut self) {
-        // Only update if the title still matches what `default_for` would
-        // produce — i.e. the user hasn't called `set_label` to override.
-        // We use a heuristic: the title must NOT contain a space (default
-        // titles are single words; user-set titles are arbitrary).
-        if !self.label.title.contains(' ') {
-            let new_label = TabLabel::default_for(&self.label.title, self.tracker.state());
-            self.label = new_label;
-        }
+        self.label.subtitle = TabLabel::subtitle_for(self.tracker.state()).to_string();
     }
 
     /// Drain every pending byte chunk off the reader channel, run each through
@@ -734,13 +749,13 @@ mod tests {
         // exercise the path via tick after a Working transition + observed
         // output to ensure heuristic fires when the flag is on.
         let now = Instant::now();
-        let frame_bytes =
-            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
-        for ev in s.dispatcher.feed(&frame_bytes) {
-            if let DispatchEvent::AiState(frame) = ev {
-                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
-            }
-        }
+        // Enter Working via a shell prompt marker (non-explicit) so the Tier-3 heuristic still governs —
+        // this test verifies set_heuristic_active reaches the tracker and the silence inference fires for
+        // NON-self-reporting sessions. (Explicit OSC 1338 sessions are exempt — Q1.)
+        s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
         s.tracker.on_input(TrackerInput::OutputObserved, now);
 
         let evs = s.tick(now + Duration::from_secs(5));
@@ -922,16 +937,12 @@ mod tests {
         )
         .unwrap();
         let now = Instant::now();
-        // Simulate state change by feeding an AiFrame manually to set
-        // last_event_at, then tick past the 30 s stale-state window.
-        let frame_bytes =
-            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
-        // Feed bytes directly (not via the PTY) to control timing.
-        for ev in s.dispatcher.feed(&frame_bytes) {
-            if let DispatchEvent::AiState(frame) = ev {
-                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
-            }
-        }
+        // Enter Working non-explicitly (shell prompt) — stale-state timeout applies to non-self-reporting
+        // sessions; OSC 1338 sessions are exempt (Q1, see explicit_frame_disables_stale_timeout).
+        s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
         assert_eq!(s.state(), TabState::Working);
 
         let evs = s.tick(now + Duration::from_secs(31));
@@ -1464,6 +1475,123 @@ mod tests {
         assert!(
             s.theme_colors.is_none(),
             "stale colors from prior hit must be cleared on miss"
+        );
+    }
+
+    // ── Q2 regression tests ──────────────────────────────────────────────────
+
+    /// Regression for the spaced-title subtitle freeze: once an OSC/PS1 title
+    /// with a space lands (e.g. bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`),
+    /// `refresh_default_subtitle` must still update the subtitle on state
+    /// changes AND must NOT clobber the title back to a basename.
+    #[test]
+    fn subtitle_tracks_state_even_with_spaced_title() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+
+        // Simulate an OSC/PS1 spaced title via the supported API (set_title is
+        // the path that production poll() uses for OSC 0/2 titles).
+        s.set_title("user@host: ~/some dir".to_string());
+        assert!(
+            s.label().title.contains(' '),
+            "precondition: title must contain a space"
+        );
+        let spaced_title = s.label().title.clone();
+
+        // Drive a state change: CommandStart → Working.
+        let now = Instant::now();
+        s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
+        s.refresh_default_subtitle();
+
+        // Subtitle must reflect the new state ("working"), NOT be frozen at "active".
+        assert_eq!(
+            s.label().subtitle,
+            "working",
+            "subtitle must update to 'working' despite spaced title"
+        );
+        // Title must NOT have been clobbered back to a basename.
+        assert_eq!(
+            s.label().title,
+            spaced_title,
+            "refresh_default_subtitle must not clobber the OSC-set title"
+        );
+    }
+
+    /// `TabLabel::subtitle_for` must map all five `TabState` variants to the
+    /// expected word. Direct unit test of the extracted mapping function.
+    #[test]
+    fn refresh_subtitle_maps_all_states() {
+        assert_eq!(TabLabel::subtitle_for(TabState::Active), "active");
+        assert_eq!(TabLabel::subtitle_for(TabState::Working), "working");
+        assert_eq!(TabLabel::subtitle_for(TabState::Waiting), "waiting");
+        assert_eq!(TabLabel::subtitle_for(TabState::Done), "done");
+        assert_eq!(TabLabel::subtitle_for(TabState::Idle), "idle");
+
+        // Integration: drive a state change through refresh_default_subtitle and
+        // confirm the label's subtitle field is updated.
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .expect("spawn");
+        assert_eq!(s.label().subtitle, "active");
+        let now = Instant::now();
+        s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
+        s.refresh_default_subtitle();
+        assert_eq!(s.label().subtitle, "working");
+    }
+
+    /// Pin that the `subtitle_for` extraction did not change `default_for`'s
+    /// output: title is still the basename, subtitle is still the state word.
+    #[test]
+    fn default_for_unchanged_by_refactor() {
+        let label = TabLabel::default_for("/bin/bash", TabState::Idle);
+        assert_eq!(label.title, "bash");
+        assert_eq!(label.subtitle, "idle");
+    }
+
+    /// Contract (Q2): interactive rename overrides ONLY the title; the
+    /// subtitle remains activity-driven and must keep updating with tracker
+    /// state. Guards against a future re-introduction of a title/rename gate
+    /// on refresh_default_subtitle (which previously froze the subtitle).
+    #[test]
+    fn subtitle_still_tracks_state_after_user_rename() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        // User renames the tab (sets user_renamed + a custom, spaced title).
+        s.set_title("My Important Tab".to_string());
+        s.user_renamed = true; // mirrors commit_rename's effect; field is pub
+        let now = Instant::now();
+        // A state change arrives; subtitle MUST still update.
+        let _ = s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
+        s.refresh_default_subtitle();
+        assert_eq!(
+            s.label().subtitle,
+            "working",
+            "subtitle must track state even after rename"
+        );
+        assert_eq!(
+            s.label().title,
+            "My Important Tab",
+            "rename title must be preserved"
         );
     }
 }
