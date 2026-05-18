@@ -49,6 +49,10 @@ pub struct TrackerConfig {
     /// Reset to `Active` if a tool emits a state but never updates again — guards
     /// against stuck indicators when a tool dies mid-task. Spec default 30 s.
     pub stale_state: Duration,
+    /// Stage 13 follow-up: for an explicit (OSC-1338) session, after this
+    /// long with no new frame the fuse de-escalates the session (Working→
+    /// Active, Tier-3 re-arms). `Duration::ZERO` disables (Q1 behavior).
+    pub explicit_stale_state: Duration,
 }
 
 impl Default for TrackerConfig {
@@ -57,6 +61,7 @@ impl Default for TrackerConfig {
             debounce: Duration::from_millis(100),
             heuristic_silence: Duration::from_millis(4000),
             stale_state: Duration::from_secs(30),
+            explicit_stale_state: Duration::from_secs(300),
         }
     }
 }
@@ -107,6 +112,10 @@ pub struct AiStateTracker {
     /// promotion, no silence→Waiting, no stale→Active). Reset naturally on
     /// restart() via *self = new_session.
     explicit_seen: bool,
+    /// Stage 13 follow-up: `Instant` of the most recent explicit OSC 1338
+    /// frame. Drives the explicit-stale fuse in `tick()`. `None` until the
+    /// first frame; refreshed on every `AiFrame`.
+    last_explicit_at: Option<Instant>,
 }
 
 impl AiStateTracker {
@@ -119,6 +128,7 @@ impl AiStateTracker {
             last_output_at: None,
             heuristic_active: false,
             explicit_seen: false,
+            last_explicit_at: None,
         }
     }
 
@@ -133,6 +143,7 @@ impl AiStateTracker {
         match input {
             TrackerInput::AiFrame(frame) => {
                 self.explicit_seen = true;
+                self.last_explicit_at = Some(now);
                 self.transition_to(frame.state.into(), now)
             }
             TrackerInput::Prompt(marker) => {
@@ -169,10 +180,68 @@ impl AiStateTracker {
         // session self-reports, the Tier-3 heuristic-silence and stale-state
         // timeouts must NOT override the tool's reported state. (If a
         // self-reporting tool's hook dies mid-state the tab holds that state
-        // — acceptable: the tool opted into the protocol; a stuck state is the
-        // tool's bug, not vibeflow's to time out.)
+        // until `config.explicit_stale_state` elapses — then the fuse below
+        // de-escalates it. Set `explicit_stale_state = Duration::ZERO` to
+        // restore the original hold-forever / "tool's bug" behaviour.)
         if self.explicit_seen {
-            return false;
+            let stale = self.config.explicit_stale_state > Duration::ZERO
+                && self
+                    .last_explicit_at
+                    .map(|l| now.saturating_duration_since(l) >= self.config.explicit_stale_state)
+                    .unwrap_or(false);
+            if !stale {
+                return false; // still authoritative (Q1): inert
+            }
+            // Fuse fires: this session is no longer self-reporting.
+            self.explicit_seen = false;
+            self.last_explicit_at = None;
+            match self.state {
+                TabState::Working => {
+                    // Dead hook mid-Working → recover to neutral. Direct-set
+                    // `state` (bypassing `transition_to`) is deliberate: this
+                    // is a fuse-tier signal that must not be debounce-suppressed
+                    // (same rationale as the heuristic-silence block below).
+                    self.state = TabState::Active;
+                    self.last_event_at = Some(now);
+                    return true;
+                }
+                TabState::Waiting => {
+                    // Headline "needs you" cue PERSISTS — by design it stays
+                    // amber until the user actually acts. Null the stale-state
+                    // baseline:
+                    // (a) prevents the now-ungated Tier-3 stale-state block from
+                    //     silently reclaiming Waiting absent activity;
+                    // (b) transition_to() treats last_event_at == None as the
+                    //     "first transition" fast-path and skips the 100 ms
+                    //     debounce — so when a qualifying signal DOES arrive it
+                    //     takes effect immediately.
+                    //
+                    // Recovery contract (deliberately narrow): a de-escalated
+                    // Waiting tab leaves amber ONLY on a real Tier-1 OSC 1338
+                    // frame (next AI-tool turn) or an OSC 133 prompt marker.
+                    // It is NOT recovered by raw shell output: the Tier-3
+                    // OutputObserved promotion is gated to Active|Idle (it
+                    // never promotes from Waiting), and a plain shell without
+                    // OSC 133 prompt-marker integration emits no marker. So a
+                    // formerly-AI tab that drops back to a bare bash shell can
+                    // legitimately hold amber indefinitely — that is the
+                    // intended "needs you, still unacknowledged" semantics, not
+                    // a stuck state. (Enabling OSC 133 in the shell, like the
+                    // OSC 1338 hook setup, restores prompt-driven recovery.)
+                    //
+                    // Invariant: Waiting + last_event_at == None means
+                    // "de-escalated amber, pending a Tier-1/OSC-133 signal" —
+                    // do NOT assume last_event_at is Some for Waiting.
+                    self.last_event_at = None;
+                    return false;
+                }
+                _ => {
+                    // Active/Idle/Done: just de-escalate; fall through so
+                    // Tier-3 (below) governs normally from here. A long-stale
+                    // Idle/Done may then fire the stale-state block on THIS same
+                    // tick (Idle/Done→Active) — intentional and neutral.
+                }
+            }
         }
         // Heuristic-silence (Tier 3): when active and Working, infer Waiting
         // after `config.heuristic_silence` of observed output silence.
@@ -254,6 +323,7 @@ mod tests {
         assert_eq!(c.debounce, Duration::from_millis(100));
         assert_eq!(c.heuristic_silence, Duration::from_millis(4000));
         assert_eq!(c.stale_state, Duration::from_secs(30));
+        assert_eq!(c.explicit_stale_state, Duration::from_secs(300));
     }
 
     #[test]
@@ -778,5 +848,82 @@ mod tests {
             "heuristic silence should fire Working→Waiting when explicit_seen is false"
         );
         assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    #[test]
+    fn explicit_stale_fuse_resets_working_to_active() {
+        let mut t = AiStateTracker::new(TrackerConfig {
+            explicit_stale_state: Duration::from_millis(500),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        assert_eq!(t.state(), TabState::Working);
+        assert!(!t.tick(now + Duration::from_millis(400)));
+        assert_eq!(t.state(), TabState::Working);
+        assert!(t.tick(now + Duration::from_millis(600)));
+        assert_eq!(t.state(), TabState::Active);
+    }
+
+    #[test]
+    fn explicit_stale_fuse_keeps_waiting_amber_but_dearms_explicit() {
+        let mut t = AiStateTracker::new(TrackerConfig {
+            explicit_stale_state: Duration::from_millis(500),
+            stale_state: Duration::from_millis(50),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Waiting)), now);
+        assert_eq!(t.state(), TabState::Waiting);
+        assert!(!t.tick(now + Duration::from_millis(600)));
+        assert_eq!(t.state(), TabState::Waiting);
+        assert!(t.on_input(
+            TrackerInput::Prompt(PromptMarker::CommandStart),
+            now + Duration::from_millis(700),
+        ));
+        assert_eq!(t.state(), TabState::Working);
+
+        let mut t2 = AiStateTracker::new(TrackerConfig {
+            explicit_stale_state: Duration::from_millis(500),
+            stale_state: Duration::from_millis(50),
+            ..TrackerConfig::default()
+        });
+        let n2 = Instant::now();
+        t2.on_input(TrackerInput::AiFrame(Frame::new(State::Waiting)), n2);
+        assert!(!t2.tick(n2 + Duration::from_millis(600)));
+        assert!(!t2.tick(n2 + Duration::from_millis(5000)));
+        assert_eq!(
+            t2.state(),
+            TabState::Waiting,
+            "amber must persist absent activity"
+        );
+    }
+
+    #[test]
+    fn explicit_stale_fuse_not_premature_when_frames_keep_arriving() {
+        let mut t = AiStateTracker::new(TrackerConfig {
+            explicit_stale_state: Duration::from_millis(500),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        t.on_input(
+            TrackerInput::AiFrame(Frame::new(State::Working)),
+            now + Duration::from_millis(400),
+        );
+        assert!(!t.tick(now + Duration::from_millis(600)));
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    #[test]
+    fn explicit_stale_fuse_disabled_when_zero_keeps_q1_behavior() {
+        let mut t = AiStateTracker::new(TrackerConfig {
+            explicit_stale_state: Duration::ZERO,
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        assert!(!t.tick(now + Duration::from_secs(3600)));
+        assert_eq!(t.state(), TabState::Working);
     }
 }
