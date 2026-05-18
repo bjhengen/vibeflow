@@ -249,6 +249,12 @@ pub struct WindowApp {
     /// Stage 13: theme registry loaded at startup from
     /// ~/.config/vibeflow/themes/, refreshed on config reload (T17).
     theme_registry: crate::theme::registry::ThemeRegistry,
+    /// Stage 13 follow-up: false until the first `RedrawRequested` reconciles
+    /// the grid to the true `window.inner_size()`. `resumed()` sizes from
+    /// `renderer.surface_size()`, which some compositors/VNC report as the
+    /// requested size before the real window size is final; this one-shot
+    /// reconcile corrects the grid before the first visible frame.
+    initial_size_reconciled: bool,
 }
 
 impl WindowApp {
@@ -383,6 +389,7 @@ impl WindowApp {
                     .map(|d| d.join("vibeflow").join("themes"))
                     .unwrap_or_default(),
             ),
+            initial_size_reconciled: false,
         }
     }
 
@@ -994,6 +1001,34 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                if !self.initial_size_reconciled {
+                    self.initial_size_reconciled = true;
+                    // Re-sync BOTH the wgpu surface and the PTY grid to the
+                    // TRUE window size. `resumed()` sizes from
+                    // `renderer.surface_size()`, which some compositors/VNC
+                    // report as the requested size before the real window is
+                    // mapped; `RedrawRequested` is the earliest safe point —
+                    // by the first repaint the compositor has mapped the
+                    // window and finalized its dimensions. Full mirror of the
+                    // `WindowEvent::Resized` path (surface resize THEN grid
+                    // resize); if either differed from `resumed()`'s guess,
+                    // both must be corrected together or the surface and grid
+                    // diverge (clipping) on the first frame.
+                    // NOTE: three sites now share this resize math (resumed,
+                    // Resized, here). If `tab_bar_height_px` / the reserve
+                    // changes, update all three or extract a helper.
+                    let size = self.window.as_ref().map(|w| w.inner_size());
+                    if let (Some(size), Some(renderer)) = (size, self.renderer.as_mut()) {
+                        renderer.resize(size.width, size.height);
+                        let (cell_w, cell_h) = renderer.cell_pitch();
+                        let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+                        let visible_h = size.height.saturating_sub(bar_h);
+                        let (rows, cols) = pixels_to_grid(size.width, visible_h, cell_w, cell_h);
+                        if let Err(e) = self.app.resize_all(rows, cols) {
+                            tracing::warn!(error = %e, rows, cols, "initial reconcile resize failed");
+                        }
+                    }
+                }
                 let term = self.app.active_term();
                 let Some(renderer) = self.renderer.as_mut() else {
                     return;
@@ -2201,6 +2236,26 @@ mod tests {
         assert_eq!(
             super::pixel_to_grid_point(10, 20, 30, 5, 70, 5),
             Some(Point::new(Line(-3), Column(0)))
+        );
+    }
+
+    #[test]
+    fn reconcile_recomputes_grid_for_true_window_size() {
+        // resumed() may have sized for the requested 960x600; the real
+        // window is larger. The reconcile must recompute via pixels_to_grid
+        // on the true size (tab-bar strip reserved) and yield more rows/cols.
+        let cell_w = 10u32;
+        let cell_h = 20u32;
+        let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+        let requested = pixels_to_grid(960, 600u32.saturating_sub(bar_h), cell_w, cell_h);
+        let actual = pixels_to_grid(1920, 1080u32.saturating_sub(bar_h), cell_w, cell_h);
+        assert!(
+            actual.0 > requested.0,
+            "more rows on the larger real window"
+        );
+        assert!(
+            actual.1 > requested.1,
+            "more cols on the larger real window"
         );
     }
 }
