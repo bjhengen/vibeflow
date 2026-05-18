@@ -101,6 +101,12 @@ pub struct AiStateTracker {
     /// Set externally by the App (Stage 3+) when the foreground process matches
     /// the configured AI-tool list. Drives Tier 3 heuristic silence inference.
     heuristic_active: bool,
+    /// Stage 13 Q1: set once any explicit OSC 1338 frame (Tier-1) is observed.
+    /// Tier-1 is authoritative — once a session self-reports, the Tier-3 /proc
+    /// heuristic permanently defers for this session (no output→Working
+    /// promotion, no silence→Waiting, no stale→Active). Reset naturally on
+    /// restart() via *self = new_session.
+    explicit_seen: bool,
 }
 
 impl AiStateTracker {
@@ -112,6 +118,7 @@ impl AiStateTracker {
             last_event_at: None,
             last_output_at: None,
             heuristic_active: false,
+            explicit_seen: false,
         }
     }
 
@@ -124,7 +131,10 @@ impl AiStateTracker {
     /// Apply an input at `now`. Returns `true` if the state changed.
     pub fn on_input(&mut self, input: TrackerInput, now: Instant) -> bool {
         match input {
-            TrackerInput::AiFrame(frame) => self.transition_to(frame.state.into(), now),
+            TrackerInput::AiFrame(frame) => {
+                self.explicit_seen = true;
+                self.transition_to(frame.state.into(), now)
+            }
             TrackerInput::Prompt(marker) => {
                 let target = match marker {
                     PromptMarker::PromptStart
@@ -141,7 +151,9 @@ impl AiStateTracker {
                 // Working from observed output activity. This is the "rapid output → working"
                 // half of the Tier 3 heuristic; the Working → Waiting (silence) half lives
                 // in `tick()`.
-                if self.heuristic_active && matches!(self.state, TabState::Active | TabState::Idle)
+                if !self.explicit_seen
+                    && self.heuristic_active
+                    && matches!(self.state, TabState::Active | TabState::Idle)
                 {
                     return self.transition_to(TabState::Working, now);
                 }
@@ -153,6 +165,15 @@ impl AiStateTracker {
     /// Stale-state and heuristic-silence checks at `now`. Returns `true` if a
     /// timeout caused a state change.
     pub fn tick(&mut self, now: Instant) -> bool {
+        // Stage 13 Q1: explicit OSC 1338 (Tier-1) is authoritative. Once a
+        // session self-reports, the Tier-3 heuristic-silence and stale-state
+        // timeouts must NOT override the tool's reported state. (If a
+        // self-reporting tool's hook dies mid-state the tab holds that state
+        // — acceptable: the tool opted into the protocol; a stuck state is the
+        // tool's bug, not vibeflow's to time out.)
+        if self.explicit_seen {
+            return false;
+        }
         // Heuristic-silence (Tier 3): when active and Working, infer Waiting
         // after `config.heuristic_silence` of observed output silence.
         if self.heuristic_active && self.state == TabState::Working {
@@ -408,7 +429,9 @@ mod tests {
     fn tracker_stale_state_timeout_resets_to_active() {
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
-        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Enter Working via a shell prompt marker (Tier-3 / non-explicit). The stale-state timeout applies to non-self-reporting sessions;
+        // sessions that emit OSC 1338 are exempt (Q1) — that path is covered by explicit_frame_disables_stale_timeout.
+        t.on_input(TrackerInput::Prompt(PromptMarker::CommandStart), now);
         assert_eq!(t.state(), TabState::Working);
 
         // 31 seconds later (past the 30 s default), tick → reset to Active.
@@ -458,8 +481,9 @@ mod tests {
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
         t.set_heuristic_active(true);
-        // Working state set + last output observed.
-        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Working entered non-explicitly (shell prompt) so the Tier-3 heuristic-silence inference still applies;
+        // explicit OSC sessions are exempt (Q1).
+        t.on_input(TrackerInput::Prompt(PromptMarker::CommandStart), now);
         t.on_input(TrackerInput::OutputObserved, now);
 
         // 5 seconds later — past the 4 s default heuristic_silence — but
@@ -475,8 +499,11 @@ mod tests {
     fn tracker_heuristic_silence_inactive_when_flag_off() {
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
-        // heuristic_active stays false (default).
-        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Working entered non-explicitly (shell prompt) so explicit_seen stays
+        // false and tick()'s heuristic branch is actually reached. heuristic_active
+        // is false (default) → the silence timer must NOT fire (the invariant under
+        // test). (Explicit-OSC sessions are exempt for a different reason — Q1.)
+        t.on_input(TrackerInput::Prompt(PromptMarker::CommandStart), now);
         t.on_input(TrackerInput::OutputObserved, now);
 
         let changed = t.tick(now + Duration::from_secs(5));
@@ -515,7 +542,10 @@ mod tests {
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
         t.set_heuristic_active(true);
-        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Working via shell prompt (non-explicit) so explicit_seen stays false and
+        // the heuristic-silence path in tick() is genuinely exercised. This test
+        // pins the silence-baseline RESET on new output (heuristic_active=true).
+        t.on_input(TrackerInput::Prompt(PromptMarker::CommandStart), now);
         // Output observed at now+3s — well within the 4 s silence window.
         t.on_input(TrackerInput::OutputObserved, now + Duration::from_secs(3));
         // Tick at now+5s — only 2 s of silence since last output. No fire.
@@ -560,23 +590,43 @@ mod tests {
 
     #[test]
     fn output_observed_does_not_override_working_or_waiting() {
-        // If state is already Working (e.g., from explicit OSC 1338), OutputObserved
-        // shouldn't bump it back to Working — it should just refresh last_output_at.
-        // Same for Waiting (an explicit signal from a tool that's now waiting).
+        // OutputObserved must only promote from Active|Idle (the matches! guard
+        // in on_input) — it must never override an existing Working or Waiting.
+        // Both states are reached NON-explicitly here (shell prompt, then the
+        // Tier-3 heuristic-silence inference) so explicit_seen stays false and
+        // the matches! guard — not Q1's explicit gate — is what's under test.
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
         t.set_heuristic_active(true);
-        t.on_input(TrackerInput::AiFrame(Frame::new(State::Waiting)), now);
-        assert_eq!(t.state(), TabState::Waiting);
-        // Output observation should keep state at Waiting (explicit wins over heuristic).
+
+        // --- Working: OutputObserved must not bump Working back through promotion.
+        t.on_input(TrackerInput::Prompt(PromptMarker::CommandStart), now);
+        assert_eq!(t.state(), TabState::Working);
         let _ = t.on_input(
             TrackerInput::OutputObserved,
-            now + Duration::from_millis(200),
+            now + Duration::from_millis(100),
         );
         assert_eq!(
             t.state(),
+            TabState::Working,
+            "OutputObserved must not override Working"
+        );
+
+        // --- Waiting: drive Working→Waiting via the Tier-3 silence inference
+        // (non-explicit), then OutputObserved must not pull it back.
+        // tick fires Waiting after `heuristic_silence` (default 4s) of silence;
+        // last OutputObserved was at +100ms, so tick at +5s is >4s of silence.
+        let fired = t.tick(now + Duration::from_secs(5));
+        assert!(
+            fired,
+            "heuristic-silence should infer Waiting (non-explicit)"
+        );
+        assert_eq!(t.state(), TabState::Waiting);
+        let _ = t.on_input(TrackerInput::OutputObserved, now + Duration::from_secs(5));
+        assert_eq!(
+            t.state(),
             TabState::Waiting,
-            "OutputObserved should not override explicit Waiting"
+            "OutputObserved must not override Waiting"
         );
     }
 
@@ -585,8 +635,9 @@ mod tests {
         let mut t = AiStateTracker::new(TrackerConfig::default());
         let now = Instant::now();
         t.set_heuristic_active(true);
-        // Drive Working state via OSC 1338 frame.
-        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Drive Working non-explicitly (shell prompt) — set_config tunes the Tier-3 silence threshold,
+        // which only applies to non-self-reporting sessions (Q1).
+        t.on_input(TrackerInput::Prompt(PromptMarker::CommandStart), now);
         assert_eq!(t.state(), TabState::Working);
         // Heuristic-silence path needs `last_output_at` to be set; otherwise
         // the `if let Some(last_out) = self.last_output_at` guard short-circuits
@@ -608,6 +659,124 @@ mod tests {
         // Tick at 1100 ms — should transition to Waiting.
         let changed_long = t.tick(now + Duration::from_millis(1100));
         assert!(changed_long, "should transition past new 1000 ms threshold");
+        assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    // --- Stage 13 Q1: explicit OSC 1338 (Tier-1) precedence tests ---
+
+    #[test]
+    fn explicit_frame_disables_heuristic_silence() {
+        // Pre-fix: tick() would flip Working → Waiting on the silence timer even
+        // after an explicit OSC 1338 frame had reported Working. Post-fix: once
+        // explicit_seen is true, tick() returns false regardless.
+        let mut t = AiStateTracker::new(TrackerConfig {
+            heuristic_silence: Duration::from_millis(500),
+            stale_state: Duration::from_secs(30),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        // Feed an explicit OSC 1338 Working frame (sets explicit_seen = true).
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
+        // Also record an output observation so last_output_at is set and the
+        // heuristic-silence branch has a baseline to compare against.
+        t.on_input(TrackerInput::OutputObserved, now);
+        assert_eq!(t.state(), TabState::Working);
+
+        // Advance past heuristic_silence with no further input.
+        let later = now + Duration::from_millis(600);
+        let changed = t.tick(later);
+        // Tier-1 is authoritative: heuristic must NOT have fired.
+        assert!(!changed, "tick() must not fire when explicit_seen is true");
+        assert_eq!(
+            t.state(),
+            TabState::Working,
+            "state must remain Working (OSC-reported), not flip to Waiting"
+        );
+    }
+
+    #[test]
+    fn explicit_frame_disables_stale_timeout() {
+        // Pre-fix: stale-state branch would flip Waiting → Active after stale_state.
+        // Post-fix: once explicit_seen is true, tick() returns false regardless.
+        let mut t = AiStateTracker::new(TrackerConfig {
+            stale_state: Duration::from_millis(500),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        // Feed an explicit OSC 1338 Waiting frame (sets explicit_seen = true).
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Waiting)), now);
+        assert_eq!(t.state(), TabState::Waiting);
+
+        // Advance past stale_state with no further input.
+        let later = now + Duration::from_millis(600);
+        let changed = t.tick(later);
+        // Tier-1 is authoritative: stale-state must NOT have fired.
+        assert!(!changed, "tick() must not fire when explicit_seen is true");
+        assert_eq!(
+            t.state(),
+            TabState::Waiting,
+            "state must remain Waiting (OSC-reported), not reset to Active"
+        );
+    }
+
+    #[test]
+    fn explicit_frame_disables_output_observed_promotion() {
+        // Pre-fix: OutputObserved with heuristic_active would promote Active → Working
+        // even after an explicit OSC 1338 Active frame. Post-fix: explicit_seen gates
+        // the Tier-3 rapid-output→Working promotion.
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        // Feed an explicit OSC 1338 Active frame (sets explicit_seen = true, state stays Active).
+        let changed = t.on_input(TrackerInput::AiFrame(Frame::new(State::Active)), now);
+        assert!(!changed, "Active→Active is not a state change");
+        assert_eq!(t.state(), TabState::Active);
+
+        // OutputObserved must NOT promote to Working because explicit_seen = true.
+        let promoted = t.on_input(
+            TrackerInput::OutputObserved,
+            now + Duration::from_millis(200),
+        );
+        assert!(
+            !promoted,
+            "OutputObserved must not promote when explicit_seen is true"
+        );
+        assert_eq!(
+            t.state(),
+            TabState::Active,
+            "state must remain Active (OSC-reported)"
+        );
+    }
+
+    #[test]
+    fn heuristic_still_works_without_any_explicit_frame() {
+        // REGRESSION GUARD: explicit_seen starts false; all Tier-3 behavior must be
+        // fully intact for sessions that never emit OSC 1338.
+        let mut t = AiStateTracker::new(TrackerConfig {
+            heuristic_silence: Duration::from_millis(500),
+            stale_state: Duration::from_secs(30),
+            ..TrackerConfig::default()
+        });
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        // No AiFrame ever — explicit_seen stays false.
+
+        // OutputObserved from Active should promote → Working (Tier-3 output promotion).
+        let promoted = t.on_input(TrackerInput::OutputObserved, now);
+        assert!(
+            promoted,
+            "OutputObserved should promote Active→Working when explicit_seen is false"
+        );
+        assert_eq!(t.state(), TabState::Working);
+
+        // Advance past heuristic_silence — Tier-3 silence → Waiting should fire.
+        let t1 = now + Duration::from_millis(600);
+        let silenced = t.tick(t1);
+        assert!(
+            silenced,
+            "heuristic silence should fire Working→Waiting when explicit_seen is false"
+        );
         assert_eq!(t.state(), TabState::Waiting);
     }
 }

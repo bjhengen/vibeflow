@@ -734,13 +734,13 @@ mod tests {
         // exercise the path via tick after a Working transition + observed
         // output to ensure heuristic fires when the flag is on.
         let now = Instant::now();
-        let frame_bytes =
-            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
-        for ev in s.dispatcher.feed(&frame_bytes) {
-            if let DispatchEvent::AiState(frame) = ev {
-                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
-            }
-        }
+        // Enter Working via a shell prompt marker (non-explicit) so the Tier-3 heuristic still governs —
+        // this test verifies set_heuristic_active reaches the tracker and the silence inference fires for
+        // NON-self-reporting sessions. (Explicit OSC 1338 sessions are exempt — Q1.)
+        s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
         s.tracker.on_input(TrackerInput::OutputObserved, now);
 
         let evs = s.tick(now + Duration::from_secs(5));
@@ -922,16 +922,12 @@ mod tests {
         )
         .unwrap();
         let now = Instant::now();
-        // Simulate state change by feeding an AiFrame manually to set
-        // last_event_at, then tick past the 30 s stale-state window.
-        let frame_bytes =
-            vibeflow_protocol::Frame::new(vibeflow_protocol::State::Working).to_bytes();
-        // Feed bytes directly (not via the PTY) to control timing.
-        for ev in s.dispatcher.feed(&frame_bytes) {
-            if let DispatchEvent::AiState(frame) = ev {
-                s.tracker.on_input(TrackerInput::AiFrame(frame), now);
-            }
-        }
+        // Enter Working non-explicitly (shell prompt) — stale-state timeout applies to non-self-reporting
+        // sessions; OSC 1338 sessions are exempt (Q1, see explicit_frame_disables_stale_timeout).
+        s.tracker.on_input(
+            TrackerInput::Prompt(crate::session::osc::PromptMarker::CommandStart),
+            now,
+        );
         assert_eq!(s.state(), TabState::Working);
 
         let evs = s.tick(now + Duration::from_secs(31));
