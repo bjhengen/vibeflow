@@ -142,8 +142,9 @@ no stale-state, no `OutputObserved`→Working promotion. Consequences:
               }
               // else: fall through with explicit_seen now false — Tier-3
               // (heuristic + prompt markers) resumes for the de-escalated
-              // session. A stuck Waiting keeps its amber cue until the next
-              // shell/prompt activity moves it.
+              // session. A de-escalated Waiting keeps its amber cue until a
+              // Tier-1 OSC 1338 frame or an OSC 133 prompt marker arrives
+              // (NOT raw shell output — see normative semantics below).
           }
       }
   }
@@ -157,14 +158,26 @@ no stale-state, no `OutputObserved`→Working promotion. Consequences:
 - **Stuck Waiting**: the amber "needs you" headline cue **persists** (per the
   brainstorm decision — its whole value is persisting until the user acts). On
   the fuse, the Waiting branch clears `explicit_seen` AND sets
-  `last_event_at = None`. Clearing `explicit_seen` re-arms Tier-3 + prompt
-  markers; nulling `last_event_at` removes the stale-state baseline so the
-  now-ungated stale-state timeout **cannot** silently reclaim Waiting→Active
-  absent activity (without this, Waiting would be reclaimed ~`stale_state`
-  after de-escalation — contradicting "persists"). Net: amber stays until a
-  real transition moves it — the next shell prompt-marker / heuristic
-  transition, or user interaction (next prompt → `UserPromptSubmit` →
-  `working`). State is **not** force-changed by the fuse for Waiting.
+  `last_event_at = None`. Clearing `explicit_seen` re-arms Tier-1/OSC-133;
+  nulling `last_event_at` removes the stale-state baseline so the now-ungated
+  stale-state timeout **cannot** silently reclaim Waiting→Active absent
+  activity (without this, Waiting would be reclaimed ~`stale_state` after
+  de-escalation — contradicting "persists"). State is **not** force-changed by
+  the fuse for Waiting.
+
+  **Recovery contract (deliberately narrow — VNC-confirmed 2026-05-18).** A
+  de-escalated Waiting tab leaves amber **only** on a real Tier-1 OSC 1338
+  frame (the next AI-tool turn) or an OSC 133 prompt marker. It is **not**
+  recovered by raw shell activity: the Tier-3 `OutputObserved`→Working
+  promotion is gated to `Active`/`Idle` and never fires from Waiting, and a
+  plain bash shell without OSC 133 prompt-marker integration emits no marker.
+  Therefore a formerly-AI tab that drops back to a bare interactive shell can
+  legitimately hold amber **indefinitely** — running `ls` or starting/exiting
+  `claude` without submitting a prompt will *not* clear it. This is the
+  intended "needs you, still unacknowledged" semantics, not a stuck state. A
+  user who wants prompt-driven recovery in a plain shell should enable OSC 133
+  in their `PS1` (a shell-config opt-in, analogous to the OSC 1338 hook
+  setup) — that is out of scope for vibeflow code.
 - While explicit frames keep arriving (normal operation, incl. the 5-hook
   config refreshing on every PreToolUse/PostToolUse), `last_explicit_at` is
   refreshed and the fuse never fires — zero behavior change for healthy tools.

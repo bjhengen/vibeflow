@@ -206,17 +206,32 @@ impl AiStateTracker {
                     return true;
                 }
                 TabState::Waiting => {
-                    // Headline "needs you" cue persists. Null the stale-state
+                    // Headline "needs you" cue PERSISTS — by design it stays
+                    // amber until the user actually acts. Null the stale-state
                     // baseline:
                     // (a) prevents the now-ungated Tier-3 stale-state block from
                     //     silently reclaiming Waiting absent activity;
                     // (b) transition_to() treats last_event_at == None as the
                     //     "first transition" fast-path and skips the 100 ms
-                    //     debounce — so the next prompt-marker / heuristic event
-                    //     recovers immediately.
+                    //     debounce — so when a qualifying signal DOES arrive it
+                    //     takes effect immediately.
+                    //
+                    // Recovery contract (deliberately narrow): a de-escalated
+                    // Waiting tab leaves amber ONLY on a real Tier-1 OSC 1338
+                    // frame (next AI-tool turn) or an OSC 133 prompt marker.
+                    // It is NOT recovered by raw shell output: the Tier-3
+                    // OutputObserved promotion is gated to Active|Idle (it
+                    // never promotes from Waiting), and a plain shell without
+                    // OSC 133 prompt-marker integration emits no marker. So a
+                    // formerly-AI tab that drops back to a bare bash shell can
+                    // legitimately hold amber indefinitely — that is the
+                    // intended "needs you, still unacknowledged" semantics, not
+                    // a stuck state. (Enabling OSC 133 in the shell, like the
+                    // OSC 1338 hook setup, restores prompt-driven recovery.)
+                    //
                     // Invariant: Waiting + last_event_at == None means
-                    // "de-escalated amber, pending activity" — do NOT assume
-                    // last_event_at is Some for Waiting.
+                    // "de-escalated amber, pending a Tier-1/OSC-133 signal" —
+                    // do NOT assume last_event_at is Some for Waiting.
                     self.last_event_at = None;
                     return false;
                 }
