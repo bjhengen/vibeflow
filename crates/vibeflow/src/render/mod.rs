@@ -65,6 +65,27 @@ const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Stage 13 follow-up: the wgpu clear color for a frame. Uses the active
+/// session's resolved theme background when set, so the uncovered
+/// remainder strip (`width % cell_w` / `height % cell_h`, never covered by
+/// a cell rect) matches the theme instead of the hardcoded default.
+/// Falls back to `CLEAR_COLOR` when there is no theme / no Background slot.
+/// `Colors` stores `Rgb` (no alpha) so the clear color is always opaque.
+fn theme_clear_color(
+    theme_colors: Option<&alacritty_terminal::term::color::Colors>,
+) -> wgpu::Color {
+    use alacritty_terminal::vte::ansi::NamedColor;
+    match theme_colors.and_then(|c| c[NamedColor::Background]) {
+        Some(rgb) => wgpu::Color {
+            r: rgb.r as f64 / 255.0,
+            g: rgb.g as f64 / 255.0,
+            b: rgb.b as f64 / 255.0,
+            a: 1.0,
+        },
+        None => CLEAR_COLOR,
+    }
+}
+
 /// All wgpu state that lives for the duration of the window. Created once in
 /// [`Renderer::new`] and dropped when the window closes.
 ///
@@ -550,6 +571,7 @@ impl Renderer {
                 label: Some("vibeflow-frame-encoder"),
             });
 
+        let frame_clear = theme_clear_color(active_theme_colors.as_ref());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("vibeflow-frame-pass"),
@@ -557,7 +579,7 @@ impl Renderer {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR_COLOR),
+                        load: wgpu::LoadOp::Clear(frame_clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -696,5 +718,33 @@ impl Renderer {
     /// `WindowApp::apply_config` on every hot-reload.
     pub fn set_scrollbar_colors(&mut self, colors: crate::render::scrollbar::ScrollbarColors) {
         self.scrollbar_colors = colors;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_color_uses_theme_bg_else_fallback() {
+        use alacritty_terminal::term::color::Colors;
+        use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+        // No theme → fallback constant.
+        assert_eq!(theme_clear_color(None), CLEAR_COLOR);
+        // Theme with a Background slot → that color, alpha 1.0.
+        let mut c = Colors::default();
+        c[NamedColor::Background] = Some(Rgb {
+            r: 0x20,
+            g: 0x40,
+            b: 0x60,
+        });
+        let got = theme_clear_color(Some(&c));
+        assert!((got.r - 0x20 as f64 / 255.0).abs() < 1e-9);
+        assert!((got.g - 0x40 as f64 / 255.0).abs() < 1e-9);
+        assert!((got.b - 0x60 as f64 / 255.0).abs() < 1e-9);
+        assert_eq!(got.a, 1.0);
+        // Theme present but Background unset → fallback.
+        let empty = Colors::default();
+        assert_eq!(theme_clear_color(Some(&empty)), CLEAR_COLOR);
     }
 }
