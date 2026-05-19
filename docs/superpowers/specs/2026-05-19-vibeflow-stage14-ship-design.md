@@ -22,11 +22,18 @@ is release engineering, docs, and the logo.
    (winit) + AppImage/`.desktop` icon (§3).
 3. **crates.io publish readiness** — flip `crates/vibeflow` `publish = false`,
    fix stale metadata; verified publish ordering (§4).
-4. **npm publish of `@vibeflow/protocol`** — the package is NOT currently on the
-   registry (verified 2026-05-19: `registry.npmjs.org/@vibeflow/protocol` →
-   `{"error":"Not found"}`); the README's "published on npm" claim is false
-   today. `bindings/npm/package.json` is already well-formed at `0.1.0`. Publish
-   it this phase (§4).
+4. **npm publish of the protocol package as `vibeflow-protocol` (unscoped)** —
+   the `@vibeflow` scope is locked to a pre-existing npm *user* `vibeflow`
+   (verified 2026-05-19: `registry.npmjs.org/-/org/vibeflow` →
+   `ResourceNotFound` for orgs; `www.npmjs.com/~vibeflow` → HTTP 403 = user
+   present), so `@vibeflow/<anything>` cannot be claimed. The unscoped
+   `vibeflow-protocol` is **free** (`registry.npmjs.org/vibeflow-protocol` →
+   HTTP 404). Publish unscoped — this also mirrors the Rust crate name
+   exactly (single `vibeflow-protocol` name on both registries).
+   `bindings/npm/package.json` requires a one-line rename
+   (`"name": "@vibeflow/protocol"` → `"vibeflow-protocol"`). Publish this
+   phase (§4). The unscoped `vibeflow` name is also currently free; reserving
+   it is out of scope for v0.1 (separate decision).
 5. **`CHANGELOG.md`** — Keep-a-Changelog, `v0.1.0` entry summarizing the 14
    stages; source for the GitHub Release body (§5).
 6. **Release CI** — new `.github/workflows/release.yml` on `v*` tag push: build
@@ -67,7 +74,8 @@ Structure (top to bottom):
 1. **Logo lockup** (centered HTML `<p align="center"><img>`), tagline:
    *"A GPU-accelerated Linux terminal that knows when your AI tool is waiting on you."*
 2. **Badges** — CI status + license always; crates.io (`vibeflow`) and npm
-   (`@vibeflow/protocol`) version badges use shields.io's dynamic registry
+   (`vibeflow-protocol`, unscoped — see §1 item 4) version badges use
+   shields.io's dynamic registry
    endpoints, which auto-populate once the gated publish (§4/§5) completes
    (they render "not found"/grey only in the brief same-day window between
    README merge and publish — self-healing, acceptable). The finale's
@@ -177,9 +185,9 @@ already proven false; treat the crates.io claim as unverified):**
    **first** (crates.io requires the path+`version="0.1"` dependency to exist
    on the registry before `vibeflow` can publish).
 3. Then `cargo publish -p vibeflow`.
-4. `npm publish --access public` from `bindings/npm/` for
-   `@vibeflow/protocol@0.1.0` (scoped package → `--access public` required;
-   independent of the crates).
+4. `npm publish` from `bindings/npm/` for `vibeflow-protocol@0.1.0` (unscoped
+   public package — `--access public` flag is not required for unscoped names,
+   public is the default). Independent of the crates.
 
 **All publish actions are gated manual steps**, irreversible (crates.io/npm
 yank ≠ unpublish). The plan prepares everything and runs
@@ -206,9 +214,10 @@ README must not claim it.
   force-push required — that is explicitly out of scope and would be
   destructive on a public repo). The only LLC-domain leakage is the two
   manifest lines above.
-- npm scope `@vibeflow` is project-named (not LLC-named) — neutral, no change;
-  it just needs an npm org `vibeflow` under the personal account (§ npm
-  prerequisites, tracked separately from this spec).
+- npm: publish unscoped as `vibeflow-protocol` (the `@vibeflow` scope is
+  locked to a pre-existing user — see §1 item 4); rename
+  `bindings/npm/package.json` `"name"` field accordingly. No npm org needed
+  under the personal account.
 
 ---
 
