@@ -6,7 +6,7 @@
 
 **Architecture:** Eleven small, mostly-independent tasks landing on a single branch `stage14-ship` off `main`. Code changes are minimal (one tiny module + a one-line window-builder edit + manifest fixes). The bulk is docs (full README rewrite, crate-level README, CHANGELOG), assets (logo PNGs + 256×256 runtime icon embedded inside the crate), and release plumbing (`.desktop` + release CI workflow that builds the AppImage on a `v*` tag push). All external/irreversible actions (`cargo publish`, `npm publish`, push `v0.1.0`, `gh repo edit`) are **human-gated** in a final checklist — never executed autonomously.
 
-**Tech Stack:** Rust workspace (`vibeflow`, `vibeflow-protocol`), winit 0.30, `png` 0.17 (new dep, lighter than `image`), Python 3 + Pillow 12 (one-time icon resize, not a build dep), npm (`vibeflow-protocol` binding), GitHub Actions, linuxdeploy + appimagetool (downloaded in-job, pinned), shields.io dynamic badges.
+**Tech Stack:** Rust workspace (`vibeflow`, `vibeflow-protocol`), winit 0.30, `png` 0.17 (new dep, lighter than `image`), Python 3 + Pillow 12 (one-time icon resize, not a build dep), npm (`vibeflow-protocol` binding), GitHub Actions, `appimagetool` 1.9.1 from `github.com/AppImage/appimagetool` (downloaded in-job, pinned), shields.io dynamic badges.
 
 **Spec reference:** `docs/superpowers/specs/2026-05-19-vibeflow-stage14-ship-design.md` @ `39cc1bd`.
 
@@ -252,7 +252,7 @@ mod tests {
 
 - [ ] **Step 2.2: Declare the module in `lib.rs`**
 
-Edit `crates/vibeflow/src/lib.rs` to add `mod icon;` after the existing `pub mod` block (line 16):
+Edit `crates/vibeflow/src/lib.rs` and append `mod icon;` at the end of the file (after the current last line `pub mod window;` at line 16):
 
 ```rust
 pub mod app;
@@ -792,7 +792,9 @@ the personal-views-not-employer disclaimer per project_identity_positioning."
 
 **Files:**
 - Modify: `bindings/npm/package.json` (name + author)
+- Modify: `bindings/npm/package-lock.json` (regenerated, not hand-edited)
 - Modify: `bindings/npm/README.md` (3 references)
+- Modify: `bindings/npm/src/index.ts` (1 JSDoc reference at line 2)
 
 - [ ] **Step 7.1: Rename and re-author `package.json`**
 
@@ -822,25 +824,63 @@ Replace the three `@vibeflow/protocol` references with `vibeflow-protocol`:
 
 Use three explicit string replaces (do NOT bulk-edit elsewhere — there should be exactly three matches in that file; verify with `grep`).
 
-- [ ] **Step 7.3: Verify the rename is complete across the binding**
+- [ ] **Step 7.3: Update `bindings/npm/src/index.ts` JSDoc**
 
-```bash
-grep -rn '@vibeflow/protocol' bindings/npm/ || echo "no @vibeflow/protocol references remain (expected)"
+Line 2 of `bindings/npm/src/index.ts` is a JSDoc comment that still names the old scope:
+
+```ts
+/**
+ * @vibeflow/protocol — OSC 1338 protocol binding for TypeScript.
 ```
 
-Expected: prints `no @vibeflow/protocol references remain (expected)`. (If any remain, replace them.)
+Change line 2 to:
 
-- [ ] **Step 7.4: Run the existing npm tests (must still pass after the rename)**
+```ts
+ * vibeflow-protocol — OSC 1338 protocol binding for TypeScript.
+```
+
+This is a documentation comment, not an import string, but `tsc` propagates it into the generated `dist/src/index.d.ts` so consumers see it. Keeping it consistent with the package name is correct.
+
+- [ ] **Step 7.4: Regenerate `package-lock.json` to match the renamed package**
+
+The current `package-lock.json` has `"name": "@vibeflow/protocol"` at lines 2 and 8 (the project itself + its self-reference in `packages.""`). Hand-editing a lock file is error-prone; npm regenerates it cleanly from the now-renamed `package.json`:
 
 ```bash
 cd bindings/npm
+npm install --package-lock-only
+cd -
+```
+
+`--package-lock-only` updates `package-lock.json` without re-downloading dependencies (the project has no runtime deps; `typescript` and `@types/node` are dev-only and already installed in `node_modules/`). Verify:
+
+```bash
+grep -n '"name"' bindings/npm/package-lock.json | head -5
+```
+
+Expected: lines 2 and 8 (or thereabouts) both show `"name": "vibeflow-protocol"`.
+
+- [ ] **Step 7.5: Verify the rename is complete across the binding**
+
+```bash
+grep -rn '@vibeflow/protocol' bindings/npm/ --include='*.json' --include='*.md' --include='*.ts' || echo "OK: no @vibeflow/protocol references in tracked sources"
+```
+
+Expected: prints `OK: no @vibeflow/protocol references in tracked sources`. (Globs are scoped to tracked source types — `node_modules/` and `dist/` may contain transitive matches in package caches that we don't ship; the grep flags exclude them implicitly by file type.)
+
+- [ ] **Step 7.6: Rebuild + run the existing npm tests**
+
+The JSDoc edit changes a string that flows through `tsc` into `dist/`; rebuild and re-test:
+
+```bash
+cd bindings/npm
+npm run build 2>&1 | tail -3
 npm test 2>&1 | tail -10
 cd -
 ```
 
-Expected: `npm test` runs `tsc && node --test ./dist/test/index.test.js` and reports pass. The package name is metadata — no test code references `@vibeflow/protocol` by string (verify with `grep "@vibeflow/protocol" bindings/npm/src bindings/npm/test`).
+Expected: `npm run build` finishes silently (tsc is quiet on success); `npm test` reports pass (`# pass <N>`).
 
-- [ ] **Step 7.5: npm publish dry-run**
+- [ ] **Step 7.7: npm publish dry-run**
 
 ```bash
 cd bindings/npm
@@ -850,10 +890,10 @@ cd -
 
 Expected: lists exactly the files in `"files"` plus `package.json` + `README.md` (~5–15 entries); package name reported as `vibeflow-protocol@0.1.0`; no errors.
 
-- [ ] **Step 7.6: Commit**
+- [ ] **Step 7.8: Commit**
 
 ```bash
-git add bindings/npm/package.json bindings/npm/README.md
+git add bindings/npm/package.json bindings/npm/package-lock.json bindings/npm/README.md bindings/npm/src/index.ts
 git status --short
 git commit -m "feat(stage14): rename npm package to unscoped vibeflow-protocol
 
@@ -865,7 +905,12 @@ single canonical name on both registries.
 
 - package.json: name @vibeflow/protocol -> vibeflow-protocol; author
   email -> bhengen@gmail.com (matching git author + crate workspace).
+- package-lock.json: regenerated via 'npm install --package-lock-only'
+  so the lockfile name matches package.json (was stale at the old name
+  on lines 2 + 8).
 - README.md: three @vibeflow/protocol references rewritten.
+- src/index.ts: JSDoc line 2 reference rewritten (it flows through tsc
+  into the generated .d.ts that consumers see).
 - No publishConfig needed (unscoped public is the default).
 - npm test green; npm publish --dry-run green."
 ```
@@ -1007,13 +1052,14 @@ on:
     tags:
       - 'v*'
 
-# linuxdeploy / appimagetool versions are pinned (vs. "latest") so a
-# release never breaks from an upstream change between v0.1.0 and v0.1.1.
+# appimagetool version is pinned so a release never breaks from an upstream
+# change between v0.1.0 and v0.1.1. Sourced from github.com/AppImage/appimagetool
+# (the active repo); the older github.com/AppImage/AppImageKit is deprecated and
+# its release-13 asset URL 404s as of 2026-05.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
-  LINUXDEPLOY_VERSION: "1-alpha-20240109-1"
-  APPIMAGETOOL_VERSION: "13"
+  APPIMAGETOOL_VERSION: "1.9.1"
 
 jobs:
   appimage:
@@ -1043,27 +1089,33 @@ jobs:
           cp target/release/vibeflow "${APPDIR}/usr/bin/vibeflow"
           cp packaging/vibeflow.desktop "${APPDIR}/usr/share/applications/vibeflow.desktop"
           cp crates/vibeflow/assets/icon.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/vibeflow.png"
-          # AppDir top-level icon + desktop (linuxdeploy will symlink/copy these).
-          cp crates/vibeflow/assets/icon.png "${APPDIR}/vibeflow.png"
+          # appimagetool expects a top-level .desktop, icon, .DirIcon, and AppRun.
           cp packaging/vibeflow.desktop "${APPDIR}/vibeflow.desktop"
+          cp crates/vibeflow/assets/icon.png "${APPDIR}/vibeflow.png"
+          ln -s vibeflow.png "${APPDIR}/.DirIcon"
+          cat > "${APPDIR}/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "${HERE}/usr/bin/vibeflow" "$@"
+          APPRUN
+          chmod +x "${APPDIR}/AppRun"
 
-      - name: Download linuxdeploy + appimagetool
+      - name: Download appimagetool
         run: |
           set -euxo pipefail
-          curl -fSL -o linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
-          curl -fSL -o appimagetool "https://github.com/AppImage/AppImageKit/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
-          chmod +x linuxdeploy appimagetool
+          curl -fSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
 
       - name: Build AppImage
         run: |
           set -euxo pipefail
-          # --appdir AppDir lets linuxdeploy populate AppRun and the icon symlinks.
-          # ARCH must be set for appimagetool to compute the output filename.
-          ARCH=x86_64 ./linuxdeploy --appdir AppDir --output appimage --desktop-file=AppDir/vibeflow.desktop --icon-file=AppDir/vibeflow.png
-          # linuxdeploy emits something like vibeflow-x86_64.AppImage in the CWD.
-          ls -1 *.AppImage
-          test -f vibeflow-x86_64.AppImage || mv vibeflow*.AppImage vibeflow-x86_64.AppImage
+          # --no-appstream skips appstreamcli metainfo validation (we don't ship
+          # an AppStream XML for v0.1). ARCH=x86_64 disambiguates the output
+          # filename for the appimagetool runtime.
+          ARCH=x86_64 ./appimagetool --no-appstream AppDir vibeflow-x86_64.AppImage
           chmod +x vibeflow-x86_64.AppImage
+          ls -la vibeflow-x86_64.AppImage
 
       - name: AppImage integrity check (headless-safe)
         run: |
@@ -1093,7 +1145,12 @@ jobs:
             }
             in_section { print }
           ' CHANGELOG.md > release-notes.md
-          echo "--- release-notes.md ---"
+          # Pre-release tags (e.g. v0.1.0-rc.1) have no matching CHANGELOG
+          # section, so release-notes.md is empty; the resulting GitHub Release
+          # body is blank. This is BY DESIGN — rc tags exist only to validate
+          # the CI pipeline. The real v0.1.0 tag matches the CHANGELOG and
+          # produces a populated body.
+          echo "--- release-notes.md ($(wc -l < release-notes.md) lines) ---"
           cat release-notes.md
 
       - name: Create GitHub Release and attach AppImage
@@ -1109,8 +1166,10 @@ jobs:
 Notes on this workflow:
 
 - **`prerelease: ${{ contains(github.ref_name, '-') }}`** — tags like `v0.1.0-rc.1` (containing `-`) are marked as pre-releases automatically. `v0.1.0` is a final release.
-- **Sanity-launch step** uses an unrecognized arg (`--vibeflow-smoke`) so the current CLI's "unknown args" path exits quickly without launching the GPU pipeline — this confirms the AppImage's binary runs at all on a headless runner. We DO NOT depend on its exit code (the `|| true` is deliberate — for any non-zero rc we still want to see the output and move on).
-- **`Extract release notes from CHANGELOG`** — pulls just the `v0.1.0` section so the GitHub Release body matches the CHANGELOG entry. Awk script handles future tags too.
+- **AppImage tool choice** — `appimagetool` from `github.com/AppImage/appimagetool` (the active repo). The older `github.com/AppImage/AppImageKit` is deprecated and its release-13 asset URL 404s. We deliberately do NOT use `linuxdeploy --output appimage` because it depends on a separately-distributed `linuxdeploy-plugin-appimage` whose discovery in CI is brittle; staging the AppDir ourselves (with explicit `AppRun`, `.DirIcon`, top-level `.desktop` + icon) and invoking `appimagetool` directly is simpler and more robust.
+- **`AppRun`** — a minimal shell wrapper that resolves its own directory and execs the embedded `vibeflow` binary, forwarding args. `appimagetool` requires it; without it the resulting AppImage would not launch.
+- **AppImage integrity check** — file/exec check + `--appimage-extract` round-trip. We can't launch the GPU on a headless runner; the released AppImage gets real VNC validation during the gated finale (the rc-tag step, or the post-release smoke).
+- **`Extract release notes from CHANGELOG`** — pulls just the `v0.1.0` section. Rc tags produce an empty body (by design — see inline comment in the step).
 
 - [ ] **Step 10.2: YAML syntax sanity**
 
@@ -1131,11 +1190,13 @@ git commit -m "ci(stage14): release workflow — AppImage on v* tag push
 Triggers only on annotated v* tag push (so 'git push origin v0.1.0'
 is the explicit human handoff; no accidental release from branch
 work). Builds release binary, stages an AppDir with the vibeflow
-icon + .desktop entry, downloads pinned linuxdeploy + appimagetool,
-emits vibeflow-x86_64.AppImage, sanity-launches it on the headless
-runner, extracts the matching CHANGELOG section as release notes,
-and creates the GitHub Release with the AppImage attached. Tags
-containing '-' (e.g. v0.1.0-rc.1) auto-mark as prerelease."
+icon + .desktop entry + AppRun shell wrapper, downloads pinned
+appimagetool from github.com/AppImage/appimagetool (the active repo;
+AppImageKit is deprecated), emits vibeflow-x86_64.AppImage, runs an
+integrity check, extracts the matching CHANGELOG section as release
+notes, and creates the GitHub Release with the AppImage attached.
+Tags containing '-' (e.g. v0.1.0-rc.1) auto-mark as prerelease and
+ship with an empty body by design."
 ```
 
 ---

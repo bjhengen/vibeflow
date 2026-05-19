@@ -251,7 +251,7 @@ hot reload). This is the verbatim source for the GitHub Release body.
 
 1. Stage-14 work merged to `main`; CI green.
 2. Verify + `cargo publish` (`vibeflow-protocol` if needed → then `vibeflow`).
-3. `npm publish --access public` (`@vibeflow/protocol`).
+3. `npm publish` (unscoped `vibeflow-protocol` — no `--access` flag needed; see §1 item 4).
 4. Push `v0.1.0` → `release.yml` builds AppImage + cuts the GitHub Release.
 5. `gh repo edit` metadata (§6).
 
