@@ -1,0 +1,116 @@
+name: Release
+
+# Runs on annotated v* tag push. Build the release binary, bundle it
+# into an AppImage with the vibeflow icon + .desktop entry, then create
+# the GitHub Release and attach the AppImage. Triggered ONLY by tags;
+# does not run on branch pushes, so the manual gated finale step
+# (`git push origin v0.1.0`) is the explicit handoff.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# appimagetool version is pinned so a release never breaks from an upstream
+# change between v0.1.0 and v0.1.1. Sourced from github.com/AppImage/appimagetool
+# (the active repo); the older github.com/AppImage/AppImageKit is deprecated and
+# its release-13 asset URL 404s as of 2026-05.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  APPIMAGETOOL_VERSION: "1.9.1"
+
+jobs:
+  appimage:
+    name: Build AppImage (x86_64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed for softprops/action-gh-release to create the Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p vibeflow
+
+      - name: Stage AppDir
+        run: |
+          set -euxo pipefail
+          APPDIR="${GITHUB_WORKSPACE}/AppDir"
+          mkdir -p "${APPDIR}/usr/bin" \
+                   "${APPDIR}/usr/share/applications" \
+                   "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
+          cp target/release/vibeflow "${APPDIR}/usr/bin/vibeflow"
+          cp packaging/vibeflow.desktop "${APPDIR}/usr/share/applications/vibeflow.desktop"
+          cp crates/vibeflow/assets/icon.png "${APPDIR}/usr/share/icons/hicolor/256x256/apps/vibeflow.png"
+          # appimagetool expects a top-level .desktop, icon, .DirIcon, and AppRun.
+          cp packaging/vibeflow.desktop "${APPDIR}/vibeflow.desktop"
+          cp crates/vibeflow/assets/icon.png "${APPDIR}/vibeflow.png"
+          ln -s vibeflow.png "${APPDIR}/.DirIcon"
+          cat > "${APPDIR}/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "${HERE}/usr/bin/vibeflow" "$@"
+          APPRUN
+          chmod +x "${APPDIR}/AppRun"
+
+      - name: Download appimagetool
+        run: |
+          set -euxo pipefail
+          curl -fSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
+
+      - name: Build AppImage
+        run: |
+          set -euxo pipefail
+          # --no-appstream skips appstreamcli metainfo validation (we don't ship
+          # an AppStream XML for v0.1). ARCH=x86_64 disambiguates the output
+          # filename for the appimagetool runtime.
+          ARCH=x86_64 ./appimagetool --no-appstream AppDir vibeflow-x86_64.AppImage
+          chmod +x vibeflow-x86_64.AppImage
+          ls -la vibeflow-x86_64.AppImage
+
+      - name: AppImage integrity check (headless-safe)
+        run: |
+          set -euxo pipefail
+          file vibeflow-x86_64.AppImage
+          test -x vibeflow-x86_64.AppImage
+          ./vibeflow-x86_64.AppImage --appimage-extract >/dev/null
+          test -x squashfs-root/usr/bin/vibeflow
+          file squashfs-root/usr/bin/vibeflow
+          rm -rf squashfs-root
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          set -euxo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          awk -v tag="${TAG}" '
+            BEGIN { in_section=0 }
+            /^## \[/ {
+              if (in_section) exit
+              if ($0 ~ "^## \\[" tag "\\]") { in_section=1; next }
+            }
+            in_section { print }
+          ' CHANGELOG.md > release-notes.md
+          # Pre-release tags (e.g. v0.1.0-rc.1) have no matching CHANGELOG
+          # section, so release-notes.md is empty; the resulting GitHub Release
+          # body is blank. This is BY DESIGN -- rc tags exist only to validate
+          # the CI pipeline. The real v0.1.0 tag matches the CHANGELOG and
+          # produces a populated body.
+          echo "--- release-notes.md ($(wc -l < release-notes.md) lines) ---"
+          cat release-notes.md
+
+      - name: Create GitHub Release and attach AppImage
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "vibeflow ${{ github.ref_name }}"
+          body_path: release-notes.md
+          files: vibeflow-x86_64.AppImage
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,9 +1,9 @@
 {
-  "name": "@vibeflow/protocol",
+  "name": "vibeflow-protocol",
   "version": "0.1.0",
   "description": "OSC 1338 protocol — open standard for AI-tool state signalling in terminals (TypeScript binding)",
   "license": "MIT OR Apache-2.0",
-  "author": "Brian Hengen <brian@friendly-robots.com>",
+  "author": "Brian Hengen <bhengen@gmail.com>",
   "homepage": "https://github.com/bjhengen/vibeflow",
   "repository": {
     "type": "git",

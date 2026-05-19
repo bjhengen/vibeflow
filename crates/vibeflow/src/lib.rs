@@ -14,3 +14,9 @@ pub mod render;
 pub mod session;
 pub mod theme;
 pub mod window;
+
+// Used by window.rs to attach the embedded PNG to the winit window. `pub`
+// (not `pub(crate)`) because a fully-private module with only #[cfg(test)]
+// internal callers trips `dead_code` under workspace `-D warnings`; making
+// it `pub` matches the visibility of every other module here.
+pub mod icon;

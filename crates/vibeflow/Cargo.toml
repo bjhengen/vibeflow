@@ -1,7 +1,9 @@
 [package]
 name = "vibeflow"
-description = "GPU-accelerated terminal emulator for Linux that knows when AI tools are waiting on the user (library crate, Stage 2 of v0.1)"
-publish = false
+description = "GPU-accelerated Linux terminal emulator that knows when your AI tool is waiting on you."
+categories = ["command-line-utilities"]
+keywords = ["terminal", "ai", "gpu", "wgpu", "vibeflow"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -29,6 +31,7 @@ cosmic-text = "0.12"
 dirs = "5"
 notify = "6"
 plist = "1"
+png = "0.17"
 pollster = "0.3"
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }

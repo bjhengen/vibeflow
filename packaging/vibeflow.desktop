@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=vibeflow
+GenericName=Terminal Emulator
+Comment=GPU-accelerated Linux terminal that knows when your AI tool is waiting on you
+Exec=vibeflow
+Icon=vibeflow
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;AI;vibeflow;
+StartupNotify=true

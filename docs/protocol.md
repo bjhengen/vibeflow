@@ -16,7 +16,7 @@ ESC ] 1338 ; key=value [; key=value ]* ( BEL | ST )
 - Values: UTF-8, percent-encoded if they contain `;`, `=`, `%`, control bytes (< 0x20 or 0x7F), or any non-ASCII byte. Encoding uses uppercase hex (e.g. `%3B` for `;`).
 - The full sequence (including `ESC ]`, the `1338`, all keys/values, separators, and the terminator) MUST NOT exceed **4 KiB**. Over-long sequences are dropped on the floor by compliant parsers; parsing resumes at the next `ESC`.
 - Unrecognised keys MUST be ignored. This is the forward-compatibility contract.
-- Unrecognised values for known keys: implementation-defined. The reference parsers (`vibeflow-protocol`, `@vibeflow/protocol`) currently raise an error for unknown `state` values; vibeflow's dispatcher logs at debug level and ignores the frame.
+- Unrecognised values for known keys: implementation-defined. The reference parsers (`vibeflow-protocol` on crates.io and npm) currently raise an error for unknown `state` values; vibeflow's dispatcher logs at debug level and ignores the frame.
 
 ## Keys (v0.1)
 
@@ -48,7 +48,7 @@ ESC ] 1338 ; key=value [; key=value ]* ( BEL | ST )
 
 vibeflow integrates AI tools at three levels of fidelity, each strictly better than the next:
 
-1. **Native:** the tool calls a binding (this crate, `@vibeflow/protocol`, etc.) directly.
+1. **Native:** the tool calls a binding (this crate, the `vibeflow-protocol` npm package, etc.) directly.
 2. **Wrapper:** a thin shim spawned around the tool watches its output and emits OSC 1338 on its behalf.
 3. **Heuristic:** vibeflow itself watches process names + output silence and infers state when no explicit signal arrives.
 
@@ -57,7 +57,7 @@ Tier 1 is the goal; tiers 2 and 3 ensure the experience is never broken on day o
 ## Reference implementations
 
 - Rust: [`vibeflow-protocol`](https://crates.io/crates/vibeflow-protocol)
-- TypeScript: [`@vibeflow/protocol`](https://www.npmjs.com/package/@vibeflow/protocol)
+- TypeScript: [`vibeflow-protocol`](https://www.npmjs.com/package/vibeflow-protocol)
 - Shell helper: `vibeflow-emit` (a binary in the `vibeflow-protocol` crate)
 
 ## Versioning

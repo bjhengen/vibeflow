@@ -1,4 +1,4 @@
-# @vibeflow/protocol
+# vibeflow-protocol
 
 TypeScript binding for the **OSC 1338 protocol** — an open standard for AI-tool state signalling in terminals.
 
@@ -7,13 +7,13 @@ When an AI tool (Claude Code, Codex, Aider, …) emits an OSC 1338 sequence, a c
 ## Install
 
 ```bash
-npm install @vibeflow/protocol
+npm install vibeflow-protocol
 ```
 
 ## Quick start
 
 ```ts
-import { emitState } from "@vibeflow/protocol";
+import { emitState } from "vibeflow-protocol";
 
 emitState("working");
 // ... do work ...

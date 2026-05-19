@@ -1,5 +1,5 @@
 /**
- * @vibeflow/protocol — OSC 1338 protocol binding for TypeScript.
+ * vibeflow-protocol — OSC 1338 protocol binding for TypeScript.
  *
  * See https://github.com/bjhengen/vibeflow/blob/main/docs/protocol.md
  * for the canonical wire-format spec.
