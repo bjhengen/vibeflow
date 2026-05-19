@@ -561,8 +561,8 @@ mod tests {
         assert_eq!(buf, b"\x1b]1338;state=working;tool=claude\x07");
     }
 
-    /// Sanity check: parse a byte sequence byte-identical to what `@vibeflow/protocol`'s
-    /// `toBytes` produces. If the npm and Rust formats ever diverge, this test fires first.
+    /// Sanity check: parse a byte sequence byte-identical to what the `vibeflow-protocol`
+    /// npm package's `toBytes` produces. If the npm and Rust formats ever diverge, this test fires first.
     /// The fixture was captured by hand from the npm side and is part of the test contract.
     #[test]
     fn parses_npm_emitted_bytes_byte_for_byte() {
