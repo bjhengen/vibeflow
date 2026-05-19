@@ -34,6 +34,11 @@ is release engineering, docs, and the logo.
 7. **GitHub repo metadata** — description, topics, homepage (§6).
 8. **`v0.1.0` annotated tag** — semver, distinct from the `stageNN-…-complete`
    internal-milestone pattern (§5).
+9. **Personal-identity attribution** — published metadata must not carry the
+   `friendly-robots.com` (LLC) domain (§4). Project ships as a personal
+   open-source work under "Brian Hengen", no LLC affiliation, no warranty
+   (existing dual MIT/Apache disclaimers). Deliberate: the goal is a useful
+   free tool + personal AI credentials, not LLC revenue.
 
 **Non-goals (v0.1)**
 
@@ -185,6 +190,25 @@ go-ahead, in the order above.
 **README claim correction:** package badges/links reflect *verified* published
 state, not the current false text. If a publish is deferred mid-finale, the
 README must not claim it.
+
+**Personal-identity attribution correction (no LLC in public metadata):**
+
+- `Cargo.toml` workspace `authors` and `bindings/npm/package.json` `author`:
+  `Brian Hengen <brian@friendly-robots.com>` → `Brian Hengen <bhengen@gmail.com>`
+  (own name, personal email, matching the git author identity
+  `bjhengen <bhengen@gmail.com>` and the npm publish account). The `vibeflow`
+  and `vibeflow-protocol` crates inherit via `authors.workspace = true` — one
+  workspace line + one `package.json` line.
+- **No further action needed / verified 2026-05-19:** `LICENSE-MIT` already
+  reads `Copyright (c) 2026 Brian Hengen` (name only, no email/LLC);
+  `LICENSE-APACHE` is unmodified boilerplate with no owner line; git history
+  is already authored as `bhengen@gmail.com` (no commit-history rewrite /
+  force-push required — that is explicitly out of scope and would be
+  destructive on a public repo). The only LLC-domain leakage is the two
+  manifest lines above.
+- npm scope `@vibeflow` is project-named (not LLC-named) — neutral, no change;
+  it just needs an npm org `vibeflow` under the personal account (§ npm
+  prerequisites, tracked separately from this spec).
 
 ---
 
