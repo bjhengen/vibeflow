@@ -14,3 +14,6 @@ pub mod render;
 pub mod session;
 pub mod theme;
 pub mod window;
+
+// pub(crate) — used by window.rs to attach the embedded PNG to the winit window.
+pub mod icon;
