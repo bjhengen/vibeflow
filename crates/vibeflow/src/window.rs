@@ -930,9 +930,14 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             // window the first time.
             return;
         }
+        let icon = crate::icon::load_icon();
+        if icon.is_none() {
+            tracing::warn!("embedded window icon failed to decode; falling back to OS default");
+        }
         let window_attrs = Window::default_attributes()
             .with_title("vibeflow")
-            .with_inner_size(winit::dpi::LogicalSize::new(960, 600));
+            .with_inner_size(winit::dpi::LogicalSize::new(960, 600))
+            .with_window_icon(icon);
         let window = match event_loop.create_window(window_attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
