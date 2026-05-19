@@ -3,6 +3,7 @@ name = "vibeflow"
 description = "GPU-accelerated Linux terminal emulator that knows when your AI tool is waiting on you."
 categories = ["command-line-utilities"]
 keywords = ["terminal", "ai", "gpu", "wgpu", "vibeflow"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
