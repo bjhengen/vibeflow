@@ -258,10 +258,10 @@ impl App {
     }
 
     /// Select the entire buffer of the active tab. Thin wrapper over
-    /// [`SelectionTracker::select_all`] that resolves the split-borrow between
-    /// `selection` (needs `&mut`) and `term()` (needs `&`) on the same
-    /// `PtySession` via `PtySession::split_borrow_mouse`. No-op when there
-    /// are no tabs.
+    /// [`crate::render::selection::SelectionTracker::select_all`] that resolves
+    /// the split-borrow between `selection` (needs `&mut`) and `term()` (needs
+    /// `&`) on the same `PtySession` via `PtySession::split_borrow_mouse`.
+    /// No-op when there are no tabs.
     pub fn select_all_active(&mut self) {
         let Some(s) = self.tabs.get_mut(self.active) else {
             return;
