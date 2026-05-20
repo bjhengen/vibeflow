@@ -700,12 +700,13 @@ impl WindowApp {
             .term()
             .mode()
             .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        let sanitised = crate::clipboard::sanitise_paste(&text);
         if bracketed {
             let _ = s.send_input(b"\x1b[200~");
-            let _ = s.send_input(text.as_bytes());
+            let _ = s.send_input(sanitised.as_bytes());
             let _ = s.send_input(b"\x1b[201~");
         } else {
-            let _ = s.send_input(text.as_bytes());
+            let _ = s.send_input(sanitised.as_bytes());
         }
     }
 
@@ -722,12 +723,13 @@ impl WindowApp {
             .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
         if let Some(clipboard) = self.clipboard.as_mut() {
             if let Some(text) = clipboard.paste_primary() {
+                let sanitised = crate::clipboard::sanitise_paste(&text);
                 if bracketed {
                     let _ = s.send_input(b"\x1b[200~");
-                    let _ = s.send_input(text.as_bytes());
+                    let _ = s.send_input(sanitised.as_bytes());
                     let _ = s.send_input(b"\x1b[201~");
                 } else {
-                    let _ = s.send_input(text.as_bytes());
+                    let _ = s.send_input(sanitised.as_bytes());
                 }
             }
         }
