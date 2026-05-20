@@ -18,6 +18,13 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   APPIMAGETOOL_VERSION: "1.9.1"
+  # SHA256 of the pinned appimagetool 1.9.1 binary, computed locally
+  # 2026-05-20 against the github.com/AppImage/appimagetool release asset.
+  # Verified in-job before chmod+execute (Codex security finding).
+  APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+  # Force Node 24 for runner-bundled JS actions ahead of June 2026 forced
+  # upgrade. Matches ci.yml. Silences the per-job Node-20-deprecated warning.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   appimage:
@@ -58,11 +65,15 @@ jobs:
           APPRUN
           chmod +x "${APPDIR}/AppRun"
 
-      - name: Download appimagetool
+      - name: Download + verify appimagetool
         run: |
           set -euxo pipefail
           curl -fSL -o appimagetool \
             "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          # Verify the downloaded binary against the pinned SHA256 BEFORE
+          # making it executable. If the checksum mismatches, sha256sum -c
+          # exits non-zero and the job fails with the file still non-executable.
+          echo "${APPIMAGETOOL_SHA256}  appimagetool" | sha256sum -c -
           chmod +x appimagetool
 
       - name: Build AppImage
@@ -84,6 +95,9 @@ jobs:
           test -x squashfs-root/usr/bin/vibeflow
           file squashfs-root/usr/bin/vibeflow
           rm -rf squashfs-root
+
+      - name: Publish AppImage checksum
+        run: sha256sum vibeflow-x86_64.AppImage > vibeflow-x86_64.AppImage.sha256
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -111,6 +125,8 @@ jobs:
         with:
           name: "vibeflow ${{ github.ref_name }}"
           body_path: release-notes.md
-          files: vibeflow-x86_64.AppImage
+          files: |
+            vibeflow-x86_64.AppImage
+            vibeflow-x86_64.AppImage.sha256
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}

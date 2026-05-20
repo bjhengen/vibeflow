@@ -32,7 +32,7 @@ Three tiers, in priority order:
 - Full iTerm2 color-scheme import (`vibeflow --import-colors <path>`).
 - Truecolor, italics, color emoji.
 - Configurable bell (`visual` / `audible` / `both` / `silent`, debounced).
-- Block (Alt+drag) and shift-extend selection; clipboard via OSC 52 and arboard.
+- Block (Alt+drag) and shift-extend selection; clipboard via arboard.
 - xterm-style modifier arrow keys.
 - Hot-reload config (`~/.config/vibeflow/config.toml`).
 - OSC 1338 native AI-state + `/proc` heuristic fallback.

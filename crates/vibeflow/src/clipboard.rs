@@ -139,3 +139,59 @@ mod tests {
         assert_eq!(c.paste_primary(), None);
     }
 }
+
+/// Remove every occurrence of the bracketed-paste end marker `ESC[201~`
+/// (bytes `0x1b 0x5b 0x32 0x30 0x31 0x7e`) from clipboard text before it
+/// is sent to the PTY.
+///
+/// Defence against a clipboard-paste-injection vector: a malicious paste
+/// containing `ESC[201~` would otherwise terminate the bracketed-paste
+/// frame mid-content, after which the terminal interprets remaining
+/// bytes as live user input — and the application running inside reads
+/// them as keystrokes the user did not type.
+///
+/// Removal (not substitution) preserves adjacent content byte-for-byte;
+/// the marker is six bytes and removing it is the least-surprising
+/// outcome for adjacent text. Also applied in the non-bracketed path —
+/// the marker has no meaning there but stripping keeps the invariant
+/// simple ("PTY never sees the marker via paste").
+#[must_use]
+pub fn sanitise_paste(input: &str) -> String {
+    const MARKER: &str = "\x1b[201~";
+    if !input.contains(MARKER) {
+        return input.to_string();
+    }
+    input.replace(MARKER, "")
+}
+
+#[cfg(test)]
+mod sanitise_paste_tests {
+    use super::sanitise_paste;
+
+    #[test]
+    fn passthrough_when_no_marker() {
+        assert_eq!(sanitise_paste("hello\nworld"), "hello\nworld");
+        assert_eq!(sanitise_paste(""), "");
+    }
+
+    #[test]
+    fn removes_a_single_marker() {
+        let injected = "ls -la\x1b[201~rm -rf /\n";
+        assert_eq!(sanitise_paste(injected), "ls -larm -rf /\n");
+    }
+
+    #[test]
+    fn removes_multiple_back_to_back_markers() {
+        let injected = "a\x1b[201~\x1b[201~b";
+        assert_eq!(sanitise_paste(injected), "ab");
+    }
+
+    #[test]
+    fn preserves_other_escape_sequences_unchanged() {
+        // ESC[200~ (paste START marker) must NOT be stripped — only ESC[201~
+        // is the paste-end marker we strip. Other escape sequences are also
+        // out of scope for this defence (deferred per spec §2.4).
+        let s = "\x1b[200~start\x1b[?1004hmid";
+        assert_eq!(sanitise_paste(s), s);
+    }
+}
