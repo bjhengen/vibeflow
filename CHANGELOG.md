@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Default palette readability** (slots 4 and 12): the classic xterm blue `#0000ee` (slot 4) is too dark to read against typical dark terminal backgrounds — `ls --color=auto` uses `01;34` for directories, which renders as bold + slot 4 in most shells, producing barely-readable folder names. Slot 4 now defaults to `#6a76fb` (alacritty's value; passes WCAG AA against `#0e0e12`); slot 12 (bright blue) is bumped from `#5c5cff` to `#89b4fa` (Catppuccin Mocha) to keep bright-blue distinctly brighter than blue and clear WCAG AAA. Imported iTerm2 themes override these as before.
+
 ## [0.1.0] - 2026-05-19
 
 Initial public release of the vibeflow terminal — a from-scratch GPU-accelerated Linux terminal emulator whose flagship feature is **per-tab AI-state awareness** via the OSC 1338 protocol.

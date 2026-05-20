@@ -9,8 +9,10 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
 /// 256-entry default ANSI / 256-color palette. Slots 0..=15 are the classic
-/// ANSI 16 (xterm defaults), 16..=231 are the 6×6×6 color cube, 232..=255 are
-/// the 24-step grayscale ramp.
+/// ANSI 16 (xterm defaults, with the exception of slots 4 / 12 — blue and
+/// bright-blue — which deviate for dark-background readability; see inline
+/// rationale on each slot). Slots 16..=231 are the 6×6×6 color cube, 232..=255
+/// are the 24-step grayscale ramp.
 ///
 /// This is the fallback used when [`alacritty_terminal::term::color::Colors`]
 /// has no override set for a slot. Most apps don't emit OSC 4 palette
@@ -40,10 +42,17 @@ pub fn default_palette() -> [Rgb; 256] {
         g: 0xcd,
         b: 0x00,
     };
+    // Slot 4 (blue) deviates from xterm classic `#0000ee` — too dark to read
+    // against typical dark terminal backgrounds (LS_COLORS uses `01;34` for
+    // directories, which renders as bold + this slot in many shells, and the
+    // result was a real-world readability complaint). `#6a76fb` is alacritty's
+    // default for slot 4: still recognisably blue (not cyan), but with enough
+    // luminance to clear WCAG-AA ~4.5:1 contrast against vibeflow's
+    // `#0e0e12` default background.
     palette[4] = Rgb {
-        r: 0x00,
-        g: 0x00,
-        b: 0xee,
+        r: 0x6a,
+        g: 0x76,
+        b: 0xfb,
     };
     palette[5] = Rgb {
         r: 0xcd,
@@ -81,10 +90,16 @@ pub fn default_palette() -> [Rgb; 256] {
         g: 0xff,
         b: 0x00,
     };
+    // Slot 12 (bright blue) bumped from xterm classic `#5c5cff` for two
+    // reasons: (a) it must remain distinctly brighter than slot 4's readable
+    // `#6a76fb` (the `default_palette_bright_colors_are_brighter` invariant)
+    // and (b) the old value was itself borderline against a dark background.
+    // `#89b4fa` (Catppuccin Mocha's blue) clears WCAG-AAA contrast against
+    // `#0e0e12` while staying recognisably blue (not cyan).
     palette[12] = Rgb {
-        r: 0x5c,
-        g: 0x5c,
-        b: 0xff,
+        r: 0x89,
+        g: 0xb4,
+        b: 0xfa,
     };
     palette[13] = Rgb {
         r: 0xff,
@@ -191,8 +206,10 @@ mod tests {
     }
 
     #[test]
-    fn default_palette_first_eight_match_xterm_basics() {
-        // The classic ANSI 0..=7 palette, xterm defaults.
+    fn default_palette_first_eight_pin_ansi_basics() {
+        // The ANSI 0..=7 slots. Most values match xterm classic; slot 4
+        // (blue) intentionally deviates for dark-bg readability — see the
+        // rationale comment on the slot itself in `default_palette`.
         assert_eq!(
             default_palette()[0],
             Rgb {
@@ -225,14 +242,16 @@ mod tests {
                 b: 0x00
             }
         ); // yellow
+           // Slot 4 deliberately deviates from xterm classic `#0000ee` for
+           // dark-bg readability — see the rationale comment in `default_palette`.
         assert_eq!(
             default_palette()[4],
             Rgb {
-                r: 0x00,
-                g: 0x00,
-                b: 0xee
+                r: 0x6a,
+                g: 0x76,
+                b: 0xfb
             }
-        ); // blue
+        ); // blue (readable on dark bg; deviates from xterm classic)
         assert_eq!(
             default_palette()[5],
             Rgb {
