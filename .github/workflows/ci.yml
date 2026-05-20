@@ -72,7 +72,7 @@ jobs:
         run: cargo +nightly fuzz run parse -- -max_total_time=60
 
   npm:
-    name: npm (@vibeflow/protocol)
+    name: npm (vibeflow-protocol)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -90,3 +90,62 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  packaging:
+    name: Packaging assertions (Cargo + npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Use Node.js 22 (current LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: bindings/npm/package-lock.json
+
+      - name: Verify Cargo packages include LICENSE-MIT, LICENSE-APACHE, README.md
+        run: |
+          set -euxo pipefail
+          for crate in vibeflow-protocol vibeflow; do
+            for required in LICENSE-MIT LICENSE-APACHE README.md; do
+              cargo package --list -p "$crate" --allow-dirty \
+                | grep -qE "(^|/)${required}$" \
+                || { echo "::error::missing $required in cargo package -p $crate"; exit 1; }
+            done
+          done
+
+      - name: Verify cargo publish --dry-run for both crates
+        run: |
+          set -euxo pipefail
+          # vibeflow-protocol: standalone dry-run. Must succeed.
+          cargo publish --dry-run -p vibeflow-protocol
+          # vibeflow: depends on vibeflow-protocol being on the registry,
+          # which it is (v0.1.0 shipped). Must also succeed end-to-end.
+          cargo publish --dry-run -p vibeflow
+
+      - name: Verify npm pack from a CLEAN checkout (no pre-built dist)
+        working-directory: bindings/npm
+        run: |
+          set -euxo pipefail
+          # Ensure dist/ does not exist; the prepack script should create it.
+          rm -rf dist
+          npm ci
+          # `npm pack --dry-run --json` lists exactly what would be published.
+          # Capture stdout separately so npm notices on stderr don't break JSON parse.
+          npm pack --dry-run --json 2>/dev/null > /tmp/pack.json
+          files=$(python3 -c "
+          import json
+          out = json.load(open('/tmp/pack.json'))
+          print('\n'.join(f['path'] for f in out[0]['files']))")
+          echo "$files"
+          for required in dist/src/index.js dist/src/index.d.ts LICENSE-MIT LICENSE-APACHE README.md package.json; do
+            echo "$files" | grep -qE "^$required$" \
+              || { echo "::error::missing $required in npm pack"; exit 1; }
+          done
