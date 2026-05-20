@@ -125,10 +125,13 @@ jobs:
         run: |
           set -euxo pipefail
           # vibeflow-protocol: standalone dry-run. Must succeed.
-          cargo publish --dry-run -p vibeflow-protocol
+          # --allow-dirty matches the cargo package --list step above; the
+          # checkout is clean on CI but cargo's symlink-dirty detection has
+          # historically been quirky, so we explicitly opt out for parity.
+          cargo publish --dry-run --allow-dirty -p vibeflow-protocol
           # vibeflow: depends on vibeflow-protocol being on the registry,
           # which it is (v0.1.0 shipped). Must also succeed end-to-end.
-          cargo publish --dry-run -p vibeflow
+          cargo publish --dry-run --allow-dirty -p vibeflow
 
       - name: Verify npm pack from a CLEAN checkout (no pre-built dist)
         working-directory: bindings/npm

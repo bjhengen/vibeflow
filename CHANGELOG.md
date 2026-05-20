@@ -39,7 +39,7 @@ Initial public release of the vibeflow terminal — a from-scratch GPU-accelerat
 - **Tabs** with per-tab session, title, indicator, context menu, drag-to-rename.
 - **Themes** — full iTerm2 `.itermcolors` import (`vibeflow --import-colors <path>`); per-tab override; theme registry; hot-reload via `[colors] preset` config key.
 - **Configurable bell** — `visual` / `audible` / `both` / `silent`, with debounce.
-- **Selection** — character, word, line; **block (Alt+drag) column selection**; shift-extend; OSC 52 and `arboard` clipboard.
+- **Selection** — character, word, line; **block (Alt+drag) column selection**; shift-extend; `arboard` clipboard.
 - **Scrollback** — scrollable buffer with `snap_on_esc`; `Shift+PgUp` / `Shift+PgDn` navigation; correct selection mapping across scrollback rows.
 - **Keyboard** — xterm-style modifier arrow keys (`Ctrl+`/`Shift+` arrows), Unicode input, configurable bindings.
 - **Configuration** — `~/.config/vibeflow/config.toml` with hot-reload; sections for fonts, colors, bell, AI, scrollback, keybindings.
