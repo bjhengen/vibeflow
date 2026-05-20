@@ -28,7 +28,9 @@
   "scripts": {
     "build": "tsc",
     "test": "tsc && node --test ./dist/test/index.test.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
