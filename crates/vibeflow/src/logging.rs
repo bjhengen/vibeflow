@@ -67,10 +67,12 @@ fn cleanup_old_logs(state_dir: &std::path::Path) {
         let Some(rest) = name_str.strip_prefix("vibeflow.log.") else {
             continue;
         };
-        if rest.len() != 10 || !rest.chars().enumerate().all(|(i, c)| match i {
-            4 | 7 => c == '-',
-            _ => c.is_ascii_digit(),
-        }) {
+        if rest.len() != 10
+            || !rest.chars().enumerate().all(|(i, c)| match i {
+                4 | 7 => c == '-',
+                _ => c.is_ascii_digit(),
+            })
+        {
             continue;
         }
         if let Ok(meta) = entry.metadata() {
@@ -109,10 +111,10 @@ pub fn init() -> Result<WorkerGuard> {
     let file_appender = tracing_appender::rolling::daily(&dir, "vibeflow.log");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    let stderr_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("vibeflow=warn"));
-    let file_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("vibeflow=info,warn"));
+    let stderr_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("vibeflow=warn"));
+    let file_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("vibeflow=info,warn"));
 
     tracing_subscriber::registry()
         .with(
@@ -207,11 +209,21 @@ mod tests {
     fn cleanup_deletes_logs_older_than_retention() {
         let temp = tempfile::tempdir().expect("tempdir");
         let dir = temp.path();
-        write_file_with_mtime(dir, "vibeflow.log.2024-01-01", Duration::from_secs(30 * 86_400)); // 30 days old
-        write_file_with_mtime(dir, "vibeflow.log.2026-05-23", Duration::from_secs(60));         // 1 min old
+        write_file_with_mtime(
+            dir,
+            "vibeflow.log.2024-01-01",
+            Duration::from_secs(30 * 86_400),
+        ); // 30 days old
+        write_file_with_mtime(dir, "vibeflow.log.2026-05-23", Duration::from_secs(60)); // 1 min old
         cleanup_old_logs(dir);
-        assert!(!dir.join("vibeflow.log.2024-01-01").exists(), "old file should be deleted");
-        assert!(dir.join("vibeflow.log.2026-05-23").exists(), "recent file should remain");
+        assert!(
+            !dir.join("vibeflow.log.2024-01-01").exists(),
+            "old file should be deleted"
+        );
+        assert!(
+            dir.join("vibeflow.log.2026-05-23").exists(),
+            "recent file should remain"
+        );
     }
 
     #[test]
@@ -223,8 +235,14 @@ mod tests {
         write_file_with_mtime(dir, "vibeflow.log.2026-05-23", Duration::from_secs(60));
         cleanup_old_logs(dir);
         assert!(dir.join("README").exists(), "README untouched");
-        assert!(dir.join("vibeflow.log.bak").exists(), "vibeflow.log.bak does not match strict pattern");
-        assert!(dir.join("vibeflow.log.2026-05-23").exists(), "recent log file untouched");
+        assert!(
+            dir.join("vibeflow.log.bak").exists(),
+            "vibeflow.log.bak does not match strict pattern"
+        );
+        assert!(
+            dir.join("vibeflow.log.2026-05-23").exists(),
+            "recent log file untouched"
+        );
     }
 
     #[test]
