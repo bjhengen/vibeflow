@@ -10,6 +10,7 @@ pub mod app;
 pub mod clipboard;
 pub mod config;
 pub mod keymap;
+pub mod logging;
 pub mod render;
 pub mod session;
 pub mod theme;
