@@ -9,7 +9,6 @@
 //! writes it to `~/.config/vibeflow/themes/<name>.toml`.
 
 use anyhow::{Context, Result};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use vibeflow::window::WindowApp;
 use winit::event_loop::EventLoop;
 
@@ -37,21 +36,29 @@ fn main() -> Result<()> {
 }
 
 fn run_gui() -> Result<()> {
-    // tracing-subscriber: respect RUST_LOG when set, otherwise default to
-    // `vibeflow=info,warn`. Stage 9 will add file logging + rotation.
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("vibeflow=info,warn"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt::layer().with_target(false))
-        .init();
+    // Logging (Spec A'): quiet stderr by default (vibeflow=warn) + INFO+ rotated
+    // file log at $XDG_STATE_HOME/vibeflow/vibeflow.log.YYYY-MM-DD. If init fails
+    // (extremely rare — no $HOME, unwritable state dir, etc.), fall back to a
+    // stderr-only subscriber so vibeflow stays usable. The `_log_guard` binding
+    // MUST stay alive for `main`'s scope; dropping it flushes pending writes
+    // and stops the worker thread.
+    let _log_guard = match vibeflow::logging::init() {
+        Ok(guard) => Some(guard),
+        Err(e) => {
+            eprintln!("warning: file logging unavailable ({e}); using stderr only");
+            use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+            let filter = EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("vibeflow=warn"));
+            tracing_subscriber::registry()
+                .with(fmt::layer().with_target(false).with_filter(filter))
+                .init();
+            None
+        }
+    };
 
     let event_loop = EventLoop::<vibeflow::config::AppUserEvent>::with_user_event()
         .build()
         .context("create winit EventLoop")?;
-    // The control flow is set per-iteration in `WindowApp::about_to_wait`
-    // (a 100 ms `WaitUntil` so tracker timeouts fire). The initial value
-    // doesn't matter — the first `about_to_wait` overrides it.
 
     let proxy = event_loop.create_proxy();
     let mut app = WindowApp::new(proxy);
