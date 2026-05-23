@@ -41,9 +41,54 @@ fn ensure_state_dir(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// File log retention in days. Files matching `vibeflow.log.YYYY-MM-DD` with
+/// mtime older than this are deleted at init time (best effort).
+const LOG_RETENTION_DAYS: u64 = 7;
+
+/// Best-effort cleanup: scan `state_dir` for `vibeflow.log.YYYY-MM-DD` files
+/// older than `LOG_RETENTION_DAYS` and delete them. Errors are swallowed
+/// silently — retention is never fatal.
+fn cleanup_old_logs(state_dir: &std::path::Path) {
+    let Some(cutoff) = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(LOG_RETENTION_DAYS * 86_400))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(state_dir) else {
+        return; // dir missing or unreadable; best-effort.
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        // Strict pattern: "vibeflow.log." + exactly 10 chars of YYYY-MM-DD.
+        // Anything else (vibeflow.log.bak, README, etc.) is left alone.
+        let Some(rest) = name_str.strip_prefix("vibeflow.log.") else {
+            continue;
+        };
+        if rest.len() != 10 || !rest.chars().enumerate().all(|(i, c)| match i {
+            4 | 7 => c == '-',
+            _ => c.is_ascii_digit(),
+        }) {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if modified < cutoff {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use std::time::{Duration, SystemTime};
 
     #[test]
     fn state_dir_ends_with_vibeflow_subdir() {
@@ -96,5 +141,54 @@ mod tests {
             msg.contains("create vibeflow state dir"),
             "error should carry the anyhow context, got: {msg}"
         );
+    }
+
+    fn write_file_with_mtime(dir: &std::path::Path, name: &str, age: Duration) {
+        let path = dir.join(name);
+        let mut f = File::create(&path).expect("create");
+        writeln!(f, "log content").unwrap();
+        let mtime = SystemTime::now()
+            .checked_sub(age)
+            .expect("SystemTime::sub doesn't underflow for test ages");
+        f.set_modified(mtime).expect("set_modified (Rust 1.75+)");
+    }
+
+    #[test]
+    fn cleanup_deletes_logs_older_than_retention() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path();
+        write_file_with_mtime(dir, "vibeflow.log.2024-01-01", Duration::from_secs(30 * 86_400)); // 30 days old
+        write_file_with_mtime(dir, "vibeflow.log.2026-05-23", Duration::from_secs(60));         // 1 min old
+        cleanup_old_logs(dir);
+        assert!(!dir.join("vibeflow.log.2024-01-01").exists(), "old file should be deleted");
+        assert!(dir.join("vibeflow.log.2026-05-23").exists(), "recent file should remain");
+    }
+
+    #[test]
+    fn cleanup_ignores_files_not_matching_prefix() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path();
+        write_file_with_mtime(dir, "README", Duration::from_secs(30 * 86_400));
+        write_file_with_mtime(dir, "vibeflow.log.bak", Duration::from_secs(30 * 86_400));
+        write_file_with_mtime(dir, "vibeflow.log.2026-05-23", Duration::from_secs(60));
+        cleanup_old_logs(dir);
+        assert!(dir.join("README").exists(), "README untouched");
+        assert!(dir.join("vibeflow.log.bak").exists(), "vibeflow.log.bak does not match strict pattern");
+        assert!(dir.join("vibeflow.log.2026-05-23").exists(), "recent log file untouched");
+    }
+
+    #[test]
+    fn cleanup_handles_empty_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Function returns unit; the test passes if it doesn't panic.
+        cleanup_old_logs(temp.path());
+    }
+
+    #[test]
+    fn cleanup_handles_nonexistent_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("does-not-exist");
+        // Best-effort: should NOT panic on a missing dir.
+        cleanup_old_logs(&missing);
     }
 }
