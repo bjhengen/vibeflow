@@ -83,6 +83,56 @@ fn cleanup_old_logs(state_dir: &std::path::Path) {
     }
 }
 
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+/// Initialise vibeflow's logging subsystem: a quiet stderr layer
+/// (`vibeflow=warn` by default) + a rotated file log at
+/// `$XDG_STATE_HOME/vibeflow/vibeflow.log.YYYY-MM-DD` with non-blocking writes
+/// and 7-day retention.
+///
+/// `RUST_LOG` overrides both layers' default filters when set.
+///
+/// Returns the `WorkerGuard` for the non-blocking file writer. The caller MUST
+/// keep the guard in scope for the lifetime of the program — dropping it
+/// flushes pending writes and shuts down the worker thread.
+///
+/// # Errors
+/// Returns Err only if the state directory cannot be located or created
+/// (extremely rare). On Err, the caller is expected to fall back to a
+/// stderr-only subscriber so vibeflow remains usable.
+pub fn init() -> Result<WorkerGuard> {
+    let dir = state_dir().context("locate XDG state dir for vibeflow logs")?;
+    ensure_state_dir(&dir)?;
+    cleanup_old_logs(&dir);
+
+    let file_appender = tracing_appender::rolling::daily(&dir, "vibeflow.log");
+    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
+
+    let stderr_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("vibeflow=warn"));
+    let file_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("vibeflow=info,warn"));
+
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_writer(std::io::stderr)
+                .with_filter(stderr_filter),
+        )
+        .with(
+            fmt::layer()
+                .compact()
+                .with_ansi(false)
+                .with_writer(file_writer)
+                .with_filter(file_filter),
+        )
+        .init();
+
+    Ok(guard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
