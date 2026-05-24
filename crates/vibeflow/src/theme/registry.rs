@@ -31,11 +31,33 @@ impl ThemeRegistry {
             );
             return Self { themes, themes_dir };
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
-                continue;
-            }
+        const MAX_THEMES_AT_STARTUP: usize = 50;
+        let mut entry_paths: Vec<std::path::PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("toml") {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        entry_paths.sort();
+        if entry_paths.len() > MAX_THEMES_AT_STARTUP {
+            let dropped: Vec<String> = entry_paths[MAX_THEMES_AT_STARTUP..]
+                .iter()
+                .filter_map(|p| p.file_name().and_then(|s| s.to_str()).map(str::to_owned))
+                .collect();
+            tracing::warn!(
+                cap = MAX_THEMES_AT_STARTUP,
+                dropped_count = dropped.len(),
+                dropped_names = ?dropped,
+                "config: theme directory has more themes than cap; dropping excess (alphabetical)"
+            );
+            entry_paths.truncate(MAX_THEMES_AT_STARTUP);
+        }
+        for path in entry_paths {
             let contents = match std::fs::read_to_string(&path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -133,5 +155,22 @@ mod tests {
         std::fs::write(tmp.path().join("random.txt"), "also not a theme").unwrap();
         let reg = ThemeRegistry::load(tmp.path().to_path_buf());
         assert_eq!(reg.names(), vec!["good".to_string()]);
+    }
+
+    #[test]
+    fn registry_caps_themes_at_50_at_startup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path();
+        // Create 60 VALID stub themes via the existing `write_valid_theme` helper.
+        for i in 1..=60 {
+            let name = format!("theme_{i:03}");
+            write_valid_theme(dir, &name);
+        }
+        let registry = ThemeRegistry::load(dir.to_path_buf());
+        assert!(
+            registry.names().len() <= 50,
+            "registry must NEVER exceed 50 themes regardless of dir contents (got {})",
+            registry.names().len(),
+        );
     }
 }
