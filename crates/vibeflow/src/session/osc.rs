@@ -65,6 +65,42 @@ pub enum DispatchEvent {
     PassThrough(Vec<u8>),
 }
 
+/// Which clipboard selection(s) an OSC 52 write should target.
+///
+/// The OSC 52 selection field is a string of letters; `c` = system CLIPBOARD,
+/// `p` = X11 PRIMARY selection, `s` = both (xterm convention). Other letters
+/// (`q`, `0`..`7` for cut-buffers) are not supported and are filtered out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Osc52Selection {
+    Clipboard,
+    Primary,
+    Both,
+}
+
+/// Parse an OSC 52 selection field. `s` always means BOTH (xterm convention,
+/// short-circuits on first occurrence). Otherwise the set of letters is
+/// inspected: `c` selects CLIPBOARD, `p` selects PRIMARY, both together means
+/// BOTH. Empty or unknown-only strings fall back to CLIPBOARD as a safe default.
+fn parse_selection(s: &str) -> Osc52Selection {
+    let mut has_c = false;
+    let mut has_p = false;
+    for ch in s.chars() {
+        match ch {
+            'c' => has_c = true,
+            'p' => has_p = true,
+            's' => return Osc52Selection::Both,
+            _ => {}
+        }
+    }
+    match (has_c, has_p) {
+        (true, true) => Osc52Selection::Both,
+        (false, true) => Osc52Selection::Primary,
+        // (true, false) AND (false, false) both fall through to Clipboard:
+        // explicit `c` is honoured; empty/unknown-only is the safe default.
+        _ => Osc52Selection::Clipboard,
+    }
+}
+
 /// Internal parser state. Tracks whether we're scanning plain bytes, have just
 /// seen an `ESC`, are inside an OSC body buffering toward the terminator, or
 /// have seen an `ESC` *inside* an OSC body (potential start of `ESC \` ST).
@@ -619,6 +655,46 @@ mod tests {
     }
 
     use proptest::prelude::*;
+
+    #[test]
+    fn parse_selection_c_only() {
+        assert_eq!(parse_selection("c"), Osc52Selection::Clipboard);
+    }
+
+    #[test]
+    fn parse_selection_p_only() {
+        assert_eq!(parse_selection("p"), Osc52Selection::Primary);
+    }
+
+    #[test]
+    fn parse_selection_s_means_both() {
+        assert_eq!(parse_selection("s"), Osc52Selection::Both);
+    }
+
+    #[test]
+    fn parse_selection_cp_means_both() {
+        assert_eq!(parse_selection("cp"), Osc52Selection::Both);
+    }
+
+    #[test]
+    fn parse_selection_pc_means_both() {
+        assert_eq!(parse_selection("pc"), Osc52Selection::Both);
+    }
+
+    #[test]
+    fn parse_selection_empty_defaults_to_clipboard() {
+        assert_eq!(parse_selection(""), Osc52Selection::Clipboard);
+    }
+
+    #[test]
+    fn parse_selection_unknown_letters_filtered() {
+        assert_eq!(parse_selection("x"), Osc52Selection::Clipboard);
+    }
+
+    #[test]
+    fn parse_selection_s_with_other_letters_short_circuits_to_both() {
+        assert_eq!(parse_selection("cs"), Osc52Selection::Both);
+    }
 
     proptest! {
         /// Feeding arbitrary bytes through the dispatcher in arbitrary chunk
