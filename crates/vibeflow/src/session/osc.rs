@@ -81,6 +81,7 @@ pub enum Osc52Selection {
 /// short-circuits on first occurrence). Otherwise the set of letters is
 /// inspected: `c` selects CLIPBOARD, `p` selects PRIMARY, both together means
 /// BOTH. Empty or unknown-only strings fall back to CLIPBOARD as a safe default.
+#[allow(dead_code)]
 fn parse_selection(s: &str) -> Osc52Selection {
     let mut has_c = false;
     let mut has_p = false;
