@@ -115,13 +115,7 @@ pub fn build_about_rects(window_size: (u32, u32), colors: &AboutColors) -> Vec<R
         // 4. Left border.
         RectInstance::new(px, py, BORDER_PX, ph, colors.border_fg),
         // 5. Right border.
-        RectInstance::new(
-            px + pw - BORDER_PX,
-            py,
-            BORDER_PX,
-            ph,
-            colors.border_fg,
-        ),
+        RectInstance::new(px + pw - BORDER_PX, py, BORDER_PX, ph, colors.border_fg),
     ]
 }
 
@@ -229,7 +223,10 @@ mod tests {
     #[test]
     fn about_lines_dismissal_hint_mentions_esc() {
         let hint = &about_lines()[4];
-        assert!(hint.contains("ESC"), "dismissal hint should mention ESC, got {hint:?}");
+        assert!(
+            hint.contains("ESC"),
+            "dismissal hint should mention ESC, got {hint:?}"
+        );
     }
 
     // ---- panel_rect -------------------------------------------------------

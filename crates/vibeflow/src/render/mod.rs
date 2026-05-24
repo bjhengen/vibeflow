@@ -505,21 +505,21 @@ impl Renderer {
         // when present (mirrors `theme_clear_color` for bg).
         let about_colors = if about_open {
             use alacritty_terminal::vte::ansi::NamedColor;
-            let panel_bg: [f32; 4] = match active_theme_colors.and_then(|c| c[NamedColor::Background])
-            {
-                Some(rgb) => [
-                    rgb.r as f32 / 255.0,
-                    rgb.g as f32 / 255.0,
-                    rgb.b as f32 / 255.0,
-                    1.0,
-                ],
-                None => [
-                    CLEAR_COLOR.r as f32,
-                    CLEAR_COLOR.g as f32,
-                    CLEAR_COLOR.b as f32,
-                    1.0,
-                ],
-            };
+            let panel_bg: [f32; 4] =
+                match active_theme_colors.and_then(|c| c[NamedColor::Background]) {
+                    Some(rgb) => [
+                        rgb.r as f32 / 255.0,
+                        rgb.g as f32 / 255.0,
+                        rgb.b as f32 / 255.0,
+                        1.0,
+                    ],
+                    None => [
+                        CLEAR_COLOR.r as f32,
+                        CLEAR_COLOR.g as f32,
+                        CLEAR_COLOR.b as f32,
+                        1.0,
+                    ],
+                };
             let fg: [f32; 4] = match active_theme_colors.and_then(|c| c[NamedColor::Foreground]) {
                 Some(rgb) => [
                     rgb.r as f32 / 255.0,
