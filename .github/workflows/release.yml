@@ -33,13 +33,13 @@ jobs:
     permissions:
       contents: write   # needed for softprops/action-gh-release to create the Release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable as of 2026-05-24
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
 
       - name: Build release binary
         run: cargo build --release -p vibeflow
@@ -121,7 +121,7 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub Release and attach AppImage
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           name: "vibeflow ${{ github.ref_name }}"
           body_path: release-notes.md
