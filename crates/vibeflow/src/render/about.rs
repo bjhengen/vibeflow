@@ -26,19 +26,23 @@ pub fn about_lines() -> [String; 5] {
 
 /// Returns `(x, y, w, h)` in logical pixels for the centred About panel.
 ///
-/// Sizing rules (from the design spec §4.2):
-/// - Default: 560×200 px.
-/// - When the window is smaller than 600×240, clamp to `window - 40` on each
+/// Sizing rules:
+/// - Default: 880×240 px. Spec §4.2 originally called for 560×200, but on
+///   first VNC smoke the tagline (78 chars) and license+URL line (~73 chars)
+///   overflowed the inner width at vibeflow's actual JetBrains Mono cell
+///   pitch (~10 px). Bumped to 880 wide / 240 tall so the longest line fits
+///   inside the 48 px horizontal inner padding with breathing room.
+/// - When the window is smaller than 920×280, clamp to `window - 40` on each
 ///   axis (20 px margin all sides).
 /// - When the window is smaller than 200×120, drop to an 8 px margin so the
 ///   panel still has STRICTLY positive size on tiny windows.
 /// - Zero-sized windows return a zero-sized panel rather than panicking
 ///   (defensive against transient zero sizes during resize).
 pub fn panel_rect(window_size: (u32, u32)) -> (f32, f32, f32, f32) {
-    const DEFAULT_W: f32 = 560.0;
-    const DEFAULT_H: f32 = 200.0;
-    const CLAMP_THRESHOLD_W: f32 = 600.0;
-    const CLAMP_THRESHOLD_H: f32 = 240.0;
+    const DEFAULT_W: f32 = 880.0;
+    const DEFAULT_H: f32 = 240.0;
+    const CLAMP_THRESHOLD_W: f32 = 920.0;
+    const CLAMP_THRESHOLD_H: f32 = 280.0;
     const TINY_THRESHOLD_W: f32 = 200.0;
     const TINY_THRESHOLD_H: f32 = 120.0;
     const STANDARD_MARGIN: f32 = 20.0;
@@ -233,17 +237,18 @@ mod tests {
 
     #[test]
     fn panel_rect_centres_within_window_at_default_size() {
-        // 1920×1080 has plenty of room for the default 560×200 panel.
+        // 1920×1080 has plenty of room for the default 880×240 panel.
         let (x, y, w, h) = panel_rect((1920, 1080));
-        assert_eq!((w, h), (560.0, 200.0));
+        assert_eq!((w, h), (880.0, 240.0));
         // Centre of the panel == centre of the window.
         assert_eq!(x + w / 2.0, 1920.0 / 2.0);
         assert_eq!(y + h / 2.0, 1080.0 / 2.0);
     }
 
     #[test]
-    fn panel_rect_clamps_in_small_window_below_600x240() {
-        // 400×200 forces clamp: w = 400 - 40 = 360, h = 200 - 40 = 160.
+    fn panel_rect_clamps_in_small_window() {
+        // 400×200 is below the 920×280 clamp threshold:
+        // w = 400 - 40 = 360, h = 200 - 40 = 160.
         let (x, y, w, h) = panel_rect((400, 200));
         assert_eq!((w, h), (360.0, 160.0));
         assert_eq!(x, 20.0);
