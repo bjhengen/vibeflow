@@ -42,7 +42,12 @@ use vibeflow_protocol::Frame;
 
 /// Maximum total length of a single OSC sequence (including `ESC ]` and the
 /// terminator). Sequences exceeding this are dropped on the floor.
-const MAX_OSC_LEN: usize = 4096;
+///
+/// Sized for OSC 52 clipboard payloads: ~100 KB raw text becomes ~134 KB
+/// after base64 encoding plus the `52;c;` prefix. 128 KB is a comfortable
+/// envelope; other OSC types (0/2 title, 133 prompt markers, 1338 AI state)
+/// are all under 1 KB in practice.
+const MAX_OSC_LEN: usize = 131_072;
 
 /// One event emitted by [`OscDispatcher::feed`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,10 +59,108 @@ pub enum DispatchEvent {
     /// OSC 0 (set window+icon title) or OSC 2 (set window title only).
     /// Carries the title payload as UTF-8. Stage 9.
     SetTitle(String),
+    /// OSC 52 clipboard WRITE — TUI app asked us to replace the named
+    /// clipboard selection(s) with `text`. Window layer dispatches to
+    /// `Clipboard::copy_clipboard_only` / `copy_primary` based on `selection`.
+    /// Read requests are silently dropped by the dispatcher (no event).
+    Osc52Write {
+        selection: Osc52Selection,
+        text: String,
+    },
     /// Bytes that should be forwarded to the terminal grid (alacritty_terminal in
     /// future stages). Includes any unknown OSC sequences (their original bytes,
     /// terminator and all) plus all non-OSC bytes.
     PassThrough(Vec<u8>),
+}
+
+/// Which clipboard selection(s) an OSC 52 write should target.
+///
+/// The OSC 52 selection field is a string of letters; `c` = system CLIPBOARD,
+/// `p` = X11 PRIMARY selection, `s` = both (xterm convention). Other letters
+/// (`q`, `0`..`7` for cut-buffers) are not supported and are filtered out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Osc52Selection {
+    Clipboard,
+    Primary,
+    Both,
+}
+
+/// Parse an OSC 52 selection field. `s` always means BOTH (xterm convention,
+/// short-circuits on first occurrence). Otherwise the set of letters is
+/// inspected: `c` selects CLIPBOARD, `p` selects PRIMARY, both together means
+/// BOTH. Empty or unknown-only strings fall back to CLIPBOARD as a safe default.
+fn parse_selection(s: &str) -> Osc52Selection {
+    let mut has_c = false;
+    let mut has_p = false;
+    for ch in s.chars() {
+        match ch {
+            'c' => has_c = true,
+            'p' => has_p = true,
+            's' => return Osc52Selection::Both,
+            _ => {}
+        }
+    }
+    match (has_c, has_p) {
+        (true, true) => Osc52Selection::Both,
+        (false, true) => Osc52Selection::Primary,
+        // (true, false) AND (false, false) both fall through to Clipboard:
+        // explicit `c` is honoured; empty/unknown-only is the safe default.
+        _ => Osc52Selection::Clipboard,
+    }
+}
+
+/// Outcome of parsing an OSC 52 body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Osc52ParseOutcome {
+    /// Valid write request.
+    Write {
+        selection: Osc52Selection,
+        text: String,
+        /// True when the decoded payload exceeded `MAX_OSC52_RAW_BYTES` and
+        /// was clipped. Caller logs a warn.
+        truncated: bool,
+    },
+    /// Read request (`?` payload). Intentionally not implemented for security.
+    ReadIgnored,
+    /// Body did not match the expected `<selection>;<base64-or-?>` shape, OR
+    /// base64 decoding failed.
+    Malformed,
+}
+
+/// Cap on raw text from a single OSC 52 write. Larger payloads are clipped
+/// to this length with the `truncated` flag set. The MAX_OSC_LEN envelope
+/// covers ~3× this in base64 + overhead.
+const MAX_OSC52_RAW_BYTES: usize = 100 * 1024;
+
+/// Parse the body of an `OSC 52;...` sequence (the part AFTER `52;`).
+fn parse_52_body(body: &str) -> Osc52ParseOutcome {
+    let Some((sel_str, payload)) = body.split_once(';') else {
+        return Osc52ParseOutcome::Malformed;
+    };
+    let selection = parse_selection(sel_str);
+
+    if payload == "?" {
+        return Osc52ParseOutcome::ReadIgnored;
+    }
+
+    use base64::Engine;
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(payload) {
+        Ok(d) => d,
+        Err(_) => return Osc52ParseOutcome::Malformed,
+    };
+
+    let (text_bytes, truncated) = if decoded.len() > MAX_OSC52_RAW_BYTES {
+        (&decoded[..MAX_OSC52_RAW_BYTES], true)
+    } else {
+        (&decoded[..], false)
+    };
+
+    let text = String::from_utf8_lossy(text_bytes).into_owned();
+    Osc52ParseOutcome::Write {
+        selection,
+        text,
+        truncated,
+    }
 }
 
 /// Internal parser state. Tracks whether we're scanning plain bytes, have just
@@ -279,6 +382,29 @@ fn handle_osc(body: &[u8]) -> OscOutcome {
         "133" => match parse_133_body(params) {
             Some(marker) => OscOutcome::Event(DispatchEvent::Prompt(marker)),
             None => OscOutcome::Drop,
+        },
+        "52" => match parse_52_body(params) {
+            Osc52ParseOutcome::Write {
+                selection,
+                text,
+                truncated,
+            } => {
+                if truncated {
+                    tracing::warn!(
+                        cap = MAX_OSC52_RAW_BYTES,
+                        "OSC 52 write payload exceeded cap; truncated"
+                    );
+                }
+                OscOutcome::Event(DispatchEvent::Osc52Write { selection, text })
+            }
+            Osc52ParseOutcome::ReadIgnored => {
+                tracing::debug!("OSC 52 read request ignored (security)");
+                OscOutcome::Drop
+            }
+            Osc52ParseOutcome::Malformed => {
+                tracing::debug!("OSC 52 body malformed; dropping");
+                OscOutcome::Drop
+            }
         },
         _ => OscOutcome::Forward,
     }
@@ -615,6 +741,46 @@ mod tests {
 
     use proptest::prelude::*;
 
+    #[test]
+    fn parse_selection_c_only() {
+        assert_eq!(parse_selection("c"), Osc52Selection::Clipboard);
+    }
+
+    #[test]
+    fn parse_selection_p_only() {
+        assert_eq!(parse_selection("p"), Osc52Selection::Primary);
+    }
+
+    #[test]
+    fn parse_selection_s_means_both() {
+        assert_eq!(parse_selection("s"), Osc52Selection::Both);
+    }
+
+    #[test]
+    fn parse_selection_cp_means_both() {
+        assert_eq!(parse_selection("cp"), Osc52Selection::Both);
+    }
+
+    #[test]
+    fn parse_selection_pc_means_both() {
+        assert_eq!(parse_selection("pc"), Osc52Selection::Both);
+    }
+
+    #[test]
+    fn parse_selection_empty_defaults_to_clipboard() {
+        assert_eq!(parse_selection(""), Osc52Selection::Clipboard);
+    }
+
+    #[test]
+    fn parse_selection_unknown_letters_filtered() {
+        assert_eq!(parse_selection("x"), Osc52Selection::Clipboard);
+    }
+
+    #[test]
+    fn parse_selection_s_with_other_letters_short_circuits_to_both() {
+        assert_eq!(parse_selection("cs"), Osc52Selection::Both);
+    }
+
     proptest! {
         /// Feeding arbitrary bytes through the dispatcher in arbitrary chunk
         /// sizes must never panic and must never produce more bytes of
@@ -642,6 +808,143 @@ mod tests {
             // PassThrough output cannot exceed total bytes fed in. (Equality
             // when no OSC was recognised; less when OSC bodies were consumed.)
             prop_assert!(total_passthrough <= total_input);
+        }
+    }
+
+    #[test]
+    fn parse_52_body_write_clipboard_base64() {
+        let outcome = parse_52_body("c;SGVsbG8=");
+        match outcome {
+            Osc52ParseOutcome::Write {
+                selection,
+                text,
+                truncated,
+            } => {
+                assert_eq!(selection, Osc52Selection::Clipboard);
+                assert_eq!(text, "Hello");
+                assert!(!truncated);
+            }
+            _ => panic!("expected Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn parse_52_body_write_primary() {
+        let outcome = parse_52_body("p;SGk=");
+        match outcome {
+            Osc52ParseOutcome::Write {
+                selection, text, ..
+            } => {
+                assert_eq!(selection, Osc52Selection::Primary);
+                assert_eq!(text, "Hi");
+            }
+            _ => panic!("expected Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn parse_52_body_write_both_via_s() {
+        let outcome = parse_52_body("s;eHg=");
+        match outcome {
+            Osc52ParseOutcome::Write { selection, .. } => {
+                assert_eq!(selection, Osc52Selection::Both);
+            }
+            _ => panic!("expected Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn parse_52_body_read_returns_ignored() {
+        let outcome = parse_52_body("c;?");
+        assert!(matches!(outcome, Osc52ParseOutcome::ReadIgnored));
+    }
+
+    #[test]
+    fn parse_52_body_malformed_base64() {
+        let outcome = parse_52_body("c;not_base64!");
+        assert!(matches!(outcome, Osc52ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_52_body_no_separator() {
+        let outcome = parse_52_body("c");
+        assert!(matches!(outcome, Osc52ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_52_body_oversize_truncated() {
+        use base64::Engine;
+        let raw = "A".repeat(200 * 1024);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        let body = format!("c;{}", encoded);
+        let outcome = parse_52_body(&body);
+        match outcome {
+            Osc52ParseOutcome::Write {
+                text, truncated, ..
+            } => {
+                assert_eq!(text.len(), 100 * 1024);
+                assert!(truncated);
+            }
+            _ => panic!("expected truncated Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn dispatcher_emits_osc52write_for_full_sequence() {
+        // Full byte sequence: ESC ] 52 ; c ; SGVsbG8= BEL
+        let bytes = b"\x1b]52;c;SGVsbG8=\x07";
+        let mut dispatcher = OscDispatcher::new();
+        let events = dispatcher.feed(bytes);
+        assert_eq!(events.len(), 1, "events: {:?}", events);
+        match &events[0] {
+            DispatchEvent::Osc52Write { selection, text } => {
+                assert_eq!(*selection, Osc52Selection::Clipboard);
+                assert_eq!(text, "Hello");
+            }
+            other => panic!("expected Osc52Write, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatcher_drops_osc52_read_silently() {
+        let bytes = b"\x1b]52;c;?\x07";
+        let mut dispatcher = OscDispatcher::new();
+        let events = dispatcher.feed(bytes);
+        for ev in &events {
+            assert!(
+                !matches!(ev, DispatchEvent::Osc52Write { .. }),
+                "no Osc52Write for read request, got {:?}",
+                ev
+            );
+            assert!(
+                !matches!(ev, DispatchEvent::PassThrough(_)),
+                "no PassThrough for ignored read request, got {:?}",
+                ev
+            );
+        }
+    }
+
+    #[test]
+    fn dispatcher_emits_osc52write_under_max_osc_len() {
+        use base64::Engine;
+        let raw = "A".repeat(90 * 1024);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        let mut bytes: Vec<u8> = Vec::with_capacity(128 * 1024);
+        bytes.extend_from_slice(b"\x1b]52;c;");
+        bytes.extend_from_slice(encoded.as_bytes());
+        bytes.push(0x07);
+        let mut dispatcher = OscDispatcher::new();
+        let events = dispatcher.feed(&bytes);
+        assert_eq!(events.len(), 1, "events count");
+        match &events[0] {
+            DispatchEvent::Osc52Write { text, .. } => {
+                assert_eq!(
+                    text.len(),
+                    90 * 1024,
+                    "text length unchanged when under cap"
+                );
+            }
+            other => panic!("expected Osc52Write, got {:?}", other),
         }
     }
 }

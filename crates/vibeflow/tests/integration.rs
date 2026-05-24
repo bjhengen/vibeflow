@@ -41,6 +41,14 @@ fn feed_and_track(
                     let _ = _title;
                     (tracker.state(), false)
                 }
+                DispatchEvent::Osc52Write {
+                    selection: _,
+                    text: _,
+                } => {
+                    // OSC 52 clipboard writes don't drive tracker state; the
+                    // integration test just observes the tracker state unchanged.
+                    (tracker.state(), false)
+                }
                 DispatchEvent::PassThrough(bytes) => {
                     // Real PTY/terminal-grid path (Stage 3+) would forward bytes
                     // here. For Stage 2, observing output through the tracker

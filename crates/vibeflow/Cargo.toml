@@ -26,6 +26,7 @@ path = "src/main.rs"
 alacritty_terminal = "0.24"
 anyhow = "1"
 arboard = "3.6"
+base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"
 dirs = "5"

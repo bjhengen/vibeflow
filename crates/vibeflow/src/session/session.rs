@@ -79,6 +79,15 @@ pub enum SessionEvent {
     Died,
     /// Shell rang the bell (BEL, 0x07).
     Bell,
+    /// OSC 52 clipboard write — TUI in this session asked the window layer
+    /// to put `text` on the user's clipboard. `selection` determines which
+    /// buffer(s). The window layer (which owns the `Clipboard` instance)
+    /// performs the actual write; the session merely lifts the event across
+    /// the session/window boundary.
+    Osc52ClipboardWrite {
+        selection: crate::session::osc::Osc52Selection,
+        text: String,
+    },
 }
 
 /// One terminal tab's per-session machinery.
@@ -323,6 +332,9 @@ impl PtySession {
                                 }
                                 // else: silently dropped — config disabled OSC
                                 // titles, or user-renamed wins.
+                            }
+                            DispatchEvent::Osc52Write { selection, text } => {
+                                events.push(SessionEvent::Osc52ClipboardWrite { selection, text });
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
@@ -1593,5 +1605,48 @@ mod tests {
             "My Important Tab",
             "rename title must be preserved"
         );
+    }
+
+    #[test]
+    fn poll_translates_dispatchevent_osc52write_into_sessionevent() {
+        // Drive a session with a literal OSC 52 sequence and assert poll() emits
+        // SessionEvent::Osc52ClipboardWrite carrying the same selection + text.
+        // Pattern matches the existing poll_routes_osc_1338_through_dispatcher_and_tracker
+        // test: spawn python to output an OSC 52 sequence + deadline loop.
+        use crate::session::osc::Osc52Selection;
+        use crate::session::tracker::TrackerConfig;
+        use std::time::{Duration, Instant};
+
+        // Python script that outputs: ESC ] 52 ; c ; SGVsbG8= BEL
+        // (OSC 52, clipboard selection, base64-encoded "Hello")
+        let mut s = PtySession::spawn(
+            &[
+                "python3",
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'\\x1b]52;c;SGVsbG8=\\x07'); sys.stdout.flush()",
+            ],
+            TrackerConfig::default(),
+            10_000,
+        )
+        .expect("PtySession::spawn");
+
+        // Wait for the bytes to round-trip through the PTY + reader thread.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut observed = None;
+        while Instant::now() < deadline {
+            for ev in s.poll(Instant::now()) {
+                if let SessionEvent::Osc52ClipboardWrite { selection, text } = ev {
+                    observed = Some((selection, text));
+                    break;
+                }
+            }
+            if observed.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (selection, text) = observed.expect("Osc52ClipboardWrite within 3s");
+        assert_eq!(selection, Osc52Selection::Clipboard);
+        assert_eq!(text, "Hello");
     }
 }
