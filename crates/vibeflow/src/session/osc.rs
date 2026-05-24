@@ -42,7 +42,12 @@ use vibeflow_protocol::Frame;
 
 /// Maximum total length of a single OSC sequence (including `ESC ]` and the
 /// terminator). Sequences exceeding this are dropped on the floor.
-const MAX_OSC_LEN: usize = 4096;
+///
+/// Sized for OSC 52 clipboard payloads: ~100 KB raw text becomes ~134 KB
+/// after base64 encoding plus the `52;c;` prefix. 128 KB is a comfortable
+/// envelope; other OSC types (0/2 title, 133 prompt markers, 1338 AI state)
+/// are all under 1 KB in practice.
+const MAX_OSC_LEN: usize = 131_072;
 
 /// One event emitted by [`OscDispatcher::feed`].
 #[derive(Debug, Clone, PartialEq, Eq)]
