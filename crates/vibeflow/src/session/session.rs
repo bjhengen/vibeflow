@@ -324,6 +324,11 @@ impl PtySession {
                                 // else: silently dropped — config disabled OSC
                                 // titles, or user-renamed wins.
                             }
+                            DispatchEvent::Osc52Write { selection: _, text: _ } => {
+                                // Task 5 will add SessionEvent::Osc52ClipboardWrite here
+                                // For now, silently drop OSC 52 writes during poll
+                                tracing::debug!("OSC 52 write received but not yet dispatched (Task 5)");
+                            }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
                                 for &byte in &bytes {

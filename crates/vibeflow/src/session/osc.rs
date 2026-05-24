@@ -59,6 +59,14 @@ pub enum DispatchEvent {
     /// OSC 0 (set window+icon title) or OSC 2 (set window title only).
     /// Carries the title payload as UTF-8. Stage 9.
     SetTitle(String),
+    /// OSC 52 clipboard WRITE — TUI app asked us to replace the named
+    /// clipboard selection(s) with `text`. Window layer dispatches to
+    /// `Clipboard::copy_clipboard_only` / `copy_primary` based on `selection`.
+    /// Read requests are silently dropped by the dispatcher (no event).
+    Osc52Write {
+        selection: Osc52Selection,
+        text: String,
+    },
     /// Bytes that should be forwarded to the terminal grid (alacritty_terminal in
     /// future stages). Includes any unknown OSC sequences (their original bytes,
     /// terminator and all) plus all non-OSC bytes.
@@ -81,7 +89,6 @@ pub enum Osc52Selection {
 /// short-circuits on first occurrence). Otherwise the set of letters is
 /// inspected: `c` selects CLIPBOARD, `p` selects PRIMARY, both together means
 /// BOTH. Empty or unknown-only strings fall back to CLIPBOARD as a safe default.
-#[allow(dead_code)]
 fn parse_selection(s: &str) -> Osc52Selection {
     let mut has_c = false;
     let mut has_p = false;
@@ -126,7 +133,6 @@ enum Osc52ParseOutcome {
 const MAX_OSC52_RAW_BYTES: usize = 100 * 1024;
 
 /// Parse the body of an `OSC 52;...` sequence (the part AFTER `52;`).
-#[allow(dead_code)]
 fn parse_52_body(body: &str) -> Osc52ParseOutcome {
     let Some((sel_str, payload)) = body.split_once(';') else {
         return Osc52ParseOutcome::Malformed;
@@ -372,6 +378,25 @@ fn handle_osc(body: &[u8]) -> OscOutcome {
         "133" => match parse_133_body(params) {
             Some(marker) => OscOutcome::Event(DispatchEvent::Prompt(marker)),
             None => OscOutcome::Drop,
+        },
+        "52" => match parse_52_body(params) {
+            Osc52ParseOutcome::Write { selection, text, truncated } => {
+                if truncated {
+                    tracing::warn!(
+                        cap = MAX_OSC52_RAW_BYTES,
+                        "OSC 52 write payload exceeded cap; truncated"
+                    );
+                }
+                OscOutcome::Event(DispatchEvent::Osc52Write { selection, text })
+            }
+            Osc52ParseOutcome::ReadIgnored => {
+                tracing::debug!("OSC 52 read request ignored (security)");
+                OscOutcome::Drop
+            }
+            Osc52ParseOutcome::Malformed => {
+                tracing::debug!("OSC 52 body malformed; dropping");
+                OscOutcome::Drop
+            }
         },
         _ => OscOutcome::Forward,
     }
@@ -845,6 +870,59 @@ mod tests {
                 assert!(truncated);
             }
             _ => panic!("expected truncated Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn dispatcher_emits_osc52write_for_full_sequence() {
+        // Full byte sequence: ESC ] 52 ; c ; SGVsbG8= BEL
+        let bytes = b"\x1b]52;c;SGVsbG8=\x07";
+        let mut dispatcher = OscDispatcher::new();
+        let events = dispatcher.feed(bytes);
+        assert_eq!(events.len(), 1, "events: {:?}", events);
+        match &events[0] {
+            DispatchEvent::Osc52Write { selection, text } => {
+                assert_eq!(*selection, Osc52Selection::Clipboard);
+                assert_eq!(text, "Hello");
+            }
+            other => panic!("expected Osc52Write, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatcher_drops_osc52_read_silently() {
+        let bytes = b"\x1b]52;c;?\x07";
+        let mut dispatcher = OscDispatcher::new();
+        let events = dispatcher.feed(bytes);
+        for ev in &events {
+            assert!(
+                !matches!(ev, DispatchEvent::Osc52Write { .. }),
+                "no Osc52Write for read request, got {:?}", ev
+            );
+            assert!(
+                !matches!(ev, DispatchEvent::PassThrough(_)),
+                "no PassThrough for ignored read request, got {:?}", ev
+            );
+        }
+    }
+
+    #[test]
+    fn dispatcher_emits_osc52write_under_max_osc_len() {
+        use base64::Engine;
+        let raw = "A".repeat(90 * 1024);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        let mut bytes: Vec<u8> = Vec::with_capacity(128 * 1024);
+        bytes.extend_from_slice(b"\x1b]52;c;");
+        bytes.extend_from_slice(encoded.as_bytes());
+        bytes.push(0x07);
+        let mut dispatcher = OscDispatcher::new();
+        let events = dispatcher.feed(&bytes);
+        assert_eq!(events.len(), 1, "events count");
+        match &events[0] {
+            DispatchEvent::Osc52Write { text, .. } => {
+                assert_eq!(text.len(), 90 * 1024, "text length unchanged when under cap");
+            }
+            other => panic!("expected Osc52Write, got {:?}", other),
         }
     }
 }
