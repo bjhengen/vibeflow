@@ -106,6 +106,13 @@ jobs:
       - name: Publish AppImage checksum
         run: sha256sum vibeflow-x86_64.AppImage > vibeflow-x86_64.AppImage.sha256
 
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: ./target/release/vibeflow
+          format: cyclonedx-json
+          output-file: vibeflow-x86_64.sbom.cdx.json
+
       - name: Extract release notes from CHANGELOG
         id: notes
         run: |
@@ -135,5 +142,6 @@ jobs:
           files: |
             vibeflow-x86_64.AppImage
             vibeflow-x86_64.AppImage.sha256
+            vibeflow-x86_64.sbom.cdx.json
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
