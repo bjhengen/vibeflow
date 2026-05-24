@@ -334,10 +334,7 @@ impl PtySession {
                                 // titles, or user-renamed wins.
                             }
                             DispatchEvent::Osc52Write { selection, text } => {
-                                events.push(SessionEvent::Osc52ClipboardWrite {
-                                    selection,
-                                    text,
-                                });
+                                events.push(SessionEvent::Osc52ClipboardWrite { selection, text });
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 self.tracker.on_input(TrackerInput::OutputObserved, now);
@@ -1616,9 +1613,9 @@ mod tests {
         // SessionEvent::Osc52ClipboardWrite carrying the same selection + text.
         // Pattern matches the existing poll_routes_osc_1338_through_dispatcher_and_tracker
         // test: spawn python to output an OSC 52 sequence + deadline loop.
-        use std::time::{Duration, Instant};
         use crate::session::osc::Osc52Selection;
         use crate::session::tracker::TrackerConfig;
+        use std::time::{Duration, Instant};
 
         // Python script that outputs: ESC ] 52 ; c ; SGVsbG8= BEL
         // (OSC 52, clipboard selection, base64-encoded "Hello")

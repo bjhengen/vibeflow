@@ -156,7 +156,11 @@ fn parse_52_body(body: &str) -> Osc52ParseOutcome {
     };
 
     let text = String::from_utf8_lossy(text_bytes).into_owned();
-    Osc52ParseOutcome::Write { selection, text, truncated }
+    Osc52ParseOutcome::Write {
+        selection,
+        text,
+        truncated,
+    }
 }
 
 /// Internal parser state. Tracks whether we're scanning plain bytes, have just
@@ -380,7 +384,11 @@ fn handle_osc(body: &[u8]) -> OscOutcome {
             None => OscOutcome::Drop,
         },
         "52" => match parse_52_body(params) {
-            Osc52ParseOutcome::Write { selection, text, truncated } => {
+            Osc52ParseOutcome::Write {
+                selection,
+                text,
+                truncated,
+            } => {
                 if truncated {
                     tracing::warn!(
                         cap = MAX_OSC52_RAW_BYTES,
@@ -807,7 +815,11 @@ mod tests {
     fn parse_52_body_write_clipboard_base64() {
         let outcome = parse_52_body("c;SGVsbG8=");
         match outcome {
-            Osc52ParseOutcome::Write { selection, text, truncated } => {
+            Osc52ParseOutcome::Write {
+                selection,
+                text,
+                truncated,
+            } => {
                 assert_eq!(selection, Osc52Selection::Clipboard);
                 assert_eq!(text, "Hello");
                 assert!(!truncated);
@@ -820,7 +832,9 @@ mod tests {
     fn parse_52_body_write_primary() {
         let outcome = parse_52_body("p;SGk=");
         match outcome {
-            Osc52ParseOutcome::Write { selection, text, .. } => {
+            Osc52ParseOutcome::Write {
+                selection, text, ..
+            } => {
                 assert_eq!(selection, Osc52Selection::Primary);
                 assert_eq!(text, "Hi");
             }
@@ -865,7 +879,9 @@ mod tests {
         let body = format!("c;{}", encoded);
         let outcome = parse_52_body(&body);
         match outcome {
-            Osc52ParseOutcome::Write { text, truncated, .. } => {
+            Osc52ParseOutcome::Write {
+                text, truncated, ..
+            } => {
                 assert_eq!(text.len(), 100 * 1024);
                 assert!(truncated);
             }
@@ -897,11 +913,13 @@ mod tests {
         for ev in &events {
             assert!(
                 !matches!(ev, DispatchEvent::Osc52Write { .. }),
-                "no Osc52Write for read request, got {:?}", ev
+                "no Osc52Write for read request, got {:?}",
+                ev
             );
             assert!(
                 !matches!(ev, DispatchEvent::PassThrough(_)),
-                "no PassThrough for ignored read request, got {:?}", ev
+                "no PassThrough for ignored read request, got {:?}",
+                ev
             );
         }
     }
@@ -920,7 +938,11 @@ mod tests {
         assert_eq!(events.len(), 1, "events count");
         match &events[0] {
             DispatchEvent::Osc52Write { text, .. } => {
-                assert_eq!(text.len(), 90 * 1024, "text length unchanged when under cap");
+                assert_eq!(
+                    text.len(),
+                    90 * 1024,
+                    "text length unchanged when under cap"
+                );
             }
             other => panic!("expected Osc52Write, got {:?}", other),
         }

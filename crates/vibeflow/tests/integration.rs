@@ -41,7 +41,10 @@ fn feed_and_track(
                     let _ = _title;
                     (tracker.state(), false)
                 }
-                DispatchEvent::Osc52Write { selection: _, text: _ } => {
+                DispatchEvent::Osc52Write {
+                    selection: _,
+                    text: _,
+                } => {
                     // OSC 52 clipboard writes don't drive tracker state; the
                     // integration test just observes the tracker state unchanged.
                     (tracker.state(), false)
