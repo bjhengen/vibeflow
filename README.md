@@ -36,6 +36,8 @@ Three tiers, in priority order:
 - xterm-style modifier arrow keys.
 - Hot-reload config (`~/.config/vibeflow/config.toml`).
 - OSC 1338 native AI-state + `/proc` heuristic fallback.
+- OSC 52 clipboard write (for `vim "+y`, tmux pass-through, remote SSH copy)
+  — read intentionally not implemented for security reasons.
 
 ## Install
 
