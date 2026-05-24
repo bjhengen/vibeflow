@@ -121,6 +121,24 @@ jobs:
             done
           done
 
+      - name: Verify Cargo workspace version matches npm package.json version
+        run: |
+          set -euxo pipefail
+          # NOTE: --offline removed per senior pre-exec review. On a cold
+          # Swatinem cache (first CI run for a branch) the registry index
+          # isn't fetched yet, so --offline would fail. cargo metadata
+          # without --offline does no real network traffic for --no-deps.
+          CARGO_VER=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
+            | python3 -c "import json,sys; m=json.load(sys.stdin); \
+                          p=[x for x in m['packages'] if x['name']=='vibeflow-protocol'][0]; \
+                          print(p['version'])")
+          NPM_VER=$(python3 -c "import json; print(json.load(open('bindings/npm/package.json'))['version'])")
+          if [ "$CARGO_VER" != "$NPM_VER" ]; then
+            echo "::error::Cargo vibeflow-protocol version ($CARGO_VER) != npm package.json version ($NPM_VER)"
+            exit 1
+          fi
+          echo "Versions match: $CARGO_VER"
+
       - name: Verify cargo publish --dry-run for both crates
         run: |
           set -euxo pipefail
