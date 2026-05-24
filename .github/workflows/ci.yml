@@ -19,15 +19,15 @@ jobs:
     name: Rust (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable as of 2026-05-24
         with:
           components: clippy, rustfmt
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -50,13 +50,13 @@ jobs:
     name: Fuzz smoke (60s)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install nightly toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2  # nightly as of 2026-05-24
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
         with:
           workspaces: "crates/vibeflow-protocol/fuzz"
 
@@ -78,10 +78,10 @@ jobs:
       run:
         working-directory: bindings/npm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Use Node.js 22 (current LTS)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: "22"
           cache: "npm"
@@ -95,16 +95,16 @@ jobs:
     name: Packaging assertions (Cargo + npm)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable as of 2026-05-24
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
 
       - name: Use Node.js 22 (current LTS)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: "22"
           cache: "npm"
@@ -120,6 +120,24 @@ jobs:
                 || { echo "::error::missing $required in cargo package -p $crate"; exit 1; }
             done
           done
+
+      - name: Verify Cargo workspace version matches npm package.json version
+        run: |
+          set -euxo pipefail
+          # NOTE: --offline removed per senior pre-exec review. On a cold
+          # Swatinem cache (first CI run for a branch) the registry index
+          # isn't fetched yet, so --offline would fail. cargo metadata
+          # without --offline does no real network traffic for --no-deps.
+          CARGO_VER=$(cargo metadata --no-deps --format-version 1 2>/dev/null \
+            | python3 -c "import json,sys; m=json.load(sys.stdin); \
+                          p=[x for x in m['packages'] if x['name']=='vibeflow-protocol'][0]; \
+                          print(p['version'])")
+          NPM_VER=$(python3 -c "import json; print(json.load(open('bindings/npm/package.json'))['version'])")
+          if [ "$CARGO_VER" != "$NPM_VER" ]; then
+            echo "::error::Cargo vibeflow-protocol version ($CARGO_VER) != npm package.json version ($NPM_VER)"
+            exit 1
+          fi
+          echo "Versions match: $CARGO_VER"
 
       - name: Verify cargo publish --dry-run for both crates
         run: |
