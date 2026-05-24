@@ -2,6 +2,7 @@
 //! `AppUserEvent` enum delivered via `EventLoopProxy::send_event` from the
 //! file-watcher thread to `WindowApp::user_event` on the main thread.
 
+pub mod bounds;
 pub mod error_banner;
 pub mod schema;
 pub mod watcher;
