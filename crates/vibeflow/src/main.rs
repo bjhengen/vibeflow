@@ -71,6 +71,19 @@ fn run_gui() -> Result<()> {
 fn run_import_colors(path_str: &str, overwrite: bool) {
     use std::path::Path;
     let in_path = Path::new(path_str);
+    const MAX_THEME_FILE_BYTES: u64 = 262_144; // 256 KB
+    match std::fs::metadata(in_path) {
+        Ok(meta) if meta.len() > MAX_THEME_FILE_BYTES => {
+            eprintln!(
+                "{path_str}: file size {} bytes exceeds cap {} bytes; refusing to import",
+                meta.len(),
+                MAX_THEME_FILE_BYTES,
+            );
+            std::process::exit(1);
+        }
+        Ok(_) => {}  // OK to proceed
+        Err(_) => {} // missing/unreadable will be caught by the read below
+    }
     let bytes = match std::fs::read(in_path) {
         Ok(b) => b,
         Err(e) => {
