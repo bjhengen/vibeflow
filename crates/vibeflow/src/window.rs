@@ -471,10 +471,42 @@ impl WindowApp {
                     }
                 }
             }
-            SessionEvent::Osc52ClipboardWrite { selection: _, text: _ } => {
-                // Stub added to unblock Task 5's variant introduction.
-                // Task 7 will implement the real clipboard write handler here.
-                tracing::debug!("OSC 52 clipboard write received but not yet handled (Task 7)");
+            SessionEvent::Osc52ClipboardWrite { selection, text } => {
+                use crate::session::osc::Osc52Selection;
+                // self.clipboard is Option<Clipboard> (Stage 8 made it lazy
+                // so vibeflow runs even when arboard init fails — e.g. SSH
+                // without X forwarding). Skip silently if absent.
+                let Some(clipboard) = self.clipboard.as_mut() else {
+                    tracing::debug!(tab = idx, "OSC 52 write dropped: no clipboard");
+                    return;
+                };
+                let want_clipboard = matches!(
+                    selection,
+                    Osc52Selection::Clipboard | Osc52Selection::Both
+                );
+                let want_primary = matches!(
+                    selection,
+                    Osc52Selection::Primary | Osc52Selection::Both
+                );
+                if want_clipboard {
+                    if let Err(e) = clipboard.copy_clipboard_only(&text) {
+                        tracing::warn!(
+                            error = %e,
+                            tab = idx,
+                            "OSC 52 write to system clipboard failed"
+                        );
+                    }
+                }
+                if want_primary {
+                    if let Err(e) = clipboard.copy_primary(&text) {
+                        tracing::warn!(
+                            error = %e,
+                            tab = idx,
+                            "OSC 52 write to primary selection failed"
+                        );
+                    }
+                }
+                // No redraw needed — clipboard writes are invisible to the grid.
             }
         }
     }
