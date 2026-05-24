@@ -1220,13 +1220,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // The About panel sits on top of all other layers in
                 // render order; its input capture mirrors that priority.
                 // Must run BEFORE the context_menu / rename branches.
-                if self.about_open {
-                    if self.try_consume_about_keypress(&event.logical_key) {
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
-                        return;
+                if self.about_open
+                    && self.try_consume_about_keypress(&event.logical_key)
+                {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
                     }
+                    return;
                 }
                 // Stage 10: if a context menu is open, it gets first crack at
                 // keyboard input. Arrow keys navigate, Enter activates, Escape
