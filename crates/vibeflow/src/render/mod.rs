@@ -3,6 +3,7 @@
 //! Stage 5 layers the cell grid on top; Stage 6 adds the tab bar.
 //! Stage 7 migrates cell rendering to QuadPipeline + cosmic-text TextEngine.
 
+pub mod about;
 pub mod bell;
 pub mod colors;
 pub mod context_menu;
