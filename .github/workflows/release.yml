@@ -31,7 +31,9 @@ jobs:
     name: Build AppImage (x86_64)
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed for softprops/action-gh-release to create the Release
+      contents: write       # softprops/action-gh-release creates the GitHub Release
+      id-token: write       # actions/attest-build-provenance: OIDC for SLSA provenance
+      attestations: write   # actions/attest-build-provenance: writes attestation back to repo
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
@@ -95,6 +97,11 @@ jobs:
           test -x squashfs-root/usr/bin/vibeflow
           file squashfs-root/usr/bin/vibeflow
           rm -rf squashfs-root
+
+      - name: Attest build provenance for AppImage
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: vibeflow-x86_64.AppImage
 
       - name: Publish AppImage checksum
         run: sha256sum vibeflow-x86_64.AppImage > vibeflow-x86_64.AppImage.sha256
