@@ -255,6 +255,11 @@ pub struct WindowApp {
     /// requested size before the real window size is final; this one-shot
     /// reconcile corrects the grid before the first visible frame.
     initial_size_reconciled: bool,
+    /// v0.1.2: when `true`, the About overlay is open. ESC, any mouse click,
+    /// and any keypress close it (the click/key is swallowed). Mutex-with
+    /// `context_menu`: opening About closes any open menu (see
+    /// `MenuAction::ShowAbout` dispatch arm).
+    about_open: bool,
 }
 
 impl WindowApp {
@@ -328,10 +333,14 @@ impl WindowApp {
                     });
             }
             MenuAction::ShowAbout => {
-                // Wired in Task 5 of the About-feature plan. Until then, log + no-op so
-                // the menu item visibly does nothing (rather than crashing on a non-
-                // exhaustive match).
-                tracing::debug!("MenuAction::ShowAbout dispatched (handler not yet wired)");
+                // Opening About is mutex-with context menu and rename
+                // overlay: the dispatch path here only fires from an already-
+                // closed menu (activate_focused_menu_item takes the menu
+                // before calling us), so we only need to clear the rename
+                // overlay for completeness. Existing rename logic is
+                // unchanged otherwise.
+                self.about_open = true;
+                self.rename_state = None;
             }
             MenuAction::SetTheme(name) => {
                 let target = target_idx.unwrap_or_else(|| self.app.active());
@@ -340,6 +349,20 @@ impl WindowApp {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn about_open(&self) -> bool {
+        self.about_open
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_menu_action_for_test(
+        &mut self,
+        action: crate::render::context_menu::MenuAction,
+        target_idx: Option<usize>,
+    ) {
+        self.dispatch_menu_action(action, target_idx);
     }
 
     /// Build a `WindowApp` with no window and no tabs. Call
@@ -387,6 +410,7 @@ impl WindowApp {
                     .unwrap_or_default(),
             ),
             initial_size_reconciled: false,
+            about_open: false,
         }
     }
 
@@ -2096,6 +2120,35 @@ mod tests {
         }
     }
 
+    /// Build a `WindowApp` for unit tests, returning `None` on headless
+    /// environments where winit cannot construct an event loop (CI's
+    /// `ubuntu-latest` runner has no DISPLAY). Callers do
+    /// `let Some(mut app) = try_make_test_window_app() else { return; };`
+    /// — the test counts as passing on headless without exercising the
+    /// behaviour. Manual VNC smoke walk + the integration test in
+    /// `tests/cli_version.rs` cover the missing surface area.
+    fn try_make_test_window_app() -> Option<super::WindowApp> {
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            let event_loop = winit::event_loop::EventLoop::<crate::config::AppUserEvent>::with_user_event()
+                .with_any_thread(true)
+                .build()
+                .ok()?;
+            let proxy = event_loop.create_proxy();
+            Some(super::WindowApp::new(proxy))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let event_loop =
+                winit::event_loop::EventLoop::<crate::config::AppUserEvent>::with_user_event()
+                    .build()
+                    .ok()?;
+            let proxy = event_loop.create_proxy();
+            Some(super::WindowApp::new(proxy))
+        }
+    }
+
     #[test]
     fn rename_backspace_deletes_grapheme() {
         let mut rs = rename_state_init("hello", 5);
@@ -2293,6 +2346,23 @@ mod tests {
         assert!(
             actual.1 > requested.1,
             "more cols on the larger real window"
+        );
+    }
+
+    #[test]
+    fn show_about_action_sets_about_open_true() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        // Pre-condition: overlay closed.
+        assert!(!app.about_open(), "about_open must start false");
+
+        // Dispatch the menu action directly (no menu setup needed).
+        app.dispatch_menu_action_for_test(
+            crate::render::context_menu::MenuAction::ShowAbout,
+            None,
+        );
+        assert!(
+            app.about_open(),
+            "ShowAbout must set about_open = true"
         );
     }
 }
