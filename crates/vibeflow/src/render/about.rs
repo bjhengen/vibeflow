@@ -125,6 +125,69 @@ pub fn build_about_rects(window_size: (u32, u32), colors: &AboutColors) -> Vec<R
     ]
 }
 
+use crate::render::quad::QuadInstance;
+use crate::render::text_engine::TextEngine;
+
+/// Build the glyph quads for the About overlay's five text lines. Each
+/// non-empty line is laid out horizontally centred within the panel's inner
+/// padding box, vertically stacked with even spacing. Line 2 is intentionally
+/// empty and contributes no glyphs.
+///
+/// Called from `Renderer::render` AFTER the context-menu glyph batch so the
+/// overlay's text paints above every other glyph layer.
+pub fn build_about_glyphs(
+    window_size: (u32, u32),
+    text_engine: &mut TextEngine,
+    colors: &AboutColors,
+) -> Vec<QuadInstance> {
+    const INNER_PADDING_TOP: f32 = 16.0;
+    const INNER_PADDING_BOTTOM: f32 = 16.0;
+    const INNER_PADDING_X: f32 = 24.0;
+
+    let (px, py, pw, ph) = panel_rect(window_size);
+    let lines = about_lines();
+    let line_count = lines.len() as f32;
+
+    let inner_top = py + INNER_PADDING_TOP;
+    let inner_h = (ph - INNER_PADDING_TOP - INNER_PADDING_BOTTOM).max(0.0);
+    let line_pitch = if line_count > 0.0 {
+        inner_h / line_count
+    } else {
+        0.0
+    };
+
+    let (cell_w, cell_h) = text_engine.cell_metrics();
+    let cell_w_f = cell_w as f32;
+    let cell_h_f = cell_h as f32;
+    let inner_left = px + INNER_PADDING_X;
+    let inner_right = px + pw - INNER_PADDING_X;
+    let inner_width = (inner_right - inner_left).max(0.0);
+
+    let mut glyphs: Vec<QuadInstance> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let text_w = line.chars().count() as f32 * cell_w_f;
+        let line_x = inner_left + ((inner_width - text_w) / 2.0).max(0.0);
+        // Vertical centre of this row.
+        let row_top = inner_top + i as f32 * line_pitch;
+        let line_y = row_top + ((line_pitch - cell_h_f) / 2.0).max(0.0);
+        let max_x = (inner_right).floor() as u32;
+        crate::render::tabs::push_text_glyphs(
+            &mut glyphs,
+            text_engine,
+            line,
+            (line_x, line_y),
+            cell_w_f,
+            colors.text_fg,
+            colors.panel_bg,
+            max_x,
+        );
+    }
+    glyphs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,5 +327,23 @@ mod tests {
                 "rect index {i} should use border colour"
             );
         }
+    }
+
+    // ---- build_about_glyphs (signature + invariant smoke) ----------------
+
+    #[test]
+    fn build_about_glyphs_signature_compiles_and_panel_metrics_consistent() {
+        // We can't construct a real TextEngine here (needs a wgpu Device).
+        // This test just pins the panel-metric invariants that the glyph
+        // builder will rely on: panel width is large enough to hold the
+        // canonical repo-URL line at a reasonable cell width.
+        let (_, _, pw, _) = panel_rect((1920, 1080));
+        let url_line = &about_lines()[3];
+        let approx_min_cell_w = 6.0; // most fonts at default size are >= 6 px wide
+        let needed_w = url_line.chars().count() as f32 * approx_min_cell_w;
+        assert!(
+            needed_w < pw,
+            "panel width {pw} must fit url line ({needed_w} px at 6 px/cell)"
+        );
     }
 }
