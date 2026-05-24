@@ -471,6 +471,11 @@ impl WindowApp {
                     }
                 }
             }
+            SessionEvent::Osc52ClipboardWrite { selection: _, text: _ } => {
+                // Stub added to unblock Task 5's variant introduction.
+                // Task 7 will implement the real clipboard write handler here.
+                tracing::debug!("OSC 52 clipboard write received but not yet handled (Task 7)");
+            }
         }
     }
 
