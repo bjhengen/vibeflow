@@ -102,6 +102,57 @@ fn parse_selection(s: &str) -> Osc52Selection {
     }
 }
 
+/// Outcome of parsing an OSC 52 body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Osc52ParseOutcome {
+    /// Valid write request.
+    Write {
+        selection: Osc52Selection,
+        text: String,
+        /// True when the decoded payload exceeded `MAX_OSC52_RAW_BYTES` and
+        /// was clipped. Caller logs a warn.
+        truncated: bool,
+    },
+    /// Read request (`?` payload). Intentionally not implemented for security.
+    ReadIgnored,
+    /// Body did not match the expected `<selection>;<base64-or-?>` shape, OR
+    /// base64 decoding failed.
+    Malformed,
+}
+
+/// Cap on raw text from a single OSC 52 write. Larger payloads are clipped
+/// to this length with the `truncated` flag set. The MAX_OSC_LEN envelope
+/// covers ~3× this in base64 + overhead.
+const MAX_OSC52_RAW_BYTES: usize = 100 * 1024;
+
+/// Parse the body of an `OSC 52;...` sequence (the part AFTER `52;`).
+#[allow(dead_code)]
+fn parse_52_body(body: &str) -> Osc52ParseOutcome {
+    let Some((sel_str, payload)) = body.split_once(';') else {
+        return Osc52ParseOutcome::Malformed;
+    };
+    let selection = parse_selection(sel_str);
+
+    if payload == "?" {
+        return Osc52ParseOutcome::ReadIgnored;
+    }
+
+    use base64::Engine;
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(payload) {
+        Ok(d) => d,
+        Err(_) => return Osc52ParseOutcome::Malformed,
+    };
+
+    let (text_bytes, truncated) = if decoded.len() > MAX_OSC52_RAW_BYTES {
+        (&decoded[..MAX_OSC52_RAW_BYTES], true)
+    } else {
+        (&decoded[..], false)
+    };
+
+    let text = String::from_utf8_lossy(text_bytes).into_owned();
+    Osc52ParseOutcome::Write { selection, text, truncated }
+}
+
 /// Internal parser state. Tracks whether we're scanning plain bytes, have just
 /// seen an `ESC`, are inside an OSC body buffering toward the terminator, or
 /// have seen an `ESC` *inside* an OSC body (potential start of `ESC \` ST).
@@ -724,6 +775,76 @@ mod tests {
             // PassThrough output cannot exceed total bytes fed in. (Equality
             // when no OSC was recognised; less when OSC bodies were consumed.)
             prop_assert!(total_passthrough <= total_input);
+        }
+    }
+
+    #[test]
+    fn parse_52_body_write_clipboard_base64() {
+        let outcome = parse_52_body("c;SGVsbG8=");
+        match outcome {
+            Osc52ParseOutcome::Write { selection, text, truncated } => {
+                assert_eq!(selection, Osc52Selection::Clipboard);
+                assert_eq!(text, "Hello");
+                assert!(!truncated);
+            }
+            _ => panic!("expected Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn parse_52_body_write_primary() {
+        let outcome = parse_52_body("p;SGk=");
+        match outcome {
+            Osc52ParseOutcome::Write { selection, text, .. } => {
+                assert_eq!(selection, Osc52Selection::Primary);
+                assert_eq!(text, "Hi");
+            }
+            _ => panic!("expected Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn parse_52_body_write_both_via_s() {
+        let outcome = parse_52_body("s;eHg=");
+        match outcome {
+            Osc52ParseOutcome::Write { selection, .. } => {
+                assert_eq!(selection, Osc52Selection::Both);
+            }
+            _ => panic!("expected Write, got {:?}", outcome),
+        }
+    }
+
+    #[test]
+    fn parse_52_body_read_returns_ignored() {
+        let outcome = parse_52_body("c;?");
+        assert!(matches!(outcome, Osc52ParseOutcome::ReadIgnored));
+    }
+
+    #[test]
+    fn parse_52_body_malformed_base64() {
+        let outcome = parse_52_body("c;not_base64!");
+        assert!(matches!(outcome, Osc52ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_52_body_no_separator() {
+        let outcome = parse_52_body("c");
+        assert!(matches!(outcome, Osc52ParseOutcome::Malformed));
+    }
+
+    #[test]
+    fn parse_52_body_oversize_truncated() {
+        use base64::Engine;
+        let raw = "A".repeat(200 * 1024);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        let body = format!("c;{}", encoded);
+        let outcome = parse_52_body(&body);
+        match outcome {
+            Osc52ParseOutcome::Write { text, truncated, .. } => {
+                assert_eq!(text.len(), 100 * 1024);
+                assert!(truncated);
+            }
+            _ => panic!("expected truncated Write, got {:?}", outcome),
         }
     }
 }
