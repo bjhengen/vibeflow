@@ -391,11 +391,11 @@ impl WindowApp {
     ///
     /// Rule (spec §4.4): **any** click (LMB/MMB/RMB, anywhere) closes the
     /// overlay on `Pressed` and is consumed. The trailing `Released` of that
-    /// gesture (which the OS will deliver after the close) is also consumed
-    /// so it can't start a selection drag on the now-visible grid; this is
-    /// achieved by closing on Pressed and returning `true` from any branch
-    /// reached while `about_open == true`. (Once `about_open == false`, the
-    /// helper returns `false` and events fall through normally.)
+    /// gesture sees `about_open == false` (we cleared it on `Pressed`) and
+    /// falls through to the normal mouse handlers. That's safe because a
+    /// `Released` without a preceding `Pressed` is a no-op for selection
+    /// (no drag_anchor was set) and the tab-bar / context-menu branches
+    /// gate on having seen a matching `Pressed` first.
     fn try_consume_about_mouse(
         &mut self,
         _button: winit::event::MouseButton,
@@ -2527,17 +2527,14 @@ mod tests {
     }
 
     #[test]
-    fn mouse_release_while_about_open_is_consumed_but_overlay_already_closed_by_press() {
-        // The Pressed event handles the close; the trailing Released that the
-        // OS will emit must also be consumed so it does NOT propagate to e.g.
-        // start a fresh selection drag on the underlying grid.
+    fn mouse_release_after_overlay_close_falls_through() {
+        // After the close-on-Pressed step, about_open is false. The trailing
+        // Released the OS delivers must NOT be consumed — it falls through
+        // to the normal mouse handlers. (Safe because mouse_up without a
+        // preceding mouse_down is a no-op for the selection tracker.)
         let Some(mut app) = try_make_test_window_app() else {
             return;
         };
-        // Simulate the post-Pressed state: about_open already false, but the
-        // helper still consumes pending Released events from a Pressed it owned.
-        // For test simplicity we just check that with about_open=false the
-        // helper returns false (lets the event through).
         let consumed = app.try_handle_about_mouse_for_test(
             winit::event::MouseButton::Left,
             winit::event::ElementState::Released,
