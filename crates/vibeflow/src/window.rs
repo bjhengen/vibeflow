@@ -327,14 +327,11 @@ impl WindowApp {
                         tracing::warn!("xdg-open {} failed: {e}", path.display());
                     });
             }
-            MenuAction::OpenRepoUrl => {
-                const REPO_URL: &str = "https://github.com/bjhengen/vibeflow";
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(REPO_URL)
-                    .spawn()
-                    .map_err(|e| {
-                        tracing::warn!("xdg-open {REPO_URL} failed: {e}");
-                    });
+            MenuAction::ShowAbout => {
+                // Wired in Task 5 of the About-feature plan. Until then, log + no-op so
+                // the menu item visibly does nothing (rather than crashing on a non-
+                // exhaustive match).
+                tracing::debug!("MenuAction::ShowAbout dispatched (handler not yet wired)");
             }
             MenuAction::SetTheme(name) => {
                 let target = target_idx.unwrap_or_else(|| self.app.active());

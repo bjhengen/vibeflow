@@ -34,8 +34,9 @@ pub enum MenuAction {
     CloseOtherTabs,
     /// Spawn `xdg-open <config_path>` detached.
     OpenConfig,
-    /// Spawn `xdg-open <repo_url>` detached. URL is hardcoded.
-    OpenRepoUrl,
+    /// Open the About overlay panel. State lives on `WindowApp.about_open`;
+    /// the panel itself shows the repo URL as text (no `xdg-open`).
+    ShowAbout,
     /// Stage 13: apply a named theme to the target tab (per-tab override).
     SetTheme(String),
 }
@@ -179,7 +180,7 @@ pub fn grid_menu(has_selection: bool) -> Vec<MenuItem> {
         MenuItem {
             label: "About vibeflow".to_owned(),
             shortcut_hint: None,
-            action: MenuAction::OpenRepoUrl,
+            action: MenuAction::ShowAbout,
             enabled: true,
             kind: ItemKind::Action,
         },
@@ -663,7 +664,7 @@ mod tests {
         assert_action(&items[5], "Clear Buffer", MenuAction::ClearBuffer);
         assert_separator(&items[6]);
         assert_action(&items[7], "Open Config…", MenuAction::OpenConfig);
-        assert_action(&items[8], "About vibeflow", MenuAction::OpenRepoUrl);
+        assert_action(&items[8], "About vibeflow", MenuAction::ShowAbout);
     }
 
     #[test]
