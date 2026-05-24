@@ -69,6 +69,62 @@ pub fn panel_rect(window_size: (u32, u32)) -> (f32, f32, f32, f32) {
     (x, y, w, h)
 }
 
+use crate::render::tabs::RectInstance;
+
+/// Resolved palette for the About overlay. The renderer assembles this from
+/// the active session's theme colours (or the engine fallbacks) before
+/// calling `build_about_rects` / `build_about_glyphs`, so the about module
+/// itself stays free of `alacritty_terminal` types.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AboutColors {
+    /// Full-window translucent overlay behind the panel.
+    pub backdrop: [f32; 4],
+    /// Panel-body fill (opaque). Active theme's `NamedColor::Background`
+    /// when set, else the engine fallback.
+    pub panel_bg: [f32; 4],
+    /// Panel border (1 rect per edge × 4 edges = 4 rects, 2 px thick each).
+    pub border_fg: [f32; 4],
+    /// Text colour for the five lines.
+    pub text_fg: [f32; 4],
+}
+
+/// Build the per-frame rect list for the About overlay.
+///
+/// Order (DRAW ORDER — first rect paints first):
+/// - 0. Full-window backdrop dim.
+/// - 1. Panel body (centred via `panel_rect`).
+/// - 2-5. Four 2-px border edges (top, bottom, left, right).
+///
+/// Pushed onto the master rect buffer in `render::mod.rs` AFTER the context
+/// menu's rects so the panel sits on top of every other layer.
+pub fn build_about_rects(window_size: (u32, u32), colors: &AboutColors) -> Vec<RectInstance> {
+    const BORDER_PX: f32 = 2.0;
+    let (px, py, pw, ph) = panel_rect(window_size);
+    let window_w = window_size.0 as f32;
+    let window_h = window_size.1 as f32;
+
+    vec![
+        // 0. Backdrop dim — full window.
+        RectInstance::new(0.0, 0.0, window_w, window_h, colors.backdrop),
+        // 1. Panel body.
+        RectInstance::new(px, py, pw, ph, colors.panel_bg),
+        // 2. Top border.
+        RectInstance::new(px, py, pw, BORDER_PX, colors.border_fg),
+        // 3. Bottom border.
+        RectInstance::new(px, py + ph - BORDER_PX, pw, BORDER_PX, colors.border_fg),
+        // 4. Left border.
+        RectInstance::new(px, py, BORDER_PX, ph, colors.border_fg),
+        // 5. Right border.
+        RectInstance::new(
+            px + pw - BORDER_PX,
+            py,
+            BORDER_PX,
+            ph,
+            colors.border_fg,
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +212,57 @@ mod tests {
         let (_x, _y, w, h) = panel_rect((0, 0));
         assert!(w >= 0.0, "w must be non-negative, got {w}");
         assert!(h >= 0.0, "h must be non-negative, got {h}");
+    }
+
+    // ---- build_about_rects -----------------------------------------------
+
+    fn test_colors() -> AboutColors {
+        AboutColors {
+            backdrop: [0.0, 0.0, 0.0, 0.5],
+            panel_bg: [0.05, 0.05, 0.07, 1.0],
+            border_fg: [0.9, 0.9, 0.9, 1.0],
+            text_fg: [0.9, 0.9, 0.9, 1.0],
+        }
+    }
+
+    #[test]
+    fn build_about_rects_emits_backdrop_plus_panel_plus_four_borders() {
+        let window = (1920_u32, 1080_u32);
+        let rects = build_about_rects(window, &test_colors());
+        // 1 backdrop + 1 panel body + 4 border edges = 6 rects.
+        assert_eq!(rects.len(), 6, "expected 6 rects, got {}", rects.len());
+    }
+
+    #[test]
+    fn build_about_rects_first_rect_is_full_window_backdrop() {
+        let window = (1920_u32, 1080_u32);
+        let rects = build_about_rects(window, &test_colors());
+        let first = &rects[0];
+        // RectInstance stores pos+size as [x, y, w, h] in `pos_size`.
+        assert_eq!(first.pos_size, [0.0, 0.0, 1920.0, 1080.0]);
+        assert_eq!(first.color, [0.0, 0.0, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn build_about_rects_panel_body_matches_panel_rect() {
+        let window = (1920_u32, 1080_u32);
+        let (px, py, pw, ph) = panel_rect(window);
+        let rects = build_about_rects(window, &test_colors());
+        let body = &rects[1];
+        assert_eq!(body.pos_size, [px, py, pw, ph]);
+        assert_eq!(body.color, [0.05, 0.05, 0.07, 1.0]);
+    }
+
+    #[test]
+    fn build_about_rects_border_edges_use_border_color() {
+        let rects = build_about_rects((1920, 1080), &test_colors());
+        // Rects 2..6 are the four borders. Each must use border_fg.
+        for (i, r) in rects.iter().enumerate().skip(2) {
+            assert_eq!(
+                r.color,
+                [0.9, 0.9, 0.9, 1.0],
+                "rect index {i} should use border colour"
+            );
+        }
     }
 }
