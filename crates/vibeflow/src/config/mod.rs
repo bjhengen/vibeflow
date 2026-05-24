@@ -575,27 +575,60 @@ fn apply_colors(out: &mut Colors, section: schema::ColorsSection, errors: &mut V
 }
 
 fn apply_ai(schema: schema::AiSection, resolved: &mut Ai) {
+    use crate::config::bounds::{
+        clamp_with_warn, AI_DEBOUNCE_MS_MAX, AI_DEBOUNCE_MS_MIN, AI_EXPLICIT_STALE_STATE_S_MAX,
+        AI_EXPLICIT_STALE_STATE_S_MIN, AI_FOREGROUND_CHECK_INTERVAL_MS_MAX,
+        AI_FOREGROUND_CHECK_INTERVAL_MS_MIN, AI_HEURISTIC_SILENCE_MS_MAX,
+        AI_HEURISTIC_SILENCE_MS_MIN, AI_STALE_STATE_TIMEOUT_S_MAX, AI_STALE_STATE_TIMEOUT_S_MIN,
+    };
     if let Some(tools) = schema.tools {
         resolved.tools = tools;
     }
     if let Some(v) = schema.heuristic_silence_ms {
-        resolved.heuristic_silence_ms = v;
+        resolved.heuristic_silence_ms = clamp_with_warn(
+            "ai.heuristic_silence_ms",
+            v,
+            AI_HEURISTIC_SILENCE_MS_MIN,
+            AI_HEURISTIC_SILENCE_MS_MAX,
+        );
     }
     if let Some(v) = schema.stale_state_timeout_s {
-        resolved.stale_state_timeout_s = v;
+        resolved.stale_state_timeout_s = clamp_with_warn(
+            "ai.stale_state_timeout_s",
+            v,
+            AI_STALE_STATE_TIMEOUT_S_MIN,
+            AI_STALE_STATE_TIMEOUT_S_MAX,
+        );
     }
     if let Some(v) = schema.debounce_ms {
-        resolved.debounce_ms = v;
+        resolved.debounce_ms =
+            clamp_with_warn("ai.debounce_ms", v, AI_DEBOUNCE_MS_MIN, AI_DEBOUNCE_MS_MAX);
     }
     if let Some(v) = schema.foreground_check_interval_ms {
-        resolved.foreground_check_interval_ms = v;
+        resolved.foreground_check_interval_ms = clamp_with_warn(
+            "ai.foreground_check_interval_ms",
+            v,
+            AI_FOREGROUND_CHECK_INTERVAL_MS_MIN,
+            AI_FOREGROUND_CHECK_INTERVAL_MS_MAX,
+        );
     }
     if let Some(v) = schema.explicit_stale_state_s {
-        resolved.explicit_stale_state_s = v;
+        // 0 disables the fuse per existing semantic; skip clamp at 0.
+        resolved.explicit_stale_state_s = if v == 0 {
+            0
+        } else {
+            clamp_with_warn(
+                "ai.explicit_stale_state_s",
+                v,
+                AI_EXPLICIT_STALE_STATE_S_MIN,
+                AI_EXPLICIT_STALE_STATE_S_MAX,
+            )
+        };
     }
 }
 
 fn apply_bell(schema: schema::BellSection, resolved: &mut Bell, errors: &mut Vec<ConfigError>) {
+    use crate::config::bounds::{clamp_with_warn, BELL_DEBOUNCE_MS_MAX, BELL_DEBOUNCE_MS_MIN};
     if let Some(m) = schema.mode {
         match m.parse::<BellMode>() {
             Ok(mode) => resolved.mode = mode,
@@ -607,20 +640,44 @@ fn apply_bell(schema: schema::BellSection, resolved: &mut Bell, errors: &mut Vec
         }
     }
     if let Some(v) = schema.debounce_ms {
-        resolved.debounce_ms = v;
+        resolved.debounce_ms = clamp_with_warn(
+            "bell.debounce_ms",
+            v,
+            BELL_DEBOUNCE_MS_MIN,
+            BELL_DEBOUNCE_MS_MAX,
+        );
     }
 }
 
 fn apply_scrollback(schema: schema::ScrollbackSection, resolved: &mut Scrollback) {
+    use crate::config::bounds::{
+        clamp_with_warn, SCROLLBACK_HISTORY_LINES_MAX, SCROLLBACK_HISTORY_LINES_MIN,
+        SCROLLBACK_SCROLLBAR_FADE_MS_MAX, SCROLLBACK_SCROLLBAR_FADE_MS_MIN,
+        SCROLLBACK_WHEEL_LINES_PER_DETENT_MAX, SCROLLBACK_WHEEL_LINES_PER_DETENT_MIN,
+    };
     if let Some(v) = schema.history_lines {
-        // Edge case: 0 would panic alacritty_terminal's grid construction. Clamp to 1.
-        resolved.history_lines = v.max(1);
+        resolved.history_lines = clamp_with_warn(
+            "scrollback.history_lines",
+            v,
+            SCROLLBACK_HISTORY_LINES_MIN,
+            SCROLLBACK_HISTORY_LINES_MAX,
+        );
     }
     if let Some(v) = schema.wheel_lines_per_detent {
-        resolved.wheel_lines_per_detent = v.max(1);
+        resolved.wheel_lines_per_detent = clamp_with_warn(
+            "scrollback.wheel_lines_per_detent",
+            v,
+            SCROLLBACK_WHEEL_LINES_PER_DETENT_MIN,
+            SCROLLBACK_WHEEL_LINES_PER_DETENT_MAX,
+        );
     }
     if let Some(v) = schema.scrollbar_fade_ms {
-        resolved.scrollbar_fade_ms = v;
+        resolved.scrollbar_fade_ms = clamp_with_warn(
+            "scrollback.scrollbar_fade_ms",
+            v,
+            SCROLLBACK_SCROLLBAR_FADE_MS_MIN,
+            SCROLLBACK_SCROLLBAR_FADE_MS_MAX,
+        );
     }
     if let Some(v) = schema.snap_on_esc {
         resolved.snap_on_esc = v;
@@ -1190,5 +1247,57 @@ snap_on_esc = false
         let (cf, errors) = Config::load(&path);
         assert!(errors.is_empty(), "errors: {errors:?}");
         assert_eq!(cf.ai.explicit_stale_state_s, 120);
+    }
+
+    #[test]
+    fn apply_ai_clamps_oversize_heuristic_silence_ms() {
+        let schema = schema::AiSection {
+            tools: None,
+            heuristic_silence_ms: Some(100_000_000), // 100M ms; well past 60s max
+            stale_state_timeout_s: None,
+            debounce_ms: None,
+            foreground_check_interval_ms: None,
+            explicit_stale_state_s: None,
+        };
+        let mut resolved = Config::default_values().ai;
+        apply_ai(schema, &mut resolved);
+        assert_eq!(
+            resolved.heuristic_silence_ms, 60_000,
+            "must clamp to AI_HEURISTIC_SILENCE_MS_MAX"
+        );
+    }
+
+    #[test]
+    fn apply_ai_explicit_stale_zero_preserved() {
+        let schema = schema::AiSection {
+            tools: None,
+            heuristic_silence_ms: None,
+            stale_state_timeout_s: None,
+            debounce_ms: None,
+            foreground_check_interval_ms: None,
+            explicit_stale_state_s: Some(0),
+        };
+        let mut resolved = Config::default_values().ai;
+        apply_ai(schema, &mut resolved);
+        assert_eq!(
+            resolved.explicit_stale_state_s, 0,
+            "0 disables fuse; must not be clamped"
+        );
+    }
+
+    #[test]
+    fn apply_scrollback_clamps_oversize_history_lines() {
+        let schema = schema::ScrollbackSection {
+            history_lines: Some(100_000_000),
+            wheel_lines_per_detent: None,
+            scrollbar_fade_ms: None,
+            snap_on_esc: None,
+        };
+        let mut resolved = Config::default_values().scrollback;
+        apply_scrollback(schema, &mut resolved);
+        assert_eq!(
+            resolved.history_lines, 1_000_000,
+            "must clamp to SCROLLBACK_HISTORY_LINES_MAX"
+        );
     }
 }
