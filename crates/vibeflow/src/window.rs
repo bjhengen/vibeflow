@@ -351,6 +351,40 @@ impl WindowApp {
         }
     }
 
+    /// v0.1.2 About overlay: handle a `Pressed` key when `about_open == true`.
+    /// Returns `true` if the event was consumed (and the caller must
+    /// short-circuit further dispatch); `false` when the overlay is closed
+    /// and the caller should continue with normal key handling.
+    ///
+    /// Behaviour:
+    /// - ESC → closes the overlay, consumes the event.
+    /// - Bare modifier presses (Ctrl/Shift/Alt/Super alone) → consumed but do
+    ///   NOT close, so multi-key combos still feel right.
+    /// - Anything else → consumed, overlay stays open.
+    fn try_consume_about_keypress(&mut self, key: &winit::keyboard::Key) -> bool {
+        if !self.about_open {
+            return false;
+        }
+        use winit::keyboard::{Key, NamedKey};
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.about_open = false;
+                true
+            }
+            // Bare modifier keys must NOT close the overlay (mirrors the
+            // selection-clear lesson at lesson_keypress_clears_selection).
+            Key::Named(
+                NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper,
+            ) => true,
+            _ => true,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn about_open(&self) -> bool {
         self.about_open
@@ -363,6 +397,19 @@ impl WindowApp {
         target_idx: Option<usize>,
     ) {
         self.dispatch_menu_action(action, target_idx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_about_open_for_test(&mut self, open: bool) {
+        self.about_open = open;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_handle_about_keypress_for_test(
+        &mut self,
+        key: &winit::keyboard::Key,
+    ) -> bool {
+        self.try_consume_about_keypress(key)
     }
 
     /// Build a `WindowApp` with no window and no tabs. Call
@@ -1168,6 +1215,18 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 );
                 if event.state != ElementState::Pressed {
                     return;
+                }
+                // v0.1.2 About overlay (mutex-with menu + rename overlays).
+                // The About panel sits on top of all other layers in
+                // render order; its input capture mirrors that priority.
+                // Must run BEFORE the context_menu / rename branches.
+                if self.about_open {
+                    if self.try_consume_about_keypress(&event.logical_key) {
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                        return;
+                    }
                 }
                 // Stage 10: if a context menu is open, it gets first crack at
                 // keyboard input. Arrow keys navigate, Enter activates, Escape
@@ -2364,5 +2423,41 @@ mod tests {
             app.about_open(),
             "ShowAbout must set about_open = true"
         );
+    }
+
+    /// Test-only wrapper that simulates an `ElementState::Pressed` keypress
+    /// while `about_open == true` and returns whether the overlay closed.
+    /// Bypasses the full winit event-loop machinery; verifies only the
+    /// branch-cover for the input-capture rule.
+    #[test]
+    fn escape_while_about_open_closes_overlay() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        app.set_about_open_for_test(true);
+        let consumed = app.try_handle_about_keypress_for_test(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+        );
+        assert!(consumed, "ESC must be consumed by overlay");
+        assert!(!app.about_open(), "ESC must close the overlay");
+    }
+
+    #[test]
+    fn random_key_while_about_open_keeps_overlay_and_is_consumed() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        app.set_about_open_for_test(true);
+        let consumed = app.try_handle_about_keypress_for_test(
+            &winit::keyboard::Key::Character("a".into()),
+        );
+        assert!(consumed, "key press must be swallowed by overlay");
+        assert!(app.about_open(), "random key must NOT close the overlay");
+    }
+
+    #[test]
+    fn keypress_when_about_closed_is_not_consumed() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        // about_open stays false (default).
+        let consumed = app.try_handle_about_keypress_for_test(
+            &winit::keyboard::Key::Character("a".into()),
+        );
+        assert!(!consumed, "key event must fall through when overlay is closed");
     }
 }
