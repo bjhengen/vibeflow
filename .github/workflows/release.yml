@@ -31,15 +31,17 @@ jobs:
     name: Build AppImage (x86_64)
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed for softprops/action-gh-release to create the Release
+      contents: write       # softprops/action-gh-release creates the GitHub Release
+      id-token: write       # actions/attest-build-provenance: OIDC for SLSA provenance
+      attestations: write   # actions/attest-build-provenance: writes attestation back to repo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable as of 2026-05-24
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
 
       - name: Build release binary
         run: cargo build --release -p vibeflow
@@ -96,8 +98,20 @@ jobs:
           file squashfs-root/usr/bin/vibeflow
           rm -rf squashfs-root
 
+      - name: Attest build provenance for AppImage
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: vibeflow-x86_64.AppImage
+
       - name: Publish AppImage checksum
         run: sha256sum vibeflow-x86_64.AppImage > vibeflow-x86_64.AppImage.sha256
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          path: ./target/release/vibeflow
+          format: cyclonedx-json
+          output-file: vibeflow-x86_64.sbom.cdx.json
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -121,12 +135,13 @@ jobs:
           cat release-notes.md
 
       - name: Create GitHub Release and attach AppImage
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           name: "vibeflow ${{ github.ref_name }}"
           body_path: release-notes.md
           files: |
             vibeflow-x86_64.AppImage
             vibeflow-x86_64.AppImage.sha256
+            vibeflow-x86_64.sbom.cdx.json
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
