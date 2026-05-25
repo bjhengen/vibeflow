@@ -1887,31 +1887,40 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             .iter()
             .any(|tab| tab.state() == TabState::Waiting);
 
-        // v0.1.2 dirty-redraw: paint cadence is driven by either the Waiting-tab
-        // pulse-indicator animation (~10 FPS, was 60) or the cursor-blink
-        // boundary (~2 paints/sec on idle, was 10). All state-mutating paths
-        // request a redraw at the point of mutation — about 20 such sites.
+        // v0.1.2 dirty-redraw: paint only when a deadline actually elapses,
+        // NOT on every about_to_wait wake-up. winit on X11 (especially over
+        // VNC) wakes about_to_wait far more often than vsync rate from
+        // background X11 events — a previous version called request_redraw
+        // unconditionally here, which drove paint rate to ~60 FPS even on a
+        // completely idle terminal.
         //
-        // Initial v0.1.2 attempt kept the Waiting branch at 16 ms (60 FPS) for
-        // a "smooth" indicator pulse, but real-world testing showed 80% CPU
-        // with Claude Code idle in Waiting state. The pulse is a slow visual
-        // affordance, not a high-frequency animation — 100 ms (10 FPS) is
-        // visually identical to 60 FPS at the pulse's perceptual cadence.
-        let next_deadline = if any_waiting {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
-            now + Duration::from_millis(100)
+        // Cadence:
+        // - Waiting tab → 100 ms pulse animation (10 FPS, plenty for the slow
+        //   1.4 s sine wave). Was 60 FPS pre-v0.1.2.
+        // - No Waiting tab → next cursor-blink toggle boundary (~2 FPS idle).
+        let pulse_interval = if any_waiting {
+            Duration::from_millis(100)
         } else {
+            Duration::from_millis(500)
+        };
+        let pulse_deadline = self.last_redraw_request + pulse_interval;
+        let cursor_next = self
+            .renderer
+            .as_ref()
+            .and_then(|r| r.cursor_next_toggle_at(now));
+        let next_deadline = match cursor_next {
+            Some(c) if c < pulse_deadline => c,
+            _ => pulse_deadline,
+        };
+
+        // Only paint when the deadline has actually elapsed — gates against
+        // X11 / VNC event spam that wakes about_to_wait at >60 Hz.
+        if now >= next_deadline {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
+                self.last_redraw_request = now;
             }
-            let cursor_next = self
-                .renderer
-                .as_ref()
-                .and_then(|r| r.cursor_next_toggle_at(now));
-            cursor_next.unwrap_or(now + Duration::from_millis(1000))
-        };
+        }
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
     }
