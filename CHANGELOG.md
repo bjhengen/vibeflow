@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-25
+
+The first feature-bundle release after v0.1. Five sub-features merged via individual PRs (#1–#4 plus the direct-merged logging facility), each with senior pre-execution review of plans vs actual source, subagent-driven per-task implementation with two-stage review, and a manual VNC smoke walk before merge.
+
+### Added
+
+- **CLI `--version` / `-V` flag.** Short-circuits before any winit/wgpu init so the version is queryable headless (over SSH, in Dockerfile builds, in CI). 3 integration tests pin exit code 0, exact stdout `vibeflow {version}\n`, empty stderr, and elapsed-time bound (no GUI fall-through).
+- **"About vibeflow" right-click menu item → centred modal overlay panel.** 5 lines (version, gap, tagline, license + repo URL, dismissal hint). 880×240 logical pixels, theme-coloured, dim backdrop. ESC / any keypress / any mouse click closes (and swallows the event so it doesn't leak to the PTY).
+- **File logging facility** (Spec A', closes the Stage-9 TODO). Default stderr filter is now `vibeflow=warn` (quiet by default); INFO+ is captured to a daily-rotated file at `$XDG_STATE_HOME/vibeflow/vibeflow.log.YYYY-MM-DD`. `RUST_LOG` env var still overrides at runtime.
+- **OSC 52 clipboard WRITE** (Codex review #5 resolved). Full pipeline parser → `DispatchEvent::Osc52Write` → `SessionEvent::Osc52ClipboardWrite` → `Clipboard::copy_clipboard_only` / `copy_primary`. Read is intentionally not implemented (security default — matches xterm/foot/wezterm — see threat model in the OSC 52 design spec).
+- **Per-flag terminal attribute rendering.** `BOLD` and `ITALIC` cells route to embedded JetBrains Mono variant fonts via a `font_attrs_for(cell.flags)` helper; `UNDERLINE` / `DOUBLE_UNDERLINE` / `UNDERCURL` / `DOTTED_UNDERLINE` / `DASHED_UNDERLINE` / `STRIKEOUT` render as decoration quads; `INVERSE` / `HIDDEN` / `DIM` mutate per-cell fg/bg before glyph emission. Order of operations within the cell loop is `INVERSE → HIDDEN → DIM → cursor-invert`. The atlas cache key gains `(Weight, Style)` so all four font variants share the same atlas without collision.
+- **JetBrains Mono Bold + Italic + BoldItalic v2.304 fonts embedded** alongside the existing Regular. AppImage growth ~+1.8 MB.
+- **Glyph atlas hard caps** with full-reset on overflow (4096 px mono, 2048 px color). Adversarial-input safety net — `tracing::warn!` on reset; cache.clear() + shelves.clear() + texture recreate at initial size; next paint re-rasterises naturally.
+- **Supply-chain hardening** (Spec B): all `release.yml` and `ci.yml` GitHub Actions are SHA-pinned to specific commits; `actions/attest-build-provenance@v4.1.0` generates an SLSA build provenance attestation alongside the AppImage; SBOM (cyclonedx) is generated and uploaded with the release; new packaging-assertions CI job validates `.crate` + npm-pack contents end-to-end AND enforces Cargo workspace version == `bindings/npm/package.json` version (catches the v0.1.1 npm-version slip pattern).
+- **Config-value bounds** (Codex review #8): `bounds::clamp_with_warn` clamps `ai.polling_interval_ms`, `scrollback.history_lines`, etc. with a warn-log on out-of-range values rather than silently accepting them.
+
+### Changed
+
+- **Cursor rendering for empty cells** (the headline Claude Code TUI bug). The cursor cell is iterated by alacritty's `display_iter` (the earlier hypothesis that empty cells are skipped was wrong); the actual bug was an over-aggressive `continue` that suppressed `INVERSE`-flagged "visual cursor" characters that TUI libraries like Ink draw at the cursor position after hiding the terminal cursor via DECTCEM `?25l`. Cell content now renders regardless of terminal-cursor visibility state; the per-cell `INVERSE` handler above correctly inverts Ink's visual cursor; a standalone cursor quad is emitted after the cell loop only when the cursor cell wasn't iterated at all.
+- **Paint cadence — idle CPU 78% → 5%** (the headline performance bug). `about_to_wait` previously called `request_redraw()` unconditionally on every wake; winit on X11 (especially over VNC) wakes `about_to_wait` from background X11 events far more often than vsync rate, which drove vibeflow to paint at ~60 FPS continuously even on a bare bash prompt. The new logic gates `request_redraw()` behind an elapsed-time deadline derived from cursor-blink boundary (idle) or pulse interval (`TabState::Waiting`). Most wakes now just re-set `WaitUntil` and return.
+- **Typing latency close to xterm.** New `last_activity_at` tracks user keypresses + PTY echo events; while activity is recent (within 500 ms), `WaitUntil` tightens to 4 ms so the PTY echo queue is drained at ~vsync latency, then falls back to the blink boundary for low idle CPU.
+- **About-overlay default panel size 560×200 → 880×240.** First-VNC-smoke catch: the spec's 560 px width didn't fit the tagline or license + URL lines at JetBrains Mono's actual cell pitch (`lesson_layout_default_too_small`).
+- **Default startup is quieter.** Per the logging change, stderr no longer streams `info!` from winit / wgpu / cosmic-text / vibeflow's own per-event logs; only `warn!`+`error!` reach stderr at the new default filter.
+- **Theme registry capped at 50 themes loaded** (Codex review #8, defensive against `~/.config/vibeflow/themes/` directories with many `.toml` files).
+- **`--import-colors` rejects files exceeding 256 KB** (Codex review #8, defensive against pathological iTerm2 `.itermcolors` payloads).
+- **`MenuAction::OpenRepoUrl` removed.** The grid-menu "About vibeflow" item used to spawn `xdg-open <REPO_URL>`; with the new About overlay showing the URL as visible text, the `xdg-open` path is no longer needed.
+
+### Fixed
+
+- **Decoration quads (UNDERLINE / STRIKEOUT / etc.) render in solid fg color** rather than blending with whatever pixel happened to live at atlas (0, 0). The shader's mono path is `mix(bg, fg, alpha)`; with a zero-size atlas rect, `alpha` is sampled at atlas (0, 0) — an undefined first-glyph pixel. Passing `(fg, fg)` instead of `(fg, bg)` resolves to pure `fg` regardless. Pinned by a regression test in `quad.rs::tests`.
+
+### Internal
+
+- **Final v0.1.2 sub-feature merged via PR #4** (Render). v0.1.2 shipped via four GitHub PRs (#1 OSC 52, #2 supply-chain, #3 About, #4 Render) plus one direct merge (logging). The PR-based workflow was adopted mid-v0.1.2 and is now the standing pattern for non-trivial work (`feedback_pr_workflow`).
+- **Subagent-driven-development cumulative scale**: across the 4 PRs, ~40 implementation tasks were dispatched to fresh per-task subagents with two-stage review (spec-compliance then code-quality). Senior pre-execution Sonnet review of each plan vs actual source caught 12+ compile blockers before dispatch.
+
 ## [0.1.1] - 2026-05-20
 
 ### Changed
