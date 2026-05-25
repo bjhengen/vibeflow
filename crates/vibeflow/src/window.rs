@@ -268,6 +268,13 @@ pub struct WindowApp {
     /// far-past epoch initially so the first cadence-driven paint fires
     /// promptly.
     last_redraw_request: Instant,
+    /// v0.1.2 perf: timestamp of the most recent user input or PTY activity.
+    /// `about_to_wait` tightens its `WaitUntil` cadence to ~8 ms while
+    /// activity is recent (last 500 ms) so PTY-echo bytes get drained into
+    /// the Term and painted promptly (~vsync latency for typing). After
+    /// activity quiesces, cadence falls back to the cursor-blink boundary
+    /// for low idle CPU.
+    last_activity_at: Instant,
 }
 
 impl WindowApp {
@@ -502,6 +509,7 @@ impl WindowApp {
             about_open: false,
             // Far-past epoch ensures the first about_to_wait paint fires promptly.
             last_redraw_request: Instant::now() - Duration::from_secs(3600),
+            last_activity_at: Instant::now() - Duration::from_secs(3600),
         }
     }
 
@@ -530,19 +538,15 @@ impl WindowApp {
             SessionEvent::TermUpdated => {
                 // Bytes were fed into the per-session Term in PtySession::poll.
                 // Request a redraw so the renderer reads the new grid contents.
-                //
-                // v0.1.2: this is intentionally NOT throttled. winit coalesces
-                // multiple request_redraw() calls within one vsync into a
-                // single RedrawRequested dispatch, so PTY-event bursts paint
-                // at most at vsync rate (~60 FPS). An earlier throttle here
-                // added up to 33 ms of typing latency on every echoed char
-                // for negligible CPU savings — the dominant CPU drain came
-                // from about_to_wait, which is now gated separately.
                 tracing::trace!(tab = idx, "term updated");
+                let now = Instant::now();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
-                    self.last_redraw_request = Instant::now();
+                    self.last_redraw_request = now;
                 }
+                // Mark recent PTY activity so about_to_wait tightens its
+                // WaitUntil cadence — keeps typing latency at ~vsync.
+                self.last_activity_at = now;
             }
             SessionEvent::Died => {
                 tracing::warn!(tab = idx, "session died");
@@ -1270,6 +1274,9 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                // Mark recent activity so about_to_wait uses the tight
+                // 8 ms wake cadence — keeps PTY-echo latency at ~vsync.
+                self.last_activity_at = Instant::now();
                 // v0.1.2 About overlay (mutex-with menu + rename overlays).
                 // The About panel sits on top of all other layers in
                 // render order; its input capture mirrors that priority.
@@ -1886,10 +1893,19 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         // unconditionally here, which drove paint rate to ~60 FPS even on a
         // completely idle terminal.
         //
-        // Cadence:
+        // Paint cadence (governs request_redraw):
         // - Waiting tab → 100 ms pulse animation (10 FPS, plenty for the slow
         //   1.4 s sine wave). Was 60 FPS pre-v0.1.2.
         // - No Waiting tab → next cursor-blink toggle boundary (~2 FPS idle).
+        //
+        // Wake cadence (governs WaitUntil) is independent and tighter:
+        // - Recent activity (typing / PTY echo within the last 500 ms) →
+        //   8 ms wake so PTY-echo bytes get drained into the Term and
+        //   painted at ~vsync latency. Without this, PTY data sits in the
+        //   reader-channel queue until the next blink boundary fires
+        //   about_to_wait — felt as ~250 ms typing lag on a quiet X11
+        //   display (e.g. VNC without other input traffic).
+        // - Otherwise → same as the paint deadline (no wasted wakes).
         let pulse_interval = if any_waiting {
             Duration::from_millis(100)
         } else {
@@ -1900,21 +1916,32 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             .renderer
             .as_ref()
             .and_then(|r| r.cursor_next_toggle_at(now));
-        let next_deadline = match cursor_next {
+        let paint_deadline = match cursor_next {
             Some(c) if c < pulse_deadline => c,
             _ => pulse_deadline,
         };
 
         // Only paint when the deadline has actually elapsed — gates against
         // X11 / VNC event spam that wakes about_to_wait at >60 Hz.
-        if now >= next_deadline {
+        if now >= paint_deadline {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
                 self.last_redraw_request = now;
             }
         }
 
-        event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
+        // Wake-cadence floor when input/PTY activity is recent — keeps typing
+        // latency low without holding the event loop in a tight loop on idle.
+        const ACTIVE_WINDOW: Duration = Duration::from_millis(500);
+        const ACTIVE_WAKE_INTERVAL: Duration = Duration::from_millis(8);
+        let wake_deadline = if now.duration_since(self.last_activity_at) < ACTIVE_WINDOW {
+            let active_wake = now + ACTIVE_WAKE_INTERVAL;
+            std::cmp::min(active_wake, paint_deadline)
+        } else {
+            paint_deadline
+        };
+
+        event_loop.set_control_flow(ControlFlow::WaitUntil(wake_deadline));
     }
 
     fn user_event(
