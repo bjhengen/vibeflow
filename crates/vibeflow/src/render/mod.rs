@@ -769,6 +769,13 @@ impl Renderer {
         self.cursor.set_blink_ms(ms);
     }
 
+    /// v0.1.2 dirty-redraw: expose the cursor's next blink boundary so
+    /// `WindowApp::about_to_wait` can schedule a precise `WaitUntil` instead
+    /// of a fixed-cadence 100 ms timer. Returns `None` when blink is disabled.
+    pub fn cursor_next_toggle_at(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        self.cursor.next_toggle_at(now)
+    }
+
     /// Stage 13: live-reload the font subsystem with the new priority list.
     /// Rebuilds cosmic-text's FontSystem/SwashCache (see TextEngine::set_font_priorities).
     pub fn set_font_priorities(&mut self, priority: &[String]) {

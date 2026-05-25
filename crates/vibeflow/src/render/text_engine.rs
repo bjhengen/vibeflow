@@ -26,10 +26,23 @@ pub enum GlyphKind {
 
 /// Embedded primary font. Same JBM file used by Stage 5's fontdue atlas.
 pub const PRIMARY_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Regular.ttf");
+pub const BOLD_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Bold.ttf");
+pub const ITALIC_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Italic.ttf");
+pub const BOLD_ITALIC_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-BoldItalic.ttf");
 
 /// Stage 7 renders all glyphs at 16 px (matches Stage 5's `FONT_PX = 16.0`).
 /// Configurable in Stage 9 (TOML config).
 pub const FONT_PX: f32 = 16.0;
+
+/// Hard cap on the mono atlas height. Adversarial input (e.g., random Unicode
+/// flooding) can otherwise grow the atlas without bound. At 4096 px tall and
+/// 256 px wide, the atlas is ~1 MB R8Unorm. Above this cap the cache is fully
+/// reset (glyphs re-render on next paint).
+const MAX_MONO_ATLAS_DIM: u32 = 4096;
+
+/// Hard cap on the color atlas height. Color glyphs are 4× bytes per pixel
+/// (RGBA8). Cap matches mono effective bytes.
+const MAX_COLOR_ATLAS_DIM: u32 = 2048;
 
 /// One rasterized glyph plus its placement metrics (relative to the cell origin).
 #[derive(Debug, Clone)]
@@ -150,7 +163,7 @@ pub struct TextEngine {
     color_atlas_h: u32,
     color_shelves: Vec<Shelf>,
 
-    cache: HashMap<char, Option<GlyphRef>>, // None = no font coverage for this codepoint; do not retry
+    cache: HashMap<(char, cosmic_text::Weight, cosmic_text::Style), Option<GlyphRef>>, // None = no font coverage for this codepoint; do not retry
     /// True when EITHER atlas has been re-allocated since the last call.
     atlases_dirty: bool,
     queue: Arc<wgpu::Queue>,
@@ -167,6 +180,11 @@ pub struct TextEngine {
 fn build_font_subsystem() -> (FontSystem, SwashCache) {
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_font_data(PRIMARY_FONT.to_vec());
+    font_system.db_mut().load_font_data(BOLD_FONT.to_vec());
+    font_system.db_mut().load_font_data(ITALIC_FONT.to_vec());
+    font_system
+        .db_mut()
+        .load_font_data(BOLD_ITALIC_FONT.to_vec());
     let swash_cache = SwashCache::new();
     (font_system, swash_cache)
 }
@@ -318,10 +336,18 @@ impl TextEngine {
     /// Rasterize a single character. Returns `Some` for any glyph the font
     /// stack can produce, `None` only if no fallback covers the codepoint.
     /// `RasterImage::kind` distinguishes mono (R8) from color (RGBA premultiplied).
-    pub fn rasterize(&mut self, c: char) -> Option<RasterImage> {
+    pub fn rasterize(
+        &mut self,
+        c: char,
+        weight: cosmic_text::Weight,
+        style: cosmic_text::Style,
+    ) -> Option<RasterImage> {
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        let attrs = Attrs::new().family(Family::Name("JetBrains Mono"));
+        let attrs = Attrs::new()
+            .family(Family::Name("JetBrains Mono"))
+            .weight(weight)
+            .style(style);
         // `Shaping::Advanced` is required for cosmic-text's full font fallback
         // chain (rustybuzz). With `Shaping::Basic`, missing codepoints render
         // as the primary font's tofu glyph instead of falling through to the
@@ -363,17 +389,27 @@ impl TextEngine {
     /// Look up (or rasterize + atlas) the glyph for `c`. Returns `None` for
     /// characters the font stack can't render. The cache memoises both
     /// successes and failures.
-    pub fn glyph_for(&mut self, c: char) -> Option<GlyphRef> {
-        if let Some(cached) = self.cache.get(&c) {
+    pub fn glyph_for(
+        &mut self,
+        c: char,
+        weight: cosmic_text::Weight,
+        style: cosmic_text::Style,
+    ) -> Option<GlyphRef> {
+        if let Some(cached) = self.cache.get(&(c, weight, style)) {
             return *cached;
         }
-        let result = self.try_atlas(c);
-        self.cache.insert(c, result);
+        let result = self.try_atlas(c, weight, style);
+        self.cache.insert((c, weight, style), result);
         result
     }
 
-    fn try_atlas(&mut self, c: char) -> Option<GlyphRef> {
-        let img = self.rasterize(c)?;
+    fn try_atlas(
+        &mut self,
+        c: char,
+        weight: cosmic_text::Weight,
+        style: cosmic_text::Style,
+    ) -> Option<GlyphRef> {
+        let img = self.rasterize(c, weight, style)?;
         if img.width == 0 || img.height == 0 {
             return Some(GlyphRef {
                 kind: img.kind,
@@ -430,16 +466,42 @@ impl TextEngine {
     }
 
     /// Allocate a `w × h` rect in the mono atlas, growing as needed.
+    ///
+    /// If growth would exceed `MAX_MONO_ATLAS_DIM`, the cache and shelf-pack
+    /// state are fully reset and the atlas is recreated at its initial size.
+    /// All cached `GlyphRef`s are invalidated; callers will re-render on the
+    /// next `glyph_for` miss.
     fn allocate_mono(&mut self, w: u32, h: u32) -> (u32, u32) {
         let need_grow = !shelves_can_fit(&self.shelves, self.atlas_w, self.atlas_h, w, h);
         if need_grow {
             let new_h = double_until_fits(self.atlas_h, h, &self.shelves);
-            self.grow_mono_atlas(new_h);
+            if new_h > MAX_MONO_ATLAS_DIM {
+                tracing::warn!(
+                    current_h = self.atlas_h,
+                    requested_h = new_h,
+                    cap = MAX_MONO_ATLAS_DIM,
+                    "glyph mono atlas hit size cap; resetting cache",
+                );
+                self.cache.clear();
+                self.shelves.clear();
+                // Set atlas_h to ATLAS_INITIAL_H BEFORE calling grow_mono_atlas
+                // so its `new_h >= self.atlas_h` assertion is satisfied
+                // (ATLAS_INITIAL_H >= ATLAS_INITIAL_H).
+                self.atlas_h = ATLAS_INITIAL_H;
+                self.grow_mono_atlas(ATLAS_INITIAL_H);
+            } else {
+                self.grow_mono_atlas(new_h);
+            }
         }
         shelf_pack(&mut self.shelves, self.atlas_w, w, h)
     }
 
     /// Allocate a `w × h` rect in the color atlas, growing as needed.
+    ///
+    /// If growth would exceed `MAX_COLOR_ATLAS_DIM`, the cache and shelf-pack
+    /// state are fully reset and the atlas is recreated at its initial size.
+    /// All cached `GlyphRef`s are invalidated; callers will re-render on the
+    /// next `glyph_for` miss.
     fn allocate_color(&mut self, w: u32, h: u32) -> (u32, u32) {
         let need_grow = !shelves_can_fit(
             &self.color_shelves,
@@ -450,7 +512,23 @@ impl TextEngine {
         );
         if need_grow {
             let new_h = double_until_fits(self.color_atlas_h, h, &self.color_shelves);
-            self.grow_color_atlas(new_h);
+            if new_h > MAX_COLOR_ATLAS_DIM {
+                tracing::warn!(
+                    current_h = self.color_atlas_h,
+                    requested_h = new_h,
+                    cap = MAX_COLOR_ATLAS_DIM,
+                    "glyph color atlas hit size cap; resetting cache",
+                );
+                self.cache.clear();
+                self.color_shelves.clear();
+                // Set color_atlas_h to COLOR_ATLAS_INITIAL_H BEFORE calling
+                // grow_color_atlas so its `new_h >= self.color_atlas_h`
+                // assertion is satisfied (COLOR_ATLAS_INITIAL_H >= COLOR_ATLAS_INITIAL_H).
+                self.color_atlas_h = COLOR_ATLAS_INITIAL_H;
+                self.grow_color_atlas(COLOR_ATLAS_INITIAL_H);
+            } else {
+                self.grow_color_atlas(new_h);
+            }
         }
         shelf_pack(&mut self.color_shelves, self.color_atlas_w, w, h)
     }
@@ -617,10 +695,10 @@ impl TextEngine {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
-    fn test_engine() -> TextEngine {
+    pub fn test_engine() -> TextEngine {
         // `Backends::GL` is wgpu's most portable backend on Linux, but it
         // requires a usable OpenGL implementation (Mesa with software
         // rendering at minimum: `LIBGL_ALWAYS_SOFTWARE=1`). On a vanilla
@@ -669,7 +747,9 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_ascii_letter_returns_image() {
         let mut engine = test_engine();
-        let img = engine.rasterize('A').unwrap();
+        let img = engine
+            .rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert!(img.width > 0);
         assert!(img.height > 0);
         assert_eq!(img.data.len(), (img.width * img.height) as usize);
@@ -684,7 +764,7 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_space_returns_none_or_empty_image() {
         let mut engine = test_engine();
-        let img = engine.rasterize(' ');
+        let img = engine.rasterize(' ', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         // cosmic-text returns either no image or an empty one for whitespace.
         if let Some(img) = img {
             assert_eq!(img.data.iter().filter(|&&a| a > 0).count(), 0);
@@ -698,15 +778,23 @@ mod tests {
         // 中 (U+4E2D) — JBM doesn't carry CJK. fontdb should find a system font.
         // If the test env has no CJK font, this returns None — assert either
         // outcome works, just that we don't panic.
-        let _img = engine.rasterize('中');
+        let _img = engine.rasterize(
+            '中',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal,
+        );
     }
 
     #[test]
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_caches_repeat_lookups() {
         let mut engine = test_engine();
-        let r1 = engine.glyph_for('A').unwrap();
-        let r2 = engine.glyph_for('A').unwrap();
+        let r1 = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
+        let r2 = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert_eq!(r1, r2);
     }
 
@@ -714,8 +802,12 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_assigns_distinct_atlas_rects() {
         let mut engine = test_engine();
-        let a = engine.glyph_for('A').unwrap();
-        let b = engine.glyph_for('B').unwrap();
+        let a = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
+        let b = engine
+            .glyph_for('B', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         // Different glyphs must occupy different rects.
         assert_ne!(
             (a.atlas_x, a.atlas_y),
@@ -731,13 +823,13 @@ mod tests {
         let initial_h = engine.atlas_size().1;
         // Force many distinct glyphs.
         for c in 'A'..='Z' {
-            engine.glyph_for(c);
+            engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         }
         for c in 'a'..='z' {
-            engine.glyph_for(c);
+            engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         }
         for c in 'Α'..='Ω' {
-            engine.glyph_for(c);
+            engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         }
         let (_, h_after) = engine.atlas_size();
         // Either fits in original size, or grew. Both are valid; we just
@@ -754,7 +846,9 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_mono_letter_returns_mono_kind() {
         let mut engine = test_engine();
-        let img = engine.rasterize('A').unwrap();
+        let img = engine
+            .rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert_eq!(img.kind, GlyphKind::Mono);
         assert_eq!(img.data.len(), img.width as usize * img.height as usize);
     }
@@ -764,7 +858,11 @@ mod tests {
     fn rasterize_color_emoji_returns_color_kind() {
         let mut engine = test_engine();
         // 🎉 (U+1F389). Skip cleanly if the test env has no color emoji font.
-        if let Some(img) = engine.rasterize('🎉') {
+        if let Some(img) = engine.rasterize(
+            '🎉',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal,
+        ) {
             assert_eq!(img.kind, GlyphKind::Color);
             // RGBA: data length = 4 * width * height.
             assert_eq!(img.data.len(), 4 * img.width as usize * img.height as usize);
@@ -776,10 +874,21 @@ mod tests {
     fn glyph_for_emoji_routes_to_color_atlas() {
         let mut engine = test_engine();
         // Skip cleanly if no color emoji font in the test env.
-        if let Some(g) = engine.glyph_for('🎉') {
+        if let Some(g) = engine.glyph_for(
+            '🎉',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal,
+        ) {
             assert_eq!(g.kind, GlyphKind::Color);
             // Cache hit on second call returns identical GlyphRef.
-            assert_eq!(engine.glyph_for('🎉'), Some(g));
+            assert_eq!(
+                engine.glyph_for(
+                    '🎉',
+                    cosmic_text::Weight::NORMAL,
+                    cosmic_text::Style::Normal
+                ),
+                Some(g)
+            );
         }
     }
 
@@ -787,7 +896,9 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_letter_routes_to_mono_atlas() {
         let mut engine = test_engine();
-        let g = engine.glyph_for('A').unwrap();
+        let g = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert_eq!(g.kind, GlyphKind::Mono);
     }
 
@@ -805,7 +916,7 @@ mod tests {
         // emoji coverage entirely.
         for code in (0x1F600u32..=0x1F64Fu32).chain(0x1F300u32..=0x1F320u32) {
             if let Some(c) = char::from_u32(code) {
-                engine.glyph_for(c);
+                engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
             }
         }
         let (_, h_after) = engine.color_atlas_size();
@@ -815,5 +926,90 @@ mod tests {
             h_after,
             initial_h
         );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn glyph_for_caches_each_style_independently() {
+        // The cache key MUST include weight and style. Look up the same char
+        // with four (weight, style) combinations — each must succeed and the
+        // cache should hold all four entries afterwards.
+        let mut engine = test_engine();
+        let normal_normal =
+            engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
+        let bold_normal =
+            engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal);
+        let normal_italic =
+            engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic);
+        let bold_italic =
+            engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic);
+
+        assert!(normal_normal.is_some(), "regular 'A' must resolve");
+        assert!(bold_normal.is_some(), "bold 'A' must resolve");
+        assert!(normal_italic.is_some(), "italic 'A' must resolve");
+        assert!(bold_italic.is_some(), "bold-italic 'A' must resolve");
+
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal
+        )));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::BOLD,
+            cosmic_text::Style::Normal
+        )));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Italic
+        )));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::BOLD,
+            cosmic_text::Style::Italic
+        )));
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn allocate_mono_resets_atlas_when_hitting_cap() {
+        let mut engine = test_engine();
+        // Force atlas growth past 4096 via repeated tall allocations.
+        for _ in 0..50 {
+            let _ = engine.allocate_mono(128, 128);
+        }
+        // The cap kicked in: atlas_h must remain <= 4096.
+        assert!(
+            engine.atlas_h <= 4096,
+            "atlas_h must never exceed cap; got {}",
+            engine.atlas_h
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn allocate_color_resets_atlas_when_hitting_cap() {
+        let mut engine = test_engine();
+        for _ in 0..50 {
+            let _ = engine.allocate_color(128, 128);
+        }
+        assert!(
+            engine.color_atlas_h <= 2048,
+            "color_atlas_h must never exceed cap; got {}",
+            engine.color_atlas_h
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn post_atlas_reset_lookup_re_renders_glyph() {
+        let mut engine = test_engine();
+        for _ in 0..50 {
+            let _ = engine.allocate_mono(128, 128);
+        }
+        // After reset, a fresh glyph_for must still resolve.
+        let g = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
+        assert!(g.is_some(), "post-reset glyph_for must still resolve");
     }
 }

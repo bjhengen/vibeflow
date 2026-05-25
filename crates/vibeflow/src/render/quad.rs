@@ -352,6 +352,95 @@ impl QuadPipeline {
 use crate::render::cursor::CursorBlink;
 use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 
+/// Decoration quads for the various underline + strikeout flag combinations.
+/// Returns a list of `(x_off, y_off, w, h)` in cell-local coordinates; the
+/// caller maps them to screen by adding `(screen_x, screen_y)`.
+///
+/// T7 covers single + double underline. T8 will extend with UNDERCURL,
+/// DOTTED_UNDERLINE, DASHED_UNDERLINE variants.
+fn underline_geometry(
+    flags: alacritty_terminal::term::cell::Flags,
+    cell_w: u32,
+    cell_h: u32,
+) -> Vec<(f32, f32, f32, f32)> {
+    use alacritty_terminal::term::cell::Flags;
+    let cw = cell_w as f32;
+    let ch = cell_h as f32;
+    if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        vec![(0.0, ch - 3.0, cw, 1.0), (0.0, ch - 1.0, cw, 1.0)]
+    } else if flags.contains(Flags::UNDERCURL) {
+        // Cheap 4-quad zigzag approximation. A true curl would need shader
+        // support; this conveys "wavy" at v0.1.2 cost.
+        let q = cw / 4.0;
+        vec![
+            (0.0, ch - 1.0, q, 1.0),
+            (q, ch - 3.0, q, 1.0),
+            (q * 2.0, ch - 1.0, q, 1.0),
+            (q * 3.0, ch - 3.0, q, 1.0),
+        ]
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        // Dot every 2 px, 1 px wide.
+        let mut out = Vec::new();
+        let mut x = 0.0;
+        while x < cw {
+            out.push((x, ch - 2.0, 1.0, 1.0));
+            x += 2.0;
+        }
+        out
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        // Dash 3 px on, 2 px off.
+        let mut out = Vec::new();
+        let mut x = 0.0;
+        while x < cw {
+            let dash_w = (cw - x).min(3.0);
+            out.push((x, ch - 2.0, dash_w, 1.0));
+            x += 5.0;
+        }
+        out
+    } else if flags.contains(Flags::UNDERLINE) {
+        vec![(0.0, ch - 2.0, cw, 1.0)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Strikeout: single 1 px line near mid-x-height (approximated as 30%
+/// of cell_h above baseline). cosmic-text doesn't expose x-height
+/// directly for monospace metrics; the 30% factor is adequate.
+fn strikeout_geometry(
+    flags: alacritty_terminal::term::cell::Flags,
+    cell_w: u32,
+    cell_h: u32,
+    baseline_y: f32,
+) -> Vec<(f32, f32, f32, f32)> {
+    use alacritty_terminal::term::cell::Flags;
+    if flags.contains(Flags::STRIKEOUT) {
+        let strike_y_off = baseline_y - (cell_h as f32 * 0.30);
+        vec![(0.0, strike_y_off, cell_w as f32, 1.0)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Derive the cosmic-text `(Weight, Style)` to use for the cell's glyph from
+/// alacritty's cell flags. `cell::Flags::BOLD_ITALIC` is just `BOLD | ITALIC`
+/// set together, so the two branches compose naturally.
+fn font_attrs_for(
+    flags: alacritty_terminal::term::cell::Flags,
+) -> (cosmic_text::Weight, cosmic_text::Style) {
+    let weight = if flags.contains(alacritty_terminal::term::cell::Flags::BOLD) {
+        cosmic_text::Weight::BOLD
+    } else {
+        cosmic_text::Weight::NORMAL
+    };
+    let style = if flags.contains(alacritty_terminal::term::cell::Flags::ITALIC) {
+        cosmic_text::Style::Italic
+    } else {
+        cosmic_text::Style::Normal
+    };
+    (weight, style)
+}
+
 /// Walk the active grid and emit one [`QuadInstance`] per visible cell.
 /// Skips cells whose glyph is unrenderable (`text_engine.glyph_for` returned
 /// `None`) — those become invisible cells (background still drawn via the
@@ -415,6 +504,7 @@ pub fn build_cell_instances(
     };
     let baseline_y = text_engine.baseline_y() as f32;
 
+    let mut cursor_was_drawn_in_loop = false;
     let mut out = Vec::new();
     for cell in content.display_iter {
         let line = cell.point.line.0;
@@ -437,14 +527,55 @@ pub fn build_cell_instances(
         // IMPORTANT: preserve Stage 6 mod.rs's resolve_color arg order:
         // `(color, &Colors, fg_default, bg_default)` — same order for both fg
         // and bg lookups.
-        let fg_rgb = resolve_color(cell.fg, colors, fg_default, bg_default);
-        let bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
-        // Skip cursor highlight when scrolled into scrollback — the cursor
-        // lives on the live viewport, not in history.
+        let mut fg_rgb = resolve_color(cell.fg, colors, fg_default, bg_default);
+        let mut bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
+
+        // v0.1.2 per-flag attribute mutations.
+        // (a) INVERSE — swap before any other transform.
+        if cell
+            .flags
+            .contains(alacritty_terminal::term::cell::Flags::INVERSE)
+        {
+            std::mem::swap(&mut fg_rgb, &mut bg_rgb);
+        }
+        // (b) HIDDEN — text invisible (fg = bg).
+        if cell
+            .flags
+            .contains(alacritty_terminal::term::cell::Flags::HIDDEN)
+        {
+            fg_rgb = bg_rgb;
+        }
+        // (c) DIM — multiply fg channels by 0.55.
+        if cell
+            .flags
+            .contains(alacritty_terminal::term::cell::Flags::DIM)
+        {
+            fg_rgb.r = (fg_rgb.r as f32 * 0.55) as u8;
+            fg_rgb.g = (fg_rgb.g as f32 * 0.55) as u8;
+            fg_rgb.b = (fg_rgb.b as f32 * 0.55) as u8;
+        }
+
+        // Cursor invert — applies AFTER per-flag mutations.
+        // Skip cursor highlight when scrolled into scrollback (cursor lives on
+        // the live viewport, not in history).
+        //
+        // CRITICAL: the cell content ALWAYS renders. We only swap fg/bg when
+        // the terminal cursor should be visible (DECTCEM ?25h, blink on, etc.).
+        // If we suppressed the cell when the cursor was hidden, we'd lose
+        // INVERSE-flagged "visual cursor" characters that TUI libraries like
+        // Ink draw at the cursor position after hiding the terminal cursor.
         let is_cursor = display_offset == 0 && cell.point == cursor_state.point;
         let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
         if is_cursor && is_session_alive && cursor_shape_visible && cursor_visible_per_blink {
             std::mem::swap(&mut fg, &mut bg);
+            cursor_was_drawn_in_loop = true;
+        } else if is_cursor {
+            // Cursor cell was iterated but the terminal cursor is currently
+            // invisible (DECTCEM ?25l, blink off-phase, dead session, or
+            // Hidden shape). Render the cell content normally — don't swap,
+            // don't skip. Mark as iterated so the post-loop standalone
+            // emission doesn't double-draw.
+            cursor_was_drawn_in_loop = true;
         }
 
         let screen_x = (col * cell_w) as f32;
@@ -455,15 +586,18 @@ pub fn build_cell_instances(
             cell_w as f32
         };
 
-        let glyph = text_engine.glyph_for(cell.c).unwrap_or(GlyphRef {
-            kind: GlyphKind::Mono,
-            atlas_x: 0,
-            atlas_y: 0,
-            atlas_w: 0,
-            atlas_h: 0,
-            bearing_x: 0,
-            bearing_y: 0,
-        });
+        let (weight, style) = font_attrs_for(cell.flags);
+        let glyph = text_engine
+            .glyph_for(cell.c, weight, style)
+            .unwrap_or(GlyphRef {
+                kind: GlyphKind::Mono,
+                atlas_x: 0,
+                atlas_y: 0,
+                atlas_w: 0,
+                atlas_h: 0,
+                bearing_x: 0,
+                bearing_y: 0,
+            });
 
         let glyph_kind: u32 = match glyph.kind {
             GlyphKind::Mono => KIND_MONO,
@@ -499,7 +633,80 @@ pub fn build_cell_instances(
                 glyph_kind,
             ));
         }
+
+        // v0.1.2 decoration quads (UNDERLINE / DOUBLE_UNDERLINE / STRIKEOUT).
+        // Underline quads sit below baseline; strikeout sits at mid-x-height.
+        // Use the resolved fg color (after per-flag mutations + cursor invert).
+        let mut decorations = underline_geometry(cell.flags, cell_w, cell_h);
+        decorations.extend(strikeout_geometry(cell.flags, cell_w, cell_h, baseline_y));
+        for (dx, dy, dw, dh) in decorations {
+            // Solid-color decoration: pass (fg, fg) so the shader's
+            // `mix(bg, fg, alpha)` resolves to pure `fg` regardless of what
+            // alpha happens to live at atlas (0,0). Same pattern as the
+            // standalone cursor quad below and the bg rect above. Passing
+            // (fg, bg) would blend with whatever the first-loaded glyph's
+            // pixel at the atlas origin happens to be — invisible-to-smeared
+            // decorations.
+            out.push(QuadInstance::new(
+                screen_x + dx,
+                screen_y + dy,
+                dw,
+                dh,
+                0.0,
+                0.0,
+                0.0,
+                0.0, // zero-size atlas rect → alpha sampled at (0,0)
+                fg,
+                fg,
+                KIND_MONO,
+            ));
+        }
     }
+
+    // v0.1.2: emit a standalone cursor quad when the cursor cell wasn't
+    // iterated by the cell loop (alacritty's display_iter skips empty cells).
+    // This is the fix for "invisible cursor in Claude Code" — the TUI input
+    // box sits on a literal empty cell.
+    let cursor_should_show =
+        display_offset == 0 && is_session_alive && cursor_shape_visible && cursor_visible_per_blink;
+    if cursor_should_show && !cursor_was_drawn_in_loop {
+        let col = cursor_state.point.column.0 as u32;
+        let line = cursor_state.point.line.0;
+        let visible_row = line + display_offset_i;
+        if visible_row >= 0 && visible_row < screen_lines {
+            let screen_x = (col * cell_w) as f32;
+            let screen_y = (visible_row as u32 * cell_h + y_offset_px) as f32;
+            let cursor_fg = rgb_to_f32(resolve_color(
+                alacritty_terminal::vte::ansi::Color::Named(
+                    alacritty_terminal::vte::ansi::NamedColor::Foreground,
+                ),
+                colors,
+                fg_default,
+                bg_default,
+            ));
+            let (quad_x, quad_y, quad_w, quad_h) = match cursor_state.shape {
+                alacritty_terminal::vte::ansi::CursorShape::Underline => {
+                    (screen_x, screen_y + cell_h as f32 - 2.0, cell_w as f32, 2.0)
+                }
+                alacritty_terminal::vte::ansi::CursorShape::Beam => {
+                    (screen_x, screen_y, 2.0, cell_h as f32)
+                }
+                alacritty_terminal::vte::ansi::CursorShape::HollowBlock => {
+                    // For v0.1.2: emit full Block as a fallback. A future enhancement
+                    // can emit the 4 thin border quads of a proper hollow outline.
+                    (screen_x, screen_y, cell_w as f32, cell_h as f32)
+                }
+                _ => {
+                    // Block (default).
+                    (screen_x, screen_y, cell_w as f32, cell_h as f32)
+                }
+            };
+            out.push(QuadInstance::new(
+                quad_x, quad_y, quad_w, quad_h, 0.0, 0.0, 0.0, 0.0, cursor_fg, cursor_fg, KIND_MONO,
+            ));
+        }
+    }
+
     out
 }
 
@@ -532,7 +739,9 @@ pub fn build_banner_instances(
     let mut out = Vec::with_capacity(glyph_count);
     let mut x = text_x;
     for c in text.chars() {
-        if let Some(glyph) = text_engine.glyph_for(c) {
+        if let Some(glyph) =
+            text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+        {
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
@@ -574,7 +783,9 @@ pub fn build_config_banner_instances(
     let mut out = Vec::with_capacity(text.chars().count());
     let mut x = 8.0_f32;
     for c in text.chars() {
-        if let Some(glyph) = text_engine.glyph_for(c) {
+        if let Some(glyph) =
+            text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+        {
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
@@ -661,5 +872,497 @@ mod cell_layout_tests {
         // — otherwise we'd emit a 2× bg quad on top of the trailing spacer
         // and double-paint the cell.
         assert!(should_skip_cell(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_cell_instances, QuadInstance};
+
+    // ---- cursor-as-own-quad ----------------------------------------------
+
+    fn cursor_fixture(
+        content_char: Option<char>,
+        cursor_col: usize,
+    ) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
+        use alacritty_terminal::term::test::TermSize;
+        use alacritty_terminal::term::{Config, Term};
+        use alacritty_terminal::vte::ansi::Handler;
+        let mut term = Term::new(
+            Config::default(),
+            &TermSize::new(10, 3),
+            alacritty_terminal::event::VoidListener,
+        );
+        if let Some(c) = content_char {
+            term.input(c);
+            term.goto(0i32, cursor_col);
+        } else {
+            term.goto(0i32, cursor_col);
+        }
+        term
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_on_empty_cell_emits_standalone_cursor_quad() {
+        // Cursor at col 5 with NO content at col 5 (only at col 0).
+        let term = cursor_fixture(Some('A'), 5);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+
+        // Expect at least one quad whose screen_x == 5*8 == 40 (the cursor column).
+        let cursor_col_quads: Vec<_> = out
+            .iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert!(
+            !cursor_col_quads.is_empty(),
+            "expected standalone cursor quad at col 5; got {:?}",
+            out
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_on_content_cell_does_not_emit_standalone_cursor_quad() {
+        // Cursor at col 0 WITH content at col 0 — the cell loop covers the cursor.
+        let term = cursor_fixture(Some('A'), 0);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+
+        // Count quads at col 0 row 0: cell loop emits bg + glyph (1-2 quads).
+        // No third quad should be added.
+        let cursor_col_quads: Vec<_> = out
+            .iter()
+            .filter(|q| q.screen_rect_px[0] == 0.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert!(
+            cursor_col_quads.len() <= 2,
+            "expected at most 2 quads (bg + glyph) at cursor cell, got {}: {:?}",
+            cursor_col_quads.len(),
+            cursor_col_quads
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_hidden_emits_no_standalone_quad() {
+        use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Handler};
+        let mut term = cursor_fixture(Some('A'), 5);
+        term.set_cursor_style(Some(CursorStyle {
+            shape: CursorShape::Hidden,
+            blinking: false,
+        }));
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+
+        // Hidden cursor: the cell at the cursor position still renders normally
+        // (a bg quad). The KEY assertion is that NO cursor highlight is added:
+        // no fg/bg swap, no standalone cursor quad. We verify this by checking
+        // that the cell at col 5 has exactly 1 quad (the cell's natural bg
+        // quad) — no extra cursor-highlight overlay. This preserves Ink's
+        // visual cursor (INVERSE-flagged space at the cursor position).
+        let cursor_col_quads: Vec<_> = out
+            .iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert_eq!(
+            cursor_col_quads.len(),
+            1,
+            "Hidden cursor: expected only the cell's natural bg quad, no cursor highlight; got {:?}",
+            cursor_col_quads
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_in_scrollback_view_emits_no_standalone_quad() {
+        let term = cursor_fixture(Some('A'), 5);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(
+            &term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            /* display_offset */ 5,
+            None,
+        );
+
+        let cursor_col_quads: Vec<_> = out.iter().filter(|q| q.screen_rect_px[0] == 40.0).collect();
+        assert!(
+            cursor_col_quads.is_empty(),
+            "scrollback view must not emit cursor quad; got {:?}",
+            cursor_col_quads
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_when_session_dead_emits_no_standalone_quad() {
+        let term = cursor_fixture(Some('A'), 5);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(
+            &term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            /* is_session_alive */ false,
+            0,
+            None,
+        );
+
+        // Dead session: cell still renders normally (1 bg quad). No cursor
+        // highlight overlay, no standalone cursor quad.
+        let cursor_col_quads: Vec<_> = out
+            .iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert_eq!(
+            cursor_col_quads.len(),
+            1,
+            "Dead session: expected only the cell's natural bg quad, no cursor highlight; got {:?}",
+            cursor_col_quads
+        );
+    }
+
+    // ---- INVERSE / HIDDEN / DIM ----------------------------------------------
+
+    /// Returns a `Term` with cell flags set on column 0 of the first line.
+    fn flagged_term(
+        flags: alacritty_terminal::term::cell::Flags,
+    ) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
+        use alacritty_terminal::term::test::TermSize;
+        use alacritty_terminal::vte::ansi::Handler;
+        let mut term = alacritty_terminal::term::Term::new(
+            alacritty_terminal::term::Config::default(),
+            &TermSize::new(10, 1),
+            alacritty_terminal::event::VoidListener,
+        );
+        // Write 'A' at (0, 0).
+        term.input('A');
+        // Set flags on the just-written cell directly via the grid mutator.
+        let grid_cell = &mut term.grid_mut()[alacritty_terminal::index::Line(0)]
+            [alacritty_terminal::index::Column(0)];
+        grid_cell.flags = flags;
+        term
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn inverse_flag_swaps_fg_and_bg_on_the_cell() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::INVERSE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // The first quad is the bg rect; under INVERSE its color must equal the
+        // resolved fg (default fg = [0xe5, 0xe5, 0xe5] → ~0.898 in f32).
+        let bg_quad = &out[0];
+        assert!(
+            (bg_quad.fg[0] - (0xe5 as f32 / 255.0)).abs() < 1e-3,
+            "INVERSE: bg_quad fg.r should be the resolved fg; got {:?}",
+            bg_quad.fg
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn hidden_flag_makes_fg_equal_bg() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::HIDDEN);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // The glyph quad's fg equals its bg under HIDDEN.
+        let glyph_quad = &out[1]; // bg then glyph for the 'A'
+        for i in 0..3 {
+            assert!(
+                (glyph_quad.fg[i] - glyph_quad.bg[i]).abs() < 1e-3,
+                "HIDDEN: glyph fg[{i}] should equal bg[{i}]; got fg={:?}, bg={:?}",
+                glyph_quad.fg,
+                glyph_quad.bg
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn dim_flag_dampens_fg_to_55_percent() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DIM);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // Default fg [0xe5, 0xe5, 0xe5] = 229 each. * 0.55 ≈ 126 → 0.494.
+        let glyph_quad = &out[1];
+        let expected = (0xe5 as f32 * 0.55).round() / 255.0;
+        assert!(
+            (glyph_quad.fg[0] - expected).abs() < 0.02,
+            "DIM: glyph fg.r should be ~{}; got {:?}",
+            expected,
+            glyph_quad.fg
+        );
+    }
+
+    // ---- BOLD / ITALIC routing -------------------------------------------
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn bold_flag_routes_to_different_atlas_rect_than_regular() {
+        use alacritty_terminal::term::cell::Flags;
+        let regular_term = flagged_term(Flags::empty());
+        let bold_term = flagged_term(Flags::BOLD);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out_regular = build_cell_instances(
+            &regular_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
+        let out_bold = build_cell_instances(
+            &bold_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
+        // out[1] is the glyph quad (out[0] is the bg). atlas_rect_px = [x, y, w, h] in atlas pixels.
+        let regular_atlas = out_regular[1].atlas_rect_px;
+        let bold_atlas = out_bold[1].atlas_rect_px;
+        assert_ne!(
+            regular_atlas, bold_atlas,
+            "bold 'A' must occupy a different atlas rect than regular 'A'"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn italic_flag_routes_to_different_atlas_rect_than_regular() {
+        use alacritty_terminal::term::cell::Flags;
+        let regular_term = flagged_term(Flags::empty());
+        let italic_term = flagged_term(Flags::ITALIC);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out_regular = build_cell_instances(
+            &regular_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
+        let out_italic = build_cell_instances(
+            &italic_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
+        let regular_atlas = out_regular[1].atlas_rect_px;
+        let italic_atlas = out_italic[1].atlas_rect_px;
+        assert_ne!(
+            regular_atlas, italic_atlas,
+            "italic 'A' must occupy a different atlas rect than regular 'A'"
+        );
+    }
+
+    // ---- UNDERLINE / DOUBLE_UNDERLINE / STRIKEOUT ------------------------
+
+    fn count_decoration_quads_at_col_0(out: &[QuadInstance], cell_w: u32) -> Vec<(f32, f32)> {
+        // Decoration quads are short (1-2 px tall) at well-defined y offsets
+        // within the cell. Filter to quads whose x falls within col 0's range
+        // (screen_x in [0, cell_w)) — multi-segment decorations (undercurl,
+        // dotted, dashed) emit quads at various x offsets within the cell.
+        // Exclude bg (full height) and glyph quads: decorations are <= 2 px tall.
+        out.iter()
+            .filter(|q| q.screen_rect_px[0] >= 0.0 && q.screen_rect_px[0] < cell_w as f32)
+            .filter(|q| q.screen_rect_px[3] <= 2.0)
+            .map(|q| (q.screen_rect_px[1], q.screen_rect_px[3]))
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn underline_flag_emits_one_decoration_quad_below_baseline() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        assert_eq!(decos.len(), 1, "expected 1 underline quad, got {:?}", decos);
+        // y position: cell_h - 2 (top of the 1-px line near bottom).
+        assert!(
+            (decos[0].0 - (16.0 - 2.0)).abs() < 0.5,
+            "underline y should be cell_h-2 = 14; got {}",
+            decos[0].0
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn double_underline_flag_emits_two_decoration_quads() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DOUBLE_UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        assert_eq!(
+            decos.len(),
+            2,
+            "expected 2 underline quads, got {:?}",
+            decos
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn strikeout_flag_emits_one_decoration_quad_at_mid_height() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::STRIKEOUT);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        assert_eq!(decos.len(), 1, "expected 1 strikeout quad, got {:?}", decos);
+        // Strikeout y: above baseline by ~30% of cell_h. Should be in 3..13 range.
+        let strike_y = decos[0].0;
+        assert!(
+            strike_y > 3.0 && strike_y < 13.0,
+            "strikeout y should be roughly mid-height (3..13); got {}",
+            strike_y
+        );
+    }
+
+    /// Pin the (fg, fg) — not (fg, bg) — argument pattern for decoration quads.
+    /// The shader's mono path resolves to `mix(bg, fg, alpha)`; with a zero-size
+    /// atlas rect, alpha is sampled at atlas (0, 0) which is unpredictable. Only
+    /// (fg, fg) produces a guaranteed solid-fg line regardless of what alpha lives
+    /// at that atlas origin. Holistic review caught the original (fg, bg) bug here.
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn underline_decoration_quad_uses_fg_for_both_fg_and_bg_channels() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // Find the underline decoration quad: 1-2 px tall at the cell's bottom.
+        let deco = out
+            .iter()
+            .find(|q| {
+                q.screen_rect_px[0] == 0.0
+                    && q.screen_rect_px[3] <= 2.0
+                    && q.screen_rect_px[1] > 10.0
+            })
+            .expect("expected an underline decoration quad");
+        assert_eq!(
+            deco.fg, deco.bg,
+            "decoration quad must use (fg, fg) so shader mix() resolves to pure fg; got fg={:?}, bg={:?}",
+            deco.fg, deco.bg
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn undercurl_flag_emits_four_short_decoration_quads() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::UNDERCURL);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        assert_eq!(
+            decos.len(),
+            4,
+            "expected 4 undercurl quads, got {:?}",
+            decos
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn dotted_underline_emits_multiple_short_decoration_quads() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DOTTED_UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        // Cell width 8 / 2-px stride = 4 dots.
+        assert_eq!(
+            decos.len(),
+            4,
+            "expected 4 dot quads in an 8-px-wide cell, got {:?}",
+            decos
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn dashed_underline_emits_dashes_with_gaps() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DASHED_UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        // Cell width 8 / 5-px stride (3-on, 2-off) = 2 dashes.
+        assert!(
+            !decos.is_empty() && decos.len() <= 2,
+            "expected 1-2 dash quads in an 8-px-wide cell, got {:?}",
+            decos
+        );
     }
 }

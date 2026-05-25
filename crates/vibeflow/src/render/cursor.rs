@@ -32,6 +32,23 @@ impl CursorBlink {
         self.blink_ms = ms;
     }
 
+    /// Return the `Instant` at which `visible()` next flips state, or `None`
+    /// when blink is disabled (`blink_ms == 0`). Used by `WindowApp::about_to_wait`
+    /// to schedule the next dirty-redraw without a fixed 100 ms timer.
+    #[must_use]
+    pub fn next_toggle_at(&self, now: Instant) -> Option<Instant> {
+        if self.blink_ms == 0 {
+            return None;
+        }
+        let period = self.blink_ms as u128;
+        let elapsed_ms = now.duration_since(self.epoch).as_millis();
+        let cycles_so_far = elapsed_ms / period;
+        let next_boundary_ms = (cycles_so_far + 1) * period;
+        let next_offset_ms = next_boundary_ms - elapsed_ms;
+        // next_offset_ms ≤ period (≤ a few hundred ms), fits in u64.
+        Some(now + std::time::Duration::from_millis(next_offset_ms as u64))
+    }
+
     /// True for the first half of every period; always true if `blink_ms == 0`.
     #[must_use]
     pub fn visible(&self, now: Instant) -> bool {
@@ -92,5 +109,39 @@ mod tests {
         assert!(cb.visible(cb.epoch + Duration::from_millis(100)));
         assert!(!cb.visible(cb.epoch + Duration::from_millis(300)));
         assert!(cb.visible(cb.epoch + Duration::from_millis(550)));
+    }
+
+    #[test]
+    fn next_toggle_at_returns_none_when_blink_disabled() {
+        let mut cb = CursorBlink::new();
+        cb.set_blink_ms(0);
+        assert!(cb.next_toggle_at(cb.epoch).is_none());
+    }
+
+    #[test]
+    fn next_toggle_at_returns_500ms_at_epoch() {
+        let cb = CursorBlink::new();
+        let next = cb.next_toggle_at(cb.epoch).expect("blink enabled");
+        let dt = next.duration_since(cb.epoch);
+        assert_eq!(dt.as_millis(), 500);
+    }
+
+    #[test]
+    fn next_toggle_at_returns_remaining_ms_inside_period() {
+        let cb = CursorBlink::new();
+        let mid = cb.epoch + Duration::from_millis(250);
+        let next = cb.next_toggle_at(mid).expect("blink enabled");
+        let dt = next.duration_since(mid);
+        assert_eq!(dt.as_millis(), 250);
+    }
+
+    #[test]
+    fn next_toggle_at_advances_past_first_boundary() {
+        let cb = CursorBlink::new();
+        let past_500 = cb.epoch + Duration::from_millis(600);
+        let next = cb.next_toggle_at(past_500).expect("blink enabled");
+        let dt = next.duration_since(past_500);
+        // At 600 ms (2nd half). Next boundary is 1000 ms → 400 ms away.
+        assert_eq!(dt.as_millis(), 400);
     }
 }
