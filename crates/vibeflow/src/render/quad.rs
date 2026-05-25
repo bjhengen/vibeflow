@@ -367,19 +367,16 @@ fn underline_geometry(
     let cw = cell_w as f32;
     let ch = cell_h as f32;
     if flags.contains(Flags::DOUBLE_UNDERLINE) {
-        vec![
-            (0.0, ch - 3.0, cw, 1.0),
-            (0.0, ch - 1.0, cw, 1.0),
-        ]
+        vec![(0.0, ch - 3.0, cw, 1.0), (0.0, ch - 1.0, cw, 1.0)]
     } else if flags.contains(Flags::UNDERCURL) {
         // Cheap 4-quad zigzag approximation. A true curl would need shader
         // support; this conveys "wavy" at v0.1.2 cost.
         let q = cw / 4.0;
         vec![
-            (0.0,      ch - 1.0, q, 1.0),
-            (q,        ch - 3.0, q, 1.0),
-            (q * 2.0,  ch - 1.0, q, 1.0),
-            (q * 3.0,  ch - 3.0, q, 1.0),
+            (0.0, ch - 1.0, q, 1.0),
+            (q, ch - 3.0, q, 1.0),
+            (q * 2.0, ch - 1.0, q, 1.0),
+            (q * 3.0, ch - 3.0, q, 1.0),
         ]
     } else if flags.contains(Flags::DOTTED_UNDERLINE) {
         // Dot every 2 px, 1 px wide.
@@ -428,7 +425,9 @@ fn strikeout_geometry(
 /// Derive the cosmic-text `(Weight, Style)` to use for the cell's glyph from
 /// alacritty's cell flags. `cell::Flags::BOLD_ITALIC` is just `BOLD | ITALIC`
 /// set together, so the two branches compose naturally.
-fn font_attrs_for(flags: alacritty_terminal::term::cell::Flags) -> (cosmic_text::Weight, cosmic_text::Style) {
+fn font_attrs_for(
+    flags: alacritty_terminal::term::cell::Flags,
+) -> (cosmic_text::Weight, cosmic_text::Style) {
     let weight = if flags.contains(alacritty_terminal::term::cell::Flags::BOLD) {
         cosmic_text::Weight::BOLD
     } else {
@@ -533,15 +532,24 @@ pub fn build_cell_instances(
 
         // v0.1.2 per-flag attribute mutations.
         // (a) INVERSE — swap before any other transform.
-        if cell.flags.contains(alacritty_terminal::term::cell::Flags::INVERSE) {
+        if cell
+            .flags
+            .contains(alacritty_terminal::term::cell::Flags::INVERSE)
+        {
             std::mem::swap(&mut fg_rgb, &mut bg_rgb);
         }
         // (b) HIDDEN — text invisible (fg = bg).
-        if cell.flags.contains(alacritty_terminal::term::cell::Flags::HIDDEN) {
+        if cell
+            .flags
+            .contains(alacritty_terminal::term::cell::Flags::HIDDEN)
+        {
             fg_rgb = bg_rgb;
         }
         // (c) DIM — multiply fg channels by 0.55.
-        if cell.flags.contains(alacritty_terminal::term::cell::Flags::DIM) {
+        if cell
+            .flags
+            .contains(alacritty_terminal::term::cell::Flags::DIM)
+        {
             fg_rgb.r = (fg_rgb.r as f32 * 0.55) as u8;
             fg_rgb.g = (fg_rgb.g as f32 * 0.55) as u8;
             fg_rgb.b = (fg_rgb.b as f32 * 0.55) as u8;
@@ -578,15 +586,17 @@ pub fn build_cell_instances(
         };
 
         let (weight, style) = font_attrs_for(cell.flags);
-        let glyph = text_engine.glyph_for(cell.c, weight, style).unwrap_or(GlyphRef {
-            kind: GlyphKind::Mono,
-            atlas_x: 0,
-            atlas_y: 0,
-            atlas_w: 0,
-            atlas_h: 0,
-            bearing_x: 0,
-            bearing_y: 0,
-        });
+        let glyph = text_engine
+            .glyph_for(cell.c, weight, style)
+            .unwrap_or(GlyphRef {
+                kind: GlyphKind::Mono,
+                atlas_x: 0,
+                atlas_y: 0,
+                atlas_w: 0,
+                atlas_h: 0,
+                bearing_x: 0,
+                bearing_y: 0,
+            });
 
         let glyph_kind: u32 = match glyph.kind {
             GlyphKind::Mono => KIND_MONO,
@@ -634,8 +644,12 @@ pub fn build_cell_instances(
                 screen_y + dy,
                 dw,
                 dh,
-                0.0, 0.0, 0.0, 0.0,  // zero-size atlas rect → alpha=0 → solid color
-                fg, bg,
+                0.0,
+                0.0,
+                0.0,
+                0.0, // zero-size atlas rect → alpha=0 → solid color
+                fg,
+                bg,
                 KIND_MONO,
             ));
         }
@@ -645,10 +659,8 @@ pub fn build_cell_instances(
     // iterated by the cell loop (alacritty's display_iter skips empty cells).
     // This is the fix for "invisible cursor in Claude Code" — the TUI input
     // box sits on a literal empty cell.
-    let cursor_should_show = display_offset == 0
-        && is_session_alive
-        && cursor_shape_visible
-        && cursor_visible_per_blink;
+    let cursor_should_show =
+        display_offset == 0 && is_session_alive && cursor_shape_visible && cursor_visible_per_blink;
     if cursor_should_show && !cursor_was_drawn_in_loop {
         let col = cursor_state.point.column.0 as u32;
         let line = cursor_state.point.line.0;
@@ -682,10 +694,7 @@ pub fn build_cell_instances(
                 }
             };
             out.push(QuadInstance::new(
-                quad_x, quad_y, quad_w, quad_h,
-                0.0, 0.0, 0.0, 0.0,
-                cursor_fg, cursor_fg,
-                KIND_MONO,
+                quad_x, quad_y, quad_w, quad_h, 0.0, 0.0, 0.0, 0.0, cursor_fg, cursor_fg, KIND_MONO,
             ));
         }
     }
@@ -722,7 +731,9 @@ pub fn build_banner_instances(
     let mut out = Vec::with_capacity(glyph_count);
     let mut x = text_x;
     for c in text.chars() {
-        if let Some(glyph) = text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
+        if let Some(glyph) =
+            text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+        {
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
@@ -764,7 +775,9 @@ pub fn build_config_banner_instances(
     let mut out = Vec::with_capacity(text.chars().count());
     let mut x = 8.0_f32;
     for c in text.chars() {
-        if let Some(glyph) = text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
+        if let Some(glyph) =
+            text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+        {
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
@@ -860,7 +873,10 @@ mod tests {
 
     // ---- cursor-as-own-quad ----------------------------------------------
 
-    fn cursor_fixture(content_char: Option<char>, cursor_col: usize) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
+    fn cursor_fixture(
+        content_char: Option<char>,
+        cursor_col: usize,
+    ) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
         use alacritty_terminal::term::test::TermSize;
         use alacritty_terminal::term::{Config, Term};
         use alacritty_terminal::vte::ansi::Handler;
@@ -889,10 +905,15 @@ mod tests {
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
 
         // Expect at least one quad whose screen_x == 5*8 == 40 (the cursor column).
-        let cursor_col_quads: Vec<_> = out.iter()
+        let cursor_col_quads: Vec<_> = out
+            .iter()
             .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
             .collect();
-        assert!(!cursor_col_quads.is_empty(), "expected standalone cursor quad at col 5; got {:?}", out);
+        assert!(
+            !cursor_col_quads.is_empty(),
+            "expected standalone cursor quad at col 5; got {:?}",
+            out
+        );
     }
 
     #[test]
@@ -907,12 +928,16 @@ mod tests {
 
         // Count quads at col 0 row 0: cell loop emits bg + glyph (1-2 quads).
         // No third quad should be added.
-        let cursor_col_quads: Vec<_> = out.iter()
+        let cursor_col_quads: Vec<_> = out
+            .iter()
             .filter(|q| q.screen_rect_px[0] == 0.0 && q.screen_rect_px[1] == 0.0)
             .collect();
-        assert!(cursor_col_quads.len() <= 2,
+        assert!(
+            cursor_col_quads.len() <= 2,
             "expected at most 2 quads (bg + glyph) at cursor cell, got {}: {:?}",
-            cursor_col_quads.len(), cursor_col_quads);
+            cursor_col_quads.len(),
+            cursor_col_quads
+        );
     }
 
     #[test]
@@ -920,16 +945,24 @@ mod tests {
     fn cursor_hidden_emits_no_standalone_quad() {
         use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Handler};
         let mut term = cursor_fixture(Some('A'), 5);
-        term.set_cursor_style(Some(CursorStyle { shape: CursorShape::Hidden, blinking: false }));
+        term.set_cursor_style(Some(CursorStyle {
+            shape: CursorShape::Hidden,
+            blinking: false,
+        }));
         let mut engine = crate::render::text_engine::tests::test_engine();
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
 
-        let cursor_col_quads: Vec<_> = out.iter()
+        let cursor_col_quads: Vec<_> = out
+            .iter()
             .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
             .collect();
-        assert!(cursor_col_quads.is_empty(), "Hidden cursor must not emit any quad; got {:?}", cursor_col_quads);
+        assert!(
+            cursor_col_quads.is_empty(),
+            "Hidden cursor must not emit any quad; got {:?}",
+            cursor_col_quads
+        );
     }
 
     #[test]
@@ -939,12 +972,25 @@ mod tests {
         let mut engine = crate::render::text_engine::tests::test_engine();
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
-        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, /* display_offset */ 5, None);
+        let out = build_cell_instances(
+            &term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            /* display_offset */ 5,
+            None,
+        );
 
-        let cursor_col_quads: Vec<_> = out.iter()
-            .filter(|q| q.screen_rect_px[0] == 40.0)
-            .collect();
-        assert!(cursor_col_quads.is_empty(), "scrollback view must not emit cursor quad; got {:?}", cursor_col_quads);
+        let cursor_col_quads: Vec<_> = out.iter().filter(|q| q.screen_rect_px[0] == 40.0).collect();
+        assert!(
+            cursor_col_quads.is_empty(),
+            "scrollback view must not emit cursor quad; got {:?}",
+            cursor_col_quads
+        );
     }
 
     #[test]
@@ -954,18 +1000,36 @@ mod tests {
         let mut engine = crate::render::text_engine::tests::test_engine();
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
-        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, /* is_session_alive */ false, 0, None);
+        let out = build_cell_instances(
+            &term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            /* is_session_alive */ false,
+            0,
+            None,
+        );
 
-        let cursor_col_quads: Vec<_> = out.iter()
+        let cursor_col_quads: Vec<_> = out
+            .iter()
             .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
             .collect();
-        assert!(cursor_col_quads.is_empty(), "dead session must not emit cursor quad; got {:?}", cursor_col_quads);
+        assert!(
+            cursor_col_quads.is_empty(),
+            "dead session must not emit cursor quad; got {:?}",
+            cursor_col_quads
+        );
     }
 
     // ---- INVERSE / HIDDEN / DIM ----------------------------------------------
 
     /// Returns a `Term` with cell flags set on column 0 of the first line.
-    fn flagged_term(flags: alacritty_terminal::term::cell::Flags) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
+    fn flagged_term(
+        flags: alacritty_terminal::term::cell::Flags,
+    ) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
         use alacritty_terminal::term::test::TermSize;
         use alacritty_terminal::vte::ansi::Handler;
         let mut term = alacritty_terminal::term::Term::new(
@@ -976,7 +1040,8 @@ mod tests {
         // Write 'A' at (0, 0).
         term.input('A');
         // Set flags on the just-written cell directly via the grid mutator.
-        let grid_cell = &mut term.grid_mut()[alacritty_terminal::index::Line(0)][alacritty_terminal::index::Column(0)];
+        let grid_cell = &mut term.grid_mut()[alacritty_terminal::index::Line(0)]
+            [alacritty_terminal::index::Column(0)];
         grid_cell.flags = flags;
         term
     }
@@ -993,8 +1058,11 @@ mod tests {
         // The first quad is the bg rect; under INVERSE its color must equal the
         // resolved fg (default fg = [0xe5, 0xe5, 0xe5] → ~0.898 in f32).
         let bg_quad = &out[0];
-        assert!((bg_quad.fg[0] - (0xe5 as f32 / 255.0)).abs() < 1e-3,
-            "INVERSE: bg_quad fg.r should be the resolved fg; got {:?}", bg_quad.fg);
+        assert!(
+            (bg_quad.fg[0] - (0xe5 as f32 / 255.0)).abs() < 1e-3,
+            "INVERSE: bg_quad fg.r should be the resolved fg; got {:?}",
+            bg_quad.fg
+        );
     }
 
     #[test]
@@ -1009,8 +1077,12 @@ mod tests {
         // The glyph quad's fg equals its bg under HIDDEN.
         let glyph_quad = &out[1]; // bg then glyph for the 'A'
         for i in 0..3 {
-            assert!((glyph_quad.fg[i] - glyph_quad.bg[i]).abs() < 1e-3,
-                "HIDDEN: glyph fg[{i}] should equal bg[{i}]; got fg={:?}, bg={:?}", glyph_quad.fg, glyph_quad.bg);
+            assert!(
+                (glyph_quad.fg[i] - glyph_quad.bg[i]).abs() < 1e-3,
+                "HIDDEN: glyph fg[{i}] should equal bg[{i}]; got fg={:?}, bg={:?}",
+                glyph_quad.fg,
+                glyph_quad.bg
+            );
         }
     }
 
@@ -1026,8 +1098,12 @@ mod tests {
         // Default fg [0xe5, 0xe5, 0xe5] = 229 each. * 0.55 ≈ 126 → 0.494.
         let glyph_quad = &out[1];
         let expected = (0xe5 as f32 * 0.55).round() / 255.0;
-        assert!((glyph_quad.fg[0] - expected).abs() < 0.02,
-            "DIM: glyph fg.r should be ~{}; got {:?}", expected, glyph_quad.fg);
+        assert!(
+            (glyph_quad.fg[0] - expected).abs() < 0.02,
+            "DIM: glyph fg.r should be ~{}; got {:?}",
+            expected,
+            glyph_quad.fg
+        );
     }
 
     // ---- BOLD / ITALIC routing -------------------------------------------
@@ -1041,13 +1117,37 @@ mod tests {
         let mut engine = crate::render::text_engine::tests::test_engine();
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
-        let out_regular = build_cell_instances(&regular_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
-        let out_bold = build_cell_instances(&bold_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let out_regular = build_cell_instances(
+            &regular_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
+        let out_bold = build_cell_instances(
+            &bold_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
         // out[1] is the glyph quad (out[0] is the bg). atlas_rect_px = [x, y, w, h] in atlas pixels.
         let regular_atlas = out_regular[1].atlas_rect_px;
         let bold_atlas = out_bold[1].atlas_rect_px;
-        assert_ne!(regular_atlas, bold_atlas,
-            "bold 'A' must occupy a different atlas rect than regular 'A'");
+        assert_ne!(
+            regular_atlas, bold_atlas,
+            "bold 'A' must occupy a different atlas rect than regular 'A'"
+        );
     }
 
     #[test]
@@ -1059,12 +1159,36 @@ mod tests {
         let mut engine = crate::render::text_engine::tests::test_engine();
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
-        let out_regular = build_cell_instances(&regular_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
-        let out_italic = build_cell_instances(&italic_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let out_regular = build_cell_instances(
+            &regular_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
+        let out_italic = build_cell_instances(
+            &italic_term,
+            &mut engine,
+            &cursor,
+            now,
+            8,
+            16,
+            0,
+            true,
+            0,
+            None,
+        );
         let regular_atlas = out_regular[1].atlas_rect_px;
         let italic_atlas = out_italic[1].atlas_rect_px;
-        assert_ne!(regular_atlas, italic_atlas,
-            "italic 'A' must occupy a different atlas rect than regular 'A'");
+        assert_ne!(
+            regular_atlas, italic_atlas,
+            "italic 'A' must occupy a different atlas rect than regular 'A'"
+        );
     }
 
     // ---- UNDERLINE / DOUBLE_UNDERLINE / STRIKEOUT ------------------------
@@ -1094,8 +1218,11 @@ mod tests {
         let decos = count_decoration_quads_at_col_0(&out, 8);
         assert_eq!(decos.len(), 1, "expected 1 underline quad, got {:?}", decos);
         // y position: cell_h - 2 (top of the 1-px line near bottom).
-        assert!((decos[0].0 - (16.0 - 2.0)).abs() < 0.5,
-            "underline y should be cell_h-2 = 14; got {}", decos[0].0);
+        assert!(
+            (decos[0].0 - (16.0 - 2.0)).abs() < 0.5,
+            "underline y should be cell_h-2 = 14; got {}",
+            decos[0].0
+        );
     }
 
     #[test]
@@ -1108,7 +1235,12 @@ mod tests {
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
         let decos = count_decoration_quads_at_col_0(&out, 8);
-        assert_eq!(decos.len(), 2, "expected 2 underline quads, got {:?}", decos);
+        assert_eq!(
+            decos.len(),
+            2,
+            "expected 2 underline quads, got {:?}",
+            decos
+        );
     }
 
     #[test]
@@ -1124,8 +1256,11 @@ mod tests {
         assert_eq!(decos.len(), 1, "expected 1 strikeout quad, got {:?}", decos);
         // Strikeout y: above baseline by ~30% of cell_h. Should be in 3..13 range.
         let strike_y = decos[0].0;
-        assert!(strike_y > 3.0 && strike_y < 13.0,
-            "strikeout y should be roughly mid-height (3..13); got {}", strike_y);
+        assert!(
+            strike_y > 3.0 && strike_y < 13.0,
+            "strikeout y should be roughly mid-height (3..13); got {}",
+            strike_y
+        );
     }
 
     #[test]
@@ -1138,7 +1273,12 @@ mod tests {
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
         let decos = count_decoration_quads_at_col_0(&out, 8);
-        assert_eq!(decos.len(), 4, "expected 4 undercurl quads, got {:?}", decos);
+        assert_eq!(
+            decos.len(),
+            4,
+            "expected 4 undercurl quads, got {:?}",
+            decos
+        );
     }
 
     #[test]
@@ -1152,7 +1292,12 @@ mod tests {
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
         let decos = count_decoration_quads_at_col_0(&out, 8);
         // Cell width 8 / 2-px stride = 4 dots.
-        assert_eq!(decos.len(), 4, "expected 4 dot quads in an 8-px-wide cell, got {:?}", decos);
+        assert_eq!(
+            decos.len(),
+            4,
+            "expected 4 dot quads in an 8-px-wide cell, got {:?}",
+            decos
+        );
     }
 
     #[test]
@@ -1166,7 +1311,10 @@ mod tests {
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
         let decos = count_decoration_quads_at_col_0(&out, 8);
         // Cell width 8 / 5-px stride (3-on, 2-off) = 2 dashes.
-        assert!(!decos.is_empty() && decos.len() <= 2,
-            "expected 1-2 dash quads in an 8-px-wide cell, got {:?}", decos);
+        assert!(
+            !decos.is_empty() && decos.len() <= 2,
+            "expected 1-2 dash quads in an 8-px-wide cell, got {:?}",
+            decos
+        );
     }
 }

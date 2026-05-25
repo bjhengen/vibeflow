@@ -182,7 +182,9 @@ fn build_font_subsystem() -> (FontSystem, SwashCache) {
     font_system.db_mut().load_font_data(PRIMARY_FONT.to_vec());
     font_system.db_mut().load_font_data(BOLD_FONT.to_vec());
     font_system.db_mut().load_font_data(ITALIC_FONT.to_vec());
-    font_system.db_mut().load_font_data(BOLD_ITALIC_FONT.to_vec());
+    font_system
+        .db_mut()
+        .load_font_data(BOLD_ITALIC_FONT.to_vec());
     let swash_cache = SwashCache::new();
     (font_system, swash_cache)
 }
@@ -745,7 +747,9 @@ pub mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_ascii_letter_returns_image() {
         let mut engine = test_engine();
-        let img = engine.rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let img = engine
+            .rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert!(img.width > 0);
         assert!(img.height > 0);
         assert_eq!(img.data.len(), (img.width * img.height) as usize);
@@ -774,15 +778,23 @@ pub mod tests {
         // 中 (U+4E2D) — JBM doesn't carry CJK. fontdb should find a system font.
         // If the test env has no CJK font, this returns None — assert either
         // outcome works, just that we don't panic.
-        let _img = engine.rasterize('中', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
+        let _img = engine.rasterize(
+            '中',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal,
+        );
     }
 
     #[test]
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_caches_repeat_lookups() {
         let mut engine = test_engine();
-        let r1 = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
-        let r2 = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let r1 = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
+        let r2 = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert_eq!(r1, r2);
     }
 
@@ -790,8 +802,12 @@ pub mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_assigns_distinct_atlas_rects() {
         let mut engine = test_engine();
-        let a = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
-        let b = engine.glyph_for('B', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let a = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
+        let b = engine
+            .glyph_for('B', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         // Different glyphs must occupy different rects.
         assert_ne!(
             (a.atlas_x, a.atlas_y),
@@ -830,7 +846,9 @@ pub mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_mono_letter_returns_mono_kind() {
         let mut engine = test_engine();
-        let img = engine.rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let img = engine
+            .rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert_eq!(img.kind, GlyphKind::Mono);
         assert_eq!(img.data.len(), img.width as usize * img.height as usize);
     }
@@ -840,7 +858,11 @@ pub mod tests {
     fn rasterize_color_emoji_returns_color_kind() {
         let mut engine = test_engine();
         // 🎉 (U+1F389). Skip cleanly if the test env has no color emoji font.
-        if let Some(img) = engine.rasterize('🎉', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
+        if let Some(img) = engine.rasterize(
+            '🎉',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal,
+        ) {
             assert_eq!(img.kind, GlyphKind::Color);
             // RGBA: data length = 4 * width * height.
             assert_eq!(img.data.len(), 4 * img.width as usize * img.height as usize);
@@ -852,10 +874,21 @@ pub mod tests {
     fn glyph_for_emoji_routes_to_color_atlas() {
         let mut engine = test_engine();
         // Skip cleanly if no color emoji font in the test env.
-        if let Some(g) = engine.glyph_for('🎉', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
+        if let Some(g) = engine.glyph_for(
+            '🎉',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal,
+        ) {
             assert_eq!(g.kind, GlyphKind::Color);
             // Cache hit on second call returns identical GlyphRef.
-            assert_eq!(engine.glyph_for('🎉', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal), Some(g));
+            assert_eq!(
+                engine.glyph_for(
+                    '🎉',
+                    cosmic_text::Weight::NORMAL,
+                    cosmic_text::Style::Normal
+                ),
+                Some(g)
+            );
         }
     }
 
@@ -863,7 +896,9 @@ pub mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_letter_routes_to_mono_atlas() {
         let mut engine = test_engine();
-        let g = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let g = engine
+            .glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)
+            .unwrap();
         assert_eq!(g.kind, GlyphKind::Mono);
     }
 
@@ -900,20 +935,40 @@ pub mod tests {
         // with four (weight, style) combinations — each must succeed and the
         // cache should hold all four entries afterwards.
         let mut engine = test_engine();
-        let normal_normal = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
-        let bold_normal = engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal);
-        let normal_italic = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic);
-        let bold_italic = engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic);
+        let normal_normal =
+            engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
+        let bold_normal =
+            engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal);
+        let normal_italic =
+            engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic);
+        let bold_italic =
+            engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic);
 
         assert!(normal_normal.is_some(), "regular 'A' must resolve");
         assert!(bold_normal.is_some(), "bold 'A' must resolve");
         assert!(normal_italic.is_some(), "italic 'A' must resolve");
         assert!(bold_italic.is_some(), "bold-italic 'A' must resolve");
 
-        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)));
-        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal)));
-        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic)));
-        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic)));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Normal
+        )));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::BOLD,
+            cosmic_text::Style::Normal
+        )));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::NORMAL,
+            cosmic_text::Style::Italic
+        )));
+        assert!(engine.cache.contains_key(&(
+            'A',
+            cosmic_text::Weight::BOLD,
+            cosmic_text::Style::Italic
+        )));
     }
 
     #[test]
