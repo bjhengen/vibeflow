@@ -438,8 +438,26 @@ pub fn build_cell_instances(
         // IMPORTANT: preserve Stage 6 mod.rs's resolve_color arg order:
         // `(color, &Colors, fg_default, bg_default)` — same order for both fg
         // and bg lookups.
-        let fg_rgb = resolve_color(cell.fg, colors, fg_default, bg_default);
-        let bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
+        let mut fg_rgb = resolve_color(cell.fg, colors, fg_default, bg_default);
+        let mut bg_rgb = resolve_color(cell.bg, colors, fg_default, bg_default);
+
+        // v0.1.2 per-flag attribute mutations.
+        // (a) INVERSE — swap before any other transform.
+        if cell.flags.contains(alacritty_terminal::term::cell::Flags::INVERSE) {
+            std::mem::swap(&mut fg_rgb, &mut bg_rgb);
+        }
+        // (b) HIDDEN — text invisible (fg = bg).
+        if cell.flags.contains(alacritty_terminal::term::cell::Flags::HIDDEN) {
+            fg_rgb = bg_rgb;
+        }
+        // (c) DIM — multiply fg channels by 0.55.
+        if cell.flags.contains(alacritty_terminal::term::cell::Flags::DIM) {
+            fg_rgb.r = (fg_rgb.r as f32 * 0.55) as u8;
+            fg_rgb.g = (fg_rgb.g as f32 * 0.55) as u8;
+            fg_rgb.b = (fg_rgb.b as f32 * 0.55) as u8;
+        }
+
+        // Cursor invert — applies AFTER per-flag mutations (only when cursor on a content cell).
         // Skip cursor highlight when scrolled into scrollback — the cursor
         // lives on the live viewport, not in history.
         let is_cursor = display_offset == 0 && cell.point == cursor_state.point;
@@ -834,5 +852,73 @@ mod tests {
             .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
             .collect();
         assert!(cursor_col_quads.is_empty(), "dead session must not emit cursor quad; got {:?}", cursor_col_quads);
+    }
+
+    // ---- INVERSE / HIDDEN / DIM ----------------------------------------------
+
+    /// Returns a `Term` with cell flags set on column 0 of the first line.
+    fn flagged_term(flags: alacritty_terminal::term::cell::Flags) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
+        use alacritty_terminal::term::test::TermSize;
+        use alacritty_terminal::vte::ansi::Handler;
+        let mut term = alacritty_terminal::term::Term::new(
+            alacritty_terminal::term::Config::default(),
+            &TermSize::new(10, 1),
+            alacritty_terminal::event::VoidListener,
+        );
+        // Write 'A' at (0, 0).
+        term.input('A');
+        // Set flags on the just-written cell directly via the grid mutator.
+        let grid_cell = &mut term.grid_mut()[alacritty_terminal::index::Line(0)][alacritty_terminal::index::Column(0)];
+        grid_cell.flags = flags;
+        term
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn inverse_flag_swaps_fg_and_bg_on_the_cell() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::INVERSE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // The first quad is the bg rect; under INVERSE its color must equal the
+        // resolved fg (default fg = [0xe5, 0xe5, 0xe5] → ~0.898 in f32).
+        let bg_quad = &out[0];
+        assert!((bg_quad.fg[0] - (0xe5 as f32 / 255.0)).abs() < 1e-3,
+            "INVERSE: bg_quad fg.r should be the resolved fg; got {:?}", bg_quad.fg);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn hidden_flag_makes_fg_equal_bg() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::HIDDEN);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // The glyph quad's fg equals its bg under HIDDEN.
+        let glyph_quad = &out[1]; // bg then glyph for the 'A'
+        for i in 0..3 {
+            assert!((glyph_quad.fg[i] - glyph_quad.bg[i]).abs() < 1e-3,
+                "HIDDEN: glyph fg[{i}] should equal bg[{i}]; got fg={:?}, bg={:?}", glyph_quad.fg, glyph_quad.bg);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn dim_flag_dampens_fg_to_55_percent() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DIM);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // Default fg [0xe5, 0xe5, 0xe5] = 229 each. * 0.55 ≈ 126 → 0.494.
+        let glyph_quad = &out[1];
+        let expected = (0xe5 as f32 * 0.55).round() / 255.0;
+        assert!((glyph_quad.fg[0] - expected).abs() < 0.02,
+            "DIM: glyph fg.r should be ~{}; got {:?}", expected, glyph_quad.fg);
     }
 }
