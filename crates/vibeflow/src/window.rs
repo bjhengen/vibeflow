@@ -1933,7 +1933,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         // Wake-cadence floor when input/PTY activity is recent — keeps typing
         // latency low without holding the event loop in a tight loop on idle.
         const ACTIVE_WINDOW: Duration = Duration::from_millis(500);
-        const ACTIVE_WAKE_INTERVAL: Duration = Duration::from_millis(8);
+        const ACTIVE_WAKE_INTERVAL: Duration = Duration::from_millis(4);
         let wake_deadline = if now.duration_since(self.last_activity_at) < ACTIVE_WINDOW {
             let active_wake = now + ACTIVE_WAKE_INTERVAL;
             std::cmp::min(active_wake, paint_deadline)
