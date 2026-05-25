@@ -1860,19 +1860,24 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             .iter()
             .any(|tab| tab.state() == TabState::Waiting);
 
+        // v0.1.2 dirty-redraw: paint cadence is driven by either the Waiting-tab
+        // animation loop (~60 FPS) or the cursor-blink boundary (~2 paints/sec
+        // on idle, vs. the prior 10/sec). All other state-mutating paths request
+        // a redraw at the point of mutation — about 20 such sites in this file.
         let next_deadline = if any_waiting {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
             now + Duration::from_millis(16)
         } else {
-            // Cursor blinks at 1 Hz (500 ms toggle). Schedule a redraw at the
-            // next blink boundary, capped at 100 ms so tracker timeouts still
-            // tick at their usual cadence.
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
-            now + Duration::from_millis(100)
+            let cursor_next = self
+                .renderer
+                .as_ref()
+                .and_then(|r| r.cursor_next_toggle_at(now));
+            cursor_next.unwrap_or(now + Duration::from_millis(1000))
         };
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_deadline));
