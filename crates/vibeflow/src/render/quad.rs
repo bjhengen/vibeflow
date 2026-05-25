@@ -352,6 +352,23 @@ impl QuadPipeline {
 use crate::render::cursor::CursorBlink;
 use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 
+/// Derive the cosmic-text `(Weight, Style)` to use for the cell's glyph from
+/// alacritty's cell flags. `cell::Flags::BOLD_ITALIC` is just `BOLD | ITALIC`
+/// set together, so the two branches compose naturally.
+fn font_attrs_for(flags: alacritty_terminal::term::cell::Flags) -> (cosmic_text::Weight, cosmic_text::Style) {
+    let weight = if flags.contains(alacritty_terminal::term::cell::Flags::BOLD) {
+        cosmic_text::Weight::BOLD
+    } else {
+        cosmic_text::Weight::NORMAL
+    };
+    let style = if flags.contains(alacritty_terminal::term::cell::Flags::ITALIC) {
+        cosmic_text::Style::Italic
+    } else {
+        cosmic_text::Style::Normal
+    };
+    (weight, style)
+}
+
 /// Walk the active grid and emit one [`QuadInstance`] per visible cell.
 /// Skips cells whose glyph is unrenderable (`text_engine.glyph_for` returned
 /// `None`) — those become invisible cells (background still drawn via the
@@ -487,7 +504,8 @@ pub fn build_cell_instances(
             cell_w as f32
         };
 
-        let glyph = text_engine.glyph_for(cell.c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap_or(GlyphRef {
+        let (weight, style) = font_attrs_for(cell.flags);
+        let glyph = text_engine.glyph_for(cell.c, weight, style).unwrap_or(GlyphRef {
             kind: GlyphKind::Mono,
             atlas_x: 0,
             atlas_y: 0,
@@ -920,5 +938,42 @@ mod tests {
         let expected = (0xe5 as f32 * 0.55).round() / 255.0;
         assert!((glyph_quad.fg[0] - expected).abs() < 0.02,
             "DIM: glyph fg.r should be ~{}; got {:?}", expected, glyph_quad.fg);
+    }
+
+    // ---- BOLD / ITALIC routing -------------------------------------------
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn bold_flag_routes_to_different_atlas_rect_than_regular() {
+        use alacritty_terminal::term::cell::Flags;
+        let regular_term = flagged_term(Flags::empty());
+        let bold_term = flagged_term(Flags::BOLD);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out_regular = build_cell_instances(&regular_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let out_bold = build_cell_instances(&bold_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // out[1] is the glyph quad (out[0] is the bg). atlas_rect_px = [x, y, w, h] in atlas pixels.
+        let regular_atlas = out_regular[1].atlas_rect_px;
+        let bold_atlas = out_bold[1].atlas_rect_px;
+        assert_ne!(regular_atlas, bold_atlas,
+            "bold 'A' must occupy a different atlas rect than regular 'A'");
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn italic_flag_routes_to_different_atlas_rect_than_regular() {
+        use alacritty_terminal::term::cell::Flags;
+        let regular_term = flagged_term(Flags::empty());
+        let italic_term = flagged_term(Flags::ITALIC);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out_regular = build_cell_instances(&regular_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let out_italic = build_cell_instances(&italic_term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let regular_atlas = out_regular[1].atlas_rect_px;
+        let italic_atlas = out_italic[1].atlas_rect_px;
+        assert_ne!(regular_atlas, italic_atlas,
+            "italic 'A' must occupy a different atlas rect than regular 'A'");
     }
 }
