@@ -34,6 +34,16 @@ pub const BOLD_ITALIC_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-B
 /// Configurable in Stage 9 (TOML config).
 pub const FONT_PX: f32 = 16.0;
 
+/// Hard cap on the mono atlas height. Adversarial input (e.g., random Unicode
+/// flooding) can otherwise grow the atlas without bound. At 4096 px tall and
+/// 256 px wide, the atlas is ~1 MB R8Unorm. Above this cap the cache is fully
+/// reset (glyphs re-render on next paint).
+const MAX_MONO_ATLAS_DIM: u32 = 4096;
+
+/// Hard cap on the color atlas height. Color glyphs are 4× bytes per pixel
+/// (RGBA8). Cap matches mono effective bytes.
+const MAX_COLOR_ATLAS_DIM: u32 = 2048;
+
 /// One rasterized glyph plus its placement metrics (relative to the cell origin).
 #[derive(Debug, Clone)]
 pub struct RasterImage {
@@ -454,16 +464,42 @@ impl TextEngine {
     }
 
     /// Allocate a `w × h` rect in the mono atlas, growing as needed.
+    ///
+    /// If growth would exceed `MAX_MONO_ATLAS_DIM`, the cache and shelf-pack
+    /// state are fully reset and the atlas is recreated at its initial size.
+    /// All cached `GlyphRef`s are invalidated; callers will re-render on the
+    /// next `glyph_for` miss.
     fn allocate_mono(&mut self, w: u32, h: u32) -> (u32, u32) {
         let need_grow = !shelves_can_fit(&self.shelves, self.atlas_w, self.atlas_h, w, h);
         if need_grow {
             let new_h = double_until_fits(self.atlas_h, h, &self.shelves);
-            self.grow_mono_atlas(new_h);
+            if new_h > MAX_MONO_ATLAS_DIM {
+                tracing::warn!(
+                    current_h = self.atlas_h,
+                    requested_h = new_h,
+                    cap = MAX_MONO_ATLAS_DIM,
+                    "glyph mono atlas hit size cap; resetting cache",
+                );
+                self.cache.clear();
+                self.shelves.clear();
+                // Set atlas_h to ATLAS_INITIAL_H BEFORE calling grow_mono_atlas
+                // so its `new_h >= self.atlas_h` assertion is satisfied
+                // (ATLAS_INITIAL_H >= ATLAS_INITIAL_H).
+                self.atlas_h = ATLAS_INITIAL_H;
+                self.grow_mono_atlas(ATLAS_INITIAL_H);
+            } else {
+                self.grow_mono_atlas(new_h);
+            }
         }
         shelf_pack(&mut self.shelves, self.atlas_w, w, h)
     }
 
     /// Allocate a `w × h` rect in the color atlas, growing as needed.
+    ///
+    /// If growth would exceed `MAX_COLOR_ATLAS_DIM`, the cache and shelf-pack
+    /// state are fully reset and the atlas is recreated at its initial size.
+    /// All cached `GlyphRef`s are invalidated; callers will re-render on the
+    /// next `glyph_for` miss.
     fn allocate_color(&mut self, w: u32, h: u32) -> (u32, u32) {
         let need_grow = !shelves_can_fit(
             &self.color_shelves,
@@ -474,7 +510,23 @@ impl TextEngine {
         );
         if need_grow {
             let new_h = double_until_fits(self.color_atlas_h, h, &self.color_shelves);
-            self.grow_color_atlas(new_h);
+            if new_h > MAX_COLOR_ATLAS_DIM {
+                tracing::warn!(
+                    current_h = self.color_atlas_h,
+                    requested_h = new_h,
+                    cap = MAX_COLOR_ATLAS_DIM,
+                    "glyph color atlas hit size cap; resetting cache",
+                );
+                self.cache.clear();
+                self.color_shelves.clear();
+                // Set color_atlas_h to COLOR_ATLAS_INITIAL_H BEFORE calling
+                // grow_color_atlas so its `new_h >= self.color_atlas_h`
+                // assertion is satisfied (COLOR_ATLAS_INITIAL_H >= COLOR_ATLAS_INITIAL_H).
+                self.color_atlas_h = COLOR_ATLAS_INITIAL_H;
+                self.grow_color_atlas(COLOR_ATLAS_INITIAL_H);
+            } else {
+                self.grow_color_atlas(new_h);
+            }
         }
         shelf_pack(&mut self.color_shelves, self.color_atlas_w, w, h)
     }
@@ -862,5 +914,47 @@ pub mod tests {
         assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal)));
         assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic)));
         assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic)));
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn allocate_mono_resets_atlas_when_hitting_cap() {
+        let mut engine = test_engine();
+        // Force atlas growth past 4096 via repeated tall allocations.
+        for _ in 0..50 {
+            let _ = engine.allocate_mono(128, 128);
+        }
+        // The cap kicked in: atlas_h must remain <= 4096.
+        assert!(
+            engine.atlas_h <= 4096,
+            "atlas_h must never exceed cap; got {}",
+            engine.atlas_h
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn allocate_color_resets_atlas_when_hitting_cap() {
+        let mut engine = test_engine();
+        for _ in 0..50 {
+            let _ = engine.allocate_color(128, 128);
+        }
+        assert!(
+            engine.color_atlas_h <= 2048,
+            "color_atlas_h must never exceed cap; got {}",
+            engine.color_atlas_h
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn post_atlas_reset_lookup_re_renders_glyph() {
+        let mut engine = test_engine();
+        for _ in 0..50 {
+            let _ = engine.allocate_mono(128, 128);
+        }
+        // After reset, a fresh glyph_for must still resolve.
+        let g = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
+        assert!(g.is_some(), "post-reset glyph_for must still resolve");
     }
 }
