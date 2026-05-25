@@ -260,11 +260,13 @@ pub struct WindowApp {
     /// `context_menu`: opening About closes any open menu (see
     /// `MenuAction::ShowAbout` dispatch arm).
     about_open: bool,
-    /// v0.1.2 perf: timestamp of the most recent `request_redraw()` call.
-    /// Used by `request_redraw_throttled` to cap paint rate at ~30 FPS even
-    /// when PTY events (Claude Code output streaming, spinners, etc.) would
-    /// otherwise fire a paint per byte. Set to a far-past epoch initially so
-    /// the very first paint isn't throttled.
+    /// v0.1.2 perf: timestamp of the most recent `request_redraw()` call from
+    /// either `about_to_wait`'s cadence path or a high-frequency event source
+    /// (PTY `TermUpdated`). Used by `about_to_wait` to schedule the next pulse
+    /// / blink-boundary paint relative to the most recent actual paint, so we
+    /// don't double-paint when an event already drew the new state. Set to a
+    /// far-past epoch initially so the first cadence-driven paint fires
+    /// promptly.
     last_redraw_request: Instant,
 }
 
@@ -498,26 +500,9 @@ impl WindowApp {
             ),
             initial_size_reconciled: false,
             about_open: false,
-            // Far-past epoch ensures the first redraw isn't throttled.
+            // Far-past epoch ensures the first about_to_wait paint fires promptly.
             last_redraw_request: Instant::now() - Duration::from_secs(3600),
         }
-    }
-
-    /// v0.1.2 perf: throttled `request_redraw` wrapper. Caps paint rate at
-    /// ~30 FPS even when PTY events (Claude Code spinners, output streaming)
-    /// would otherwise fire a paint per byte. Idempotent; winit itself
-    /// coalesces redraws too, but this avoids the per-event handling cost.
-    fn request_redraw_throttled(&mut self) {
-        const MIN_PAINT_INTERVAL: Duration = Duration::from_millis(33);
-        let now = Instant::now();
-        if now.duration_since(self.last_redraw_request) >= MIN_PAINT_INTERVAL {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-                self.last_redraw_request = now;
-            }
-        }
-        // else: another redraw is already pending within the throttle window;
-        // the next paint will pick up the latest term state.
     }
 
     /// Spawn the user's shell as the first tab. `$SHELL` if set; otherwise
@@ -545,12 +530,19 @@ impl WindowApp {
             SessionEvent::TermUpdated => {
                 // Bytes were fed into the per-session Term in PtySession::poll.
                 // Request a redraw so the renderer reads the new grid contents.
-                // v0.1.2: throttled to cap paint rate at ~30 FPS during
-                // high-frequency PTY streaming (Claude Code spinners /
-                // output bursts). Without the throttle, output-heavy apps
-                // can drive paint rate to vsync (60 FPS) and burn ~80% CPU.
+                //
+                // v0.1.2: this is intentionally NOT throttled. winit coalesces
+                // multiple request_redraw() calls within one vsync into a
+                // single RedrawRequested dispatch, so PTY-event bursts paint
+                // at most at vsync rate (~60 FPS). An earlier throttle here
+                // added up to 33 ms of typing latency on every echoed char
+                // for negligible CPU savings — the dominant CPU drain came
+                // from about_to_wait, which is now gated separately.
                 tracing::trace!(tab = idx, "term updated");
-                self.request_redraw_throttled();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                    self.last_redraw_request = Instant::now();
+                }
             }
             SessionEvent::Died => {
                 tracing::warn!(tab = idx, "session died");
