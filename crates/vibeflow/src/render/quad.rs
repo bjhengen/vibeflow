@@ -371,6 +371,35 @@ fn underline_geometry(
             (0.0, ch - 3.0, cw, 1.0),
             (0.0, ch - 1.0, cw, 1.0),
         ]
+    } else if flags.contains(Flags::UNDERCURL) {
+        // Cheap 4-quad zigzag approximation. A true curl would need shader
+        // support; this conveys "wavy" at v0.1.2 cost.
+        let q = cw / 4.0;
+        vec![
+            (0.0,      ch - 1.0, q, 1.0),
+            (q,        ch - 3.0, q, 1.0),
+            (q * 2.0,  ch - 1.0, q, 1.0),
+            (q * 3.0,  ch - 3.0, q, 1.0),
+        ]
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        // Dot every 2 px, 1 px wide.
+        let mut out = Vec::new();
+        let mut x = 0.0;
+        while x < cw {
+            out.push((x, ch - 2.0, 1.0, 1.0));
+            x += 2.0;
+        }
+        out
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        // Dash 3 px on, 2 px off.
+        let mut out = Vec::new();
+        let mut x = 0.0;
+        while x < cw {
+            let dash_w = (cw - x).min(3.0);
+            out.push((x, ch - 2.0, dash_w, 1.0));
+            x += 5.0;
+        }
+        out
     } else if flags.contains(Flags::UNDERLINE) {
         vec![(0.0, ch - 2.0, cw, 1.0)]
     } else {
@@ -1040,12 +1069,14 @@ mod tests {
 
     // ---- UNDERLINE / DOUBLE_UNDERLINE / STRIKEOUT ------------------------
 
-    fn count_decoration_quads_at_col_0(out: &[QuadInstance], _cell_h: u32) -> Vec<(f32, f32)> {
-        // Decoration quads are short (1 px tall) at well-defined y offsets within
-        // the cell. Filter to quads at col 0 (screen_x == 0) and not the bg (full
-        // height) — bg+glyph have h >= cell glyph height; decorations are 1-2 px.
+    fn count_decoration_quads_at_col_0(out: &[QuadInstance], cell_w: u32) -> Vec<(f32, f32)> {
+        // Decoration quads are short (1-2 px tall) at well-defined y offsets
+        // within the cell. Filter to quads whose x falls within col 0's range
+        // (screen_x in [0, cell_w)) — multi-segment decorations (undercurl,
+        // dotted, dashed) emit quads at various x offsets within the cell.
+        // Exclude bg (full height) and glyph quads: decorations are <= 2 px tall.
         out.iter()
-            .filter(|q| q.screen_rect_px[0] == 0.0)
+            .filter(|q| q.screen_rect_px[0] >= 0.0 && q.screen_rect_px[0] < cell_w as f32)
             .filter(|q| q.screen_rect_px[3] <= 2.0)
             .map(|q| (q.screen_rect_px[1], q.screen_rect_px[3]))
             .collect()
@@ -1060,7 +1091,7 @@ mod tests {
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
-        let decos = count_decoration_quads_at_col_0(&out, 16);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
         assert_eq!(decos.len(), 1, "expected 1 underline quad, got {:?}", decos);
         // y position: cell_h - 2 (top of the 1-px line near bottom).
         assert!((decos[0].0 - (16.0 - 2.0)).abs() < 0.5,
@@ -1076,7 +1107,7 @@ mod tests {
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
-        let decos = count_decoration_quads_at_col_0(&out, 16);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
         assert_eq!(decos.len(), 2, "expected 2 underline quads, got {:?}", decos);
     }
 
@@ -1089,11 +1120,53 @@ mod tests {
         let cursor = crate::render::cursor::CursorBlink::new();
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
-        let decos = count_decoration_quads_at_col_0(&out, 16);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
         assert_eq!(decos.len(), 1, "expected 1 strikeout quad, got {:?}", decos);
         // Strikeout y: above baseline by ~30% of cell_h. Should be in 3..13 range.
         let strike_y = decos[0].0;
         assert!(strike_y > 3.0 && strike_y < 13.0,
             "strikeout y should be roughly mid-height (3..13); got {}", strike_y);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn undercurl_flag_emits_four_short_decoration_quads() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::UNDERCURL);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        assert_eq!(decos.len(), 4, "expected 4 undercurl quads, got {:?}", decos);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn dotted_underline_emits_multiple_short_decoration_quads() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DOTTED_UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        // Cell width 8 / 2-px stride = 4 dots.
+        assert_eq!(decos.len(), 4, "expected 4 dot quads in an 8-px-wide cell, got {:?}", decos);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn dashed_underline_emits_dashes_with_gaps() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DASHED_UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 8);
+        // Cell width 8 / 5-px stride (3-on, 2-off) = 2 dashes.
+        assert!(!decos.is_empty() && decos.len() <= 2,
+            "expected 1-2 dash quads in an 8-px-wide cell, got {:?}", decos);
     }
 }
