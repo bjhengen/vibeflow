@@ -3,6 +3,7 @@
 //! Stage 5 layers the cell grid on top; Stage 6 adds the tab bar.
 //! Stage 7 migrates cell rendering to QuadPipeline + cosmic-text TextEngine.
 
+pub mod about;
 pub mod bell;
 pub mod colors;
 pub mod context_menu;
@@ -277,6 +278,7 @@ impl Renderer {
         error_banner: &crate::config::error_banner::ErrorBannerState,
         rename_state: Option<&crate::render::tabs::RenameInputState>,
         context_menu: Option<&crate::render::context_menu::ContextMenuState>,
+        about_open: bool,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
@@ -498,16 +500,66 @@ impl Renderer {
                 )
             })
             .unwrap_or_default();
+        // v0.1.2: About overlay. Resolved AFTER menu so the panel paints on
+        // top of every other layer. Uses the active session's theme bg/fg
+        // when present (mirrors `theme_clear_color` for bg).
+        let about_colors = if about_open {
+            use alacritty_terminal::vte::ansi::NamedColor;
+            let panel_bg: [f32; 4] =
+                match active_theme_colors.and_then(|c| c[NamedColor::Background]) {
+                    Some(rgb) => [
+                        rgb.r as f32 / 255.0,
+                        rgb.g as f32 / 255.0,
+                        rgb.b as f32 / 255.0,
+                        1.0,
+                    ],
+                    None => [
+                        CLEAR_COLOR.r as f32,
+                        CLEAR_COLOR.g as f32,
+                        CLEAR_COLOR.b as f32,
+                        1.0,
+                    ],
+                };
+            let fg: [f32; 4] = match active_theme_colors.and_then(|c| c[NamedColor::Foreground]) {
+                Some(rgb) => [
+                    rgb.r as f32 / 255.0,
+                    rgb.g as f32 / 255.0,
+                    rgb.b as f32 / 255.0,
+                    1.0,
+                ],
+                None => [0.9, 0.9, 0.9, 1.0],
+            };
+            Some(crate::render::about::AboutColors {
+                backdrop: [0.0, 0.0, 0.0, 0.5],
+                panel_bg,
+                border_fg: fg,
+                text_fg: fg,
+            })
+        } else {
+            None
+        };
+        let about_rects: Vec<crate::render::tabs::RectInstance> = about_colors
+            .as_ref()
+            .map(|c| crate::render::about::build_about_rects(surface_size, c))
+            .unwrap_or_default();
+        let about_glyphs: Vec<crate::render::quad::QuadInstance> = about_colors
+            .as_ref()
+            .map(|c| {
+                crate::render::about::build_about_glyphs(surface_size, &mut self.text_engine, c)
+            })
+            .unwrap_or_default();
         let menu_glyph_offset = banner_glyph_offset + banner_glyph_count;
         let menu_glyph_count = menu_glyphs.len() as u32;
-        let total_quads = menu_glyph_offset + menu_glyph_count;
+        let about_glyph_offset = menu_glyph_offset + menu_glyph_count;
+        let about_glyph_count = about_glyphs.len() as u32;
+        let total_quads = about_glyph_offset + about_glyph_count;
         let scrollbar_rect_count = scrollbar_rects.len() as u32;
         let scrollbar_rect_offset = bell_rect_offset + bell_rect_count;
-        // Was previously `menu_rect_offset = bell_rect_offset + bell_rect_count`.
-        // Now scrollbar sits between bell flash and context menu.
         let menu_rect_offset = scrollbar_rect_offset + scrollbar_rect_count;
         let menu_rect_count = menu_rects.len() as u32;
-        let total_rects = menu_rect_offset + menu_rect_count;
+        let about_rect_offset = menu_rect_offset + menu_rect_count;
+        let about_rect_count = about_rects.len() as u32;
+        let total_rects = about_rect_offset + about_rect_count;
 
         let mut all_quads = Vec::with_capacity(total_quads as usize);
         all_quads.extend_from_slice(&cell_instances);
@@ -516,8 +568,9 @@ impl Renderer {
         if let Some(b) = &banner_quads {
             all_quads.extend_from_slice(b);
         }
-        // Menu glyph quads are always last — they must paint above all other layers.
         all_quads.extend_from_slice(&menu_glyphs);
+        // v0.1.2 About overlay paints above the menu glyph batch.
+        all_quads.extend_from_slice(&about_glyphs);
 
         let mut all_rects = Vec::with_capacity(total_rects as usize);
         all_rects.extend_from_slice(&tab_rects);
@@ -533,6 +586,8 @@ impl Renderer {
         }
         all_rects.extend_from_slice(&scrollbar_rects);
         all_rects.extend_from_slice(&menu_rects);
+        // v0.1.2 About overlay paints above the menu rect batch.
+        all_rects.extend_from_slice(&about_rects);
 
         // Now grow the GPU buffers + write all instance data (still outside
         // the render-pass scope). Writes happen ONCE per pipeline per frame
@@ -636,13 +691,25 @@ impl Renderer {
             // ---- Context menu rects ----
             if menu_rect_count > 0 {
                 self.tab_bar_pipeline
-                    .draw_range(&mut pass, menu_rect_offset..total_rects);
+                    .draw_range(&mut pass, menu_rect_offset..about_rect_offset);
             }
 
-            // ---- Context menu glyphs (topmost glyph layer) ----
+            // ---- Context menu glyphs ----
             if menu_glyph_count > 0 {
                 self.quad_pipeline
-                    .draw_range(&mut pass, menu_glyph_offset..total_quads);
+                    .draw_range(&mut pass, menu_glyph_offset..about_glyph_offset);
+            }
+
+            // ---- About overlay rects (backdrop + panel + borders) ----
+            if about_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, about_rect_offset..total_rects);
+            }
+
+            // ---- About overlay glyphs (topmost glyph layer) ----
+            if about_glyph_count > 0 {
+                self.quad_pipeline
+                    .draw_range(&mut pass, about_glyph_offset..total_quads);
             }
         }
 

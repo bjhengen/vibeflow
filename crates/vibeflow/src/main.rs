@@ -14,6 +14,13 @@ use winit::event_loop::EventLoop;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // Short-circuit before any GUI/winit/wgpu init so `--version` works
+    // headless (over SSH, in containers, in CI). Matches the convention of
+    // `git --version`, `cargo --version`, `rustc --version`.
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("vibeflow {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     // Note: only the space-separated form `--import-colors <path>` is
     // recognized; the `--import-colors=PATH` (=-joined) form is not. A
     // future clap migration would handle both.
