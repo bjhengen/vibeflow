@@ -352,6 +352,50 @@ impl QuadPipeline {
 use crate::render::cursor::CursorBlink;
 use crate::render::text_engine::{GlyphKind, GlyphRef, TextEngine};
 
+/// Decoration quads for the various underline + strikeout flag combinations.
+/// Returns a list of `(x_off, y_off, w, h)` in cell-local coordinates; the
+/// caller maps them to screen by adding `(screen_x, screen_y)`.
+///
+/// T7 covers single + double underline. T8 will extend with UNDERCURL,
+/// DOTTED_UNDERLINE, DASHED_UNDERLINE variants.
+fn underline_geometry(
+    flags: alacritty_terminal::term::cell::Flags,
+    cell_w: u32,
+    cell_h: u32,
+) -> Vec<(f32, f32, f32, f32)> {
+    use alacritty_terminal::term::cell::Flags;
+    let cw = cell_w as f32;
+    let ch = cell_h as f32;
+    if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        vec![
+            (0.0, ch - 3.0, cw, 1.0),
+            (0.0, ch - 1.0, cw, 1.0),
+        ]
+    } else if flags.contains(Flags::UNDERLINE) {
+        vec![(0.0, ch - 2.0, cw, 1.0)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Strikeout: single 1 px line near mid-x-height (approximated as 30%
+/// of cell_h above baseline). cosmic-text doesn't expose x-height
+/// directly for monospace metrics; the 30% factor is adequate.
+fn strikeout_geometry(
+    flags: alacritty_terminal::term::cell::Flags,
+    cell_w: u32,
+    cell_h: u32,
+    baseline_y: f32,
+) -> Vec<(f32, f32, f32, f32)> {
+    use alacritty_terminal::term::cell::Flags;
+    if flags.contains(Flags::STRIKEOUT) {
+        let strike_y_off = baseline_y - (cell_h as f32 * 0.30);
+        vec![(0.0, strike_y_off, cell_w as f32, 1.0)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Derive the cosmic-text `(Weight, Style)` to use for the cell's glyph from
 /// alacritty's cell flags. `cell::Flags::BOLD_ITALIC` is just `BOLD | ITALIC`
 /// set together, so the two branches compose naturally.
@@ -547,6 +591,23 @@ pub fn build_cell_instances(
                 fg,
                 bg,
                 glyph_kind,
+            ));
+        }
+
+        // v0.1.2 decoration quads (UNDERLINE / DOUBLE_UNDERLINE / STRIKEOUT).
+        // Underline quads sit below baseline; strikeout sits at mid-x-height.
+        // Use the resolved fg color (after per-flag mutations + cursor invert).
+        let mut decorations = underline_geometry(cell.flags, cell_w, cell_h);
+        decorations.extend(strikeout_geometry(cell.flags, cell_w, cell_h, baseline_y));
+        for (dx, dy, dw, dh) in decorations {
+            out.push(QuadInstance::new(
+                screen_x + dx,
+                screen_y + dy,
+                dw,
+                dh,
+                0.0, 0.0, 0.0, 0.0,  // zero-size atlas rect → alpha=0 → solid color
+                fg, bg,
+                KIND_MONO,
             ));
         }
     }
@@ -766,7 +827,7 @@ mod cell_layout_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::build_cell_instances;
+    use super::{build_cell_instances, QuadInstance};
 
     // ---- cursor-as-own-quad ----------------------------------------------
 
@@ -975,5 +1036,64 @@ mod tests {
         let italic_atlas = out_italic[1].atlas_rect_px;
         assert_ne!(regular_atlas, italic_atlas,
             "italic 'A' must occupy a different atlas rect than regular 'A'");
+    }
+
+    // ---- UNDERLINE / DOUBLE_UNDERLINE / STRIKEOUT ------------------------
+
+    fn count_decoration_quads_at_col_0(out: &[QuadInstance], _cell_h: u32) -> Vec<(f32, f32)> {
+        // Decoration quads are short (1 px tall) at well-defined y offsets within
+        // the cell. Filter to quads at col 0 (screen_x == 0) and not the bg (full
+        // height) — bg+glyph have h >= cell glyph height; decorations are 1-2 px.
+        out.iter()
+            .filter(|q| q.screen_rect_px[0] == 0.0)
+            .filter(|q| q.screen_rect_px[3] <= 2.0)
+            .map(|q| (q.screen_rect_px[1], q.screen_rect_px[3]))
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn underline_flag_emits_one_decoration_quad_below_baseline() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 16);
+        assert_eq!(decos.len(), 1, "expected 1 underline quad, got {:?}", decos);
+        // y position: cell_h - 2 (top of the 1-px line near bottom).
+        assert!((decos[0].0 - (16.0 - 2.0)).abs() < 0.5,
+            "underline y should be cell_h-2 = 14; got {}", decos[0].0);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn double_underline_flag_emits_two_decoration_quads() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::DOUBLE_UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 16);
+        assert_eq!(decos.len(), 2, "expected 2 underline quads, got {:?}", decos);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn strikeout_flag_emits_one_decoration_quad_at_mid_height() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::STRIKEOUT);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        let decos = count_decoration_quads_at_col_0(&out, 16);
+        assert_eq!(decos.len(), 1, "expected 1 strikeout quad, got {:?}", decos);
+        // Strikeout y: above baseline by ~30% of cell_h. Should be in 3..13 range.
+        let strike_y = decos[0].0;
+        assert!(strike_y > 3.0 && strike_y < 13.0,
+            "strikeout y should be roughly mid-height (3..13); got {}", strike_y);
     }
 }
