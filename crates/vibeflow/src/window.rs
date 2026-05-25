@@ -1861,14 +1861,20 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             .any(|tab| tab.state() == TabState::Waiting);
 
         // v0.1.2 dirty-redraw: paint cadence is driven by either the Waiting-tab
-        // animation loop (~60 FPS) or the cursor-blink boundary (~2 paints/sec
-        // on idle, vs. the prior 10/sec). All other state-mutating paths request
-        // a redraw at the point of mutation — about 20 such sites in this file.
+        // pulse-indicator animation (~10 FPS, was 60) or the cursor-blink
+        // boundary (~2 paints/sec on idle, was 10). All state-mutating paths
+        // request a redraw at the point of mutation — about 20 such sites.
+        //
+        // Initial v0.1.2 attempt kept the Waiting branch at 16 ms (60 FPS) for
+        // a "smooth" indicator pulse, but real-world testing showed 80% CPU
+        // with Claude Code idle in Waiting state. The pulse is a slow visual
+        // affordance, not a high-frequency animation — 100 ms (10 FPS) is
+        // visually identical to 60 FPS at the pulse's perceptual cadence.
         let next_deadline = if any_waiting {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
-            now + Duration::from_millis(16)
+            now + Duration::from_millis(100)
         } else {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
