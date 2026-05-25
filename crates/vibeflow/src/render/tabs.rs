@@ -875,7 +875,7 @@ pub(crate) fn push_text_glyphs(
         if x + cell_w > max_x_px as f32 {
             break;
         }
-        if let Some(g) = text_engine.glyph_for(c) {
+        if let Some(g) = text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
             if g.atlas_w > 0 && g.atlas_h > 0 {
                 let kind: u32 = match g.kind {
                     crate::render::text_engine::GlyphKind::Mono => crate::render::quad::KIND_MONO,
