@@ -1,3 +1,14 @@
+This directory contains the following files from the JetBrains Mono
+v2.304 release (https://github.com/JetBrains/JetBrainsMono), all
+distributed under the SIL Open Font License 1.1 (full text below):
+
+  JetBrainsMono-Regular.ttf
+  JetBrainsMono-Bold.ttf
+  JetBrainsMono-Italic.ttf
+  JetBrainsMono-BoldItalic.ttf
+
+----------------------------------------------------------------------
+
 Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
