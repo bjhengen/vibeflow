@@ -26,6 +26,9 @@ pub enum GlyphKind {
 
 /// Embedded primary font. Same JBM file used by Stage 5's fontdue atlas.
 pub const PRIMARY_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Regular.ttf");
+pub const BOLD_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Bold.ttf");
+pub const ITALIC_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-Italic.ttf");
+pub const BOLD_ITALIC_FONT: &[u8] = include_bytes!("../../assets/JetBrainsMono-BoldItalic.ttf");
 
 /// Stage 7 renders all glyphs at 16 px (matches Stage 5's `FONT_PX = 16.0`).
 /// Configurable in Stage 9 (TOML config).
@@ -150,7 +153,7 @@ pub struct TextEngine {
     color_atlas_h: u32,
     color_shelves: Vec<Shelf>,
 
-    cache: HashMap<char, Option<GlyphRef>>, // None = no font coverage for this codepoint; do not retry
+    cache: HashMap<(char, cosmic_text::Weight, cosmic_text::Style), Option<GlyphRef>>, // None = no font coverage for this codepoint; do not retry
     /// True when EITHER atlas has been re-allocated since the last call.
     atlases_dirty: bool,
     queue: Arc<wgpu::Queue>,
@@ -167,6 +170,9 @@ pub struct TextEngine {
 fn build_font_subsystem() -> (FontSystem, SwashCache) {
     let mut font_system = FontSystem::new();
     font_system.db_mut().load_font_data(PRIMARY_FONT.to_vec());
+    font_system.db_mut().load_font_data(BOLD_FONT.to_vec());
+    font_system.db_mut().load_font_data(ITALIC_FONT.to_vec());
+    font_system.db_mut().load_font_data(BOLD_ITALIC_FONT.to_vec());
     let swash_cache = SwashCache::new();
     (font_system, swash_cache)
 }
@@ -318,10 +324,18 @@ impl TextEngine {
     /// Rasterize a single character. Returns `Some` for any glyph the font
     /// stack can produce, `None` only if no fallback covers the codepoint.
     /// `RasterImage::kind` distinguishes mono (R8) from color (RGBA premultiplied).
-    pub fn rasterize(&mut self, c: char) -> Option<RasterImage> {
+    pub fn rasterize(
+        &mut self,
+        c: char,
+        weight: cosmic_text::Weight,
+        style: cosmic_text::Style,
+    ) -> Option<RasterImage> {
         let metrics = Metrics::new(FONT_PX, FONT_PX * 1.4);
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
-        let attrs = Attrs::new().family(Family::Name("JetBrains Mono"));
+        let attrs = Attrs::new()
+            .family(Family::Name("JetBrains Mono"))
+            .weight(weight)
+            .style(style);
         // `Shaping::Advanced` is required for cosmic-text's full font fallback
         // chain (rustybuzz). With `Shaping::Basic`, missing codepoints render
         // as the primary font's tofu glyph instead of falling through to the
@@ -363,17 +377,27 @@ impl TextEngine {
     /// Look up (or rasterize + atlas) the glyph for `c`. Returns `None` for
     /// characters the font stack can't render. The cache memoises both
     /// successes and failures.
-    pub fn glyph_for(&mut self, c: char) -> Option<GlyphRef> {
-        if let Some(cached) = self.cache.get(&c) {
+    pub fn glyph_for(
+        &mut self,
+        c: char,
+        weight: cosmic_text::Weight,
+        style: cosmic_text::Style,
+    ) -> Option<GlyphRef> {
+        if let Some(cached) = self.cache.get(&(c, weight, style)) {
             return *cached;
         }
-        let result = self.try_atlas(c);
-        self.cache.insert(c, result);
+        let result = self.try_atlas(c, weight, style);
+        self.cache.insert((c, weight, style), result);
         result
     }
 
-    fn try_atlas(&mut self, c: char) -> Option<GlyphRef> {
-        let img = self.rasterize(c)?;
+    fn try_atlas(
+        &mut self,
+        c: char,
+        weight: cosmic_text::Weight,
+        style: cosmic_text::Style,
+    ) -> Option<GlyphRef> {
+        let img = self.rasterize(c, weight, style)?;
         if img.width == 0 || img.height == 0 {
             return Some(GlyphRef {
                 kind: img.kind,
@@ -617,10 +641,10 @@ impl TextEngine {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
-    fn test_engine() -> TextEngine {
+    pub fn test_engine() -> TextEngine {
         // `Backends::GL` is wgpu's most portable backend on Linux, but it
         // requires a usable OpenGL implementation (Mesa with software
         // rendering at minimum: `LIBGL_ALWAYS_SOFTWARE=1`). On a vanilla
@@ -669,7 +693,7 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_ascii_letter_returns_image() {
         let mut engine = test_engine();
-        let img = engine.rasterize('A').unwrap();
+        let img = engine.rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
         assert!(img.width > 0);
         assert!(img.height > 0);
         assert_eq!(img.data.len(), (img.width * img.height) as usize);
@@ -684,7 +708,7 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_space_returns_none_or_empty_image() {
         let mut engine = test_engine();
-        let img = engine.rasterize(' ');
+        let img = engine.rasterize(' ', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         // cosmic-text returns either no image or an empty one for whitespace.
         if let Some(img) = img {
             assert_eq!(img.data.iter().filter(|&&a| a > 0).count(), 0);
@@ -698,15 +722,15 @@ mod tests {
         // 中 (U+4E2D) — JBM doesn't carry CJK. fontdb should find a system font.
         // If the test env has no CJK font, this returns None — assert either
         // outcome works, just that we don't panic.
-        let _img = engine.rasterize('中');
+        let _img = engine.rasterize('中', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
     }
 
     #[test]
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_caches_repeat_lookups() {
         let mut engine = test_engine();
-        let r1 = engine.glyph_for('A').unwrap();
-        let r2 = engine.glyph_for('A').unwrap();
+        let r1 = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let r2 = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
         assert_eq!(r1, r2);
     }
 
@@ -714,8 +738,8 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_assigns_distinct_atlas_rects() {
         let mut engine = test_engine();
-        let a = engine.glyph_for('A').unwrap();
-        let b = engine.glyph_for('B').unwrap();
+        let a = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
+        let b = engine.glyph_for('B', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
         // Different glyphs must occupy different rects.
         assert_ne!(
             (a.atlas_x, a.atlas_y),
@@ -731,13 +755,13 @@ mod tests {
         let initial_h = engine.atlas_size().1;
         // Force many distinct glyphs.
         for c in 'A'..='Z' {
-            engine.glyph_for(c);
+            engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         }
         for c in 'a'..='z' {
-            engine.glyph_for(c);
+            engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         }
         for c in 'Α'..='Ω' {
-            engine.glyph_for(c);
+            engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
         }
         let (_, h_after) = engine.atlas_size();
         // Either fits in original size, or grew. Both are valid; we just
@@ -754,7 +778,7 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn rasterize_mono_letter_returns_mono_kind() {
         let mut engine = test_engine();
-        let img = engine.rasterize('A').unwrap();
+        let img = engine.rasterize('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
         assert_eq!(img.kind, GlyphKind::Mono);
         assert_eq!(img.data.len(), img.width as usize * img.height as usize);
     }
@@ -764,7 +788,7 @@ mod tests {
     fn rasterize_color_emoji_returns_color_kind() {
         let mut engine = test_engine();
         // 🎉 (U+1F389). Skip cleanly if the test env has no color emoji font.
-        if let Some(img) = engine.rasterize('🎉') {
+        if let Some(img) = engine.rasterize('🎉', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
             assert_eq!(img.kind, GlyphKind::Color);
             // RGBA: data length = 4 * width * height.
             assert_eq!(img.data.len(), 4 * img.width as usize * img.height as usize);
@@ -776,10 +800,10 @@ mod tests {
     fn glyph_for_emoji_routes_to_color_atlas() {
         let mut engine = test_engine();
         // Skip cleanly if no color emoji font in the test env.
-        if let Some(g) = engine.glyph_for('🎉') {
+        if let Some(g) = engine.glyph_for('🎉', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
             assert_eq!(g.kind, GlyphKind::Color);
             // Cache hit on second call returns identical GlyphRef.
-            assert_eq!(engine.glyph_for('🎉'), Some(g));
+            assert_eq!(engine.glyph_for('🎉', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal), Some(g));
         }
     }
 
@@ -787,7 +811,7 @@ mod tests {
     #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
     fn glyph_for_letter_routes_to_mono_atlas() {
         let mut engine = test_engine();
-        let g = engine.glyph_for('A').unwrap();
+        let g = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap();
         assert_eq!(g.kind, GlyphKind::Mono);
     }
 
@@ -805,7 +829,7 @@ mod tests {
         // emoji coverage entirely.
         for code in (0x1F600u32..=0x1F64Fu32).chain(0x1F300u32..=0x1F320u32) {
             if let Some(c) = char::from_u32(code) {
-                engine.glyph_for(c);
+                engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
             }
         }
         let (_, h_after) = engine.color_atlas_size();
@@ -815,5 +839,28 @@ mod tests {
             h_after,
             initial_h
         );
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn glyph_for_caches_each_style_independently() {
+        // The cache key MUST include weight and style. Look up the same char
+        // with four (weight, style) combinations — each must succeed and the
+        // cache should hold all four entries afterwards.
+        let mut engine = test_engine();
+        let normal_normal = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal);
+        let bold_normal = engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal);
+        let normal_italic = engine.glyph_for('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic);
+        let bold_italic = engine.glyph_for('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic);
+
+        assert!(normal_normal.is_some(), "regular 'A' must resolve");
+        assert!(bold_normal.is_some(), "bold 'A' must resolve");
+        assert!(normal_italic.is_some(), "italic 'A' must resolve");
+        assert!(bold_italic.is_some(), "bold-italic 'A' must resolve");
+
+        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal)));
+        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Normal)));
+        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::NORMAL, cosmic_text::Style::Italic)));
+        assert!(engine.cache.contains_key(&('A', cosmic_text::Weight::BOLD, cosmic_text::Style::Italic)));
     }
 }

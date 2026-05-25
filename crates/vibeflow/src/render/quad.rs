@@ -455,7 +455,7 @@ pub fn build_cell_instances(
             cell_w as f32
         };
 
-        let glyph = text_engine.glyph_for(cell.c).unwrap_or(GlyphRef {
+        let glyph = text_engine.glyph_for(cell.c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal).unwrap_or(GlyphRef {
             kind: GlyphKind::Mono,
             atlas_x: 0,
             atlas_y: 0,
@@ -532,7 +532,7 @@ pub fn build_banner_instances(
     let mut out = Vec::with_capacity(glyph_count);
     let mut x = text_x;
     for c in text.chars() {
-        if let Some(glyph) = text_engine.glyph_for(c) {
+        if let Some(glyph) = text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
@@ -574,7 +574,7 @@ pub fn build_config_banner_instances(
     let mut out = Vec::with_capacity(text.chars().count());
     let mut x = 8.0_f32;
     for c in text.chars() {
-        if let Some(glyph) = text_engine.glyph_for(c) {
+        if let Some(glyph) = text_engine.glyph_for(c, cosmic_text::Weight::NORMAL, cosmic_text::Style::Normal) {
             if glyph.atlas_w > 0 && glyph.atlas_h > 0 {
                 out.push(QuadInstance::new(
                     x + glyph.bearing_x as f32,
