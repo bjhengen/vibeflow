@@ -255,6 +255,11 @@ pub struct WindowApp {
     /// requested size before the real window size is final; this one-shot
     /// reconcile corrects the grid before the first visible frame.
     initial_size_reconciled: bool,
+    /// v0.1.2: when `true`, the About overlay is open. ESC, any mouse click,
+    /// and any keypress close it (the click/key is swallowed). Mutex-with
+    /// `context_menu`: opening About closes any open menu (see
+    /// `MenuAction::ShowAbout` dispatch arm).
+    about_open: bool,
 }
 
 impl WindowApp {
@@ -327,14 +332,15 @@ impl WindowApp {
                         tracing::warn!("xdg-open {} failed: {e}", path.display());
                     });
             }
-            MenuAction::OpenRepoUrl => {
-                const REPO_URL: &str = "https://github.com/bjhengen/vibeflow";
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(REPO_URL)
-                    .spawn()
-                    .map_err(|e| {
-                        tracing::warn!("xdg-open {REPO_URL} failed: {e}");
-                    });
+            MenuAction::ShowAbout => {
+                // Opening About is mutex-with context menu and rename
+                // overlay: the dispatch path here only fires from an already-
+                // closed menu (activate_focused_menu_item takes the menu
+                // before calling us), so we only need to clear the rename
+                // overlay for completeness. Existing rename logic is
+                // unchanged otherwise.
+                self.about_open = true;
+                self.rename_state = None;
             }
             MenuAction::SetTheme(name) => {
                 let target = target_idx.unwrap_or_else(|| self.app.active());
@@ -343,6 +349,101 @@ impl WindowApp {
                 }
             }
         }
+    }
+
+    /// v0.1.2 About overlay: handle a `Pressed` key when `about_open == true`.
+    /// Returns `true` if the event was consumed (and the caller must
+    /// short-circuit further dispatch); `false` when the overlay is closed
+    /// and the caller should continue with normal key handling.
+    ///
+    /// Behaviour:
+    /// - ESC → closes the overlay, consumes the event.
+    /// - Bare modifier presses (Ctrl/Shift/Alt/Super alone) → consumed but do
+    ///   NOT close, so multi-key combos still feel right.
+    /// - Anything else → consumed, overlay stays open.
+    fn try_consume_about_keypress(&mut self, key: &winit::keyboard::Key) -> bool {
+        if !self.about_open {
+            return false;
+        }
+        use winit::keyboard::{Key, NamedKey};
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.about_open = false;
+                true
+            }
+            // Bare modifier keys must NOT close the overlay (mirrors the
+            // selection-clear lesson at lesson_keypress_clears_selection).
+            Key::Named(
+                NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper,
+            ) => true,
+            _ => true,
+        }
+    }
+
+    /// v0.1.2 About overlay: handle a mouse-button event when
+    /// `about_open == true`. Returns `true` if the event was consumed and
+    /// the caller must short-circuit further dispatch.
+    ///
+    /// Rule (spec §4.4): **any** click (LMB/MMB/RMB, anywhere) closes the
+    /// overlay on `Pressed` and is consumed. The trailing `Released` of that
+    /// gesture sees `about_open == false` (we cleared it on `Pressed`) and
+    /// falls through to the normal mouse handlers. That's safe because a
+    /// `Released` without a preceding `Pressed` is a no-op for selection
+    /// (no drag_anchor was set) and the tab-bar / context-menu branches
+    /// gate on having seen a matching `Pressed` first.
+    fn try_consume_about_mouse(
+        &mut self,
+        _button: winit::event::MouseButton,
+        state: winit::event::ElementState,
+    ) -> bool {
+        if !self.about_open {
+            return false;
+        }
+        if state == winit::event::ElementState::Pressed {
+            self.about_open = false;
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn about_open(&self) -> bool {
+        self.about_open
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dispatch_menu_action_for_test(
+        &mut self,
+        action: crate::render::context_menu::MenuAction,
+        target_idx: Option<usize>,
+    ) {
+        self.dispatch_menu_action(action, target_idx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_about_open_for_test(&mut self, open: bool) {
+        self.about_open = open;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_handle_about_keypress_for_test(
+        &mut self,
+        key: &winit::keyboard::Key,
+    ) -> bool {
+        self.try_consume_about_keypress(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_handle_about_mouse_for_test(
+        &mut self,
+        button: winit::event::MouseButton,
+        state: winit::event::ElementState,
+    ) -> bool {
+        self.try_consume_about_mouse(button, state)
     }
 
     /// Build a `WindowApp` with no window and no tabs. Call
@@ -390,6 +491,7 @@ impl WindowApp {
                     .unwrap_or_default(),
             ),
             initial_size_reconciled: false,
+            about_open: false,
         }
     }
 
@@ -1079,6 +1181,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     &self.error_banner,
                     self.rename_state.as_ref(),
                     self.context_menu.as_ref(),
+                    self.about_open,
                 ) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -1146,6 +1249,16 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     "key event"
                 );
                 if event.state != ElementState::Pressed {
+                    return;
+                }
+                // v0.1.2 About overlay (mutex-with menu + rename overlays).
+                // The About panel sits on top of all other layers in
+                // render order; its input capture mirrors that priority.
+                // Must run BEFORE the context_menu / rename branches.
+                if self.about_open && self.try_consume_about_keypress(&event.logical_key) {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                     return;
                 }
                 // Stage 10: if a context menu is open, it gets first crack at
@@ -1421,6 +1534,16 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let Some((px, py)) = self.cursor_pos else {
                     return;
                 };
+
+                // v0.1.2 About overlay: any click while open closes it and
+                // swallows the event. Must run BEFORE the context-menu and
+                // grid/tab-bar branches.
+                if self.try_consume_about_mouse(button, state) {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
 
                 // Stage 10 fix: when a context menu is open, intercept ALL
                 // left-button events FIRST — before tab-strip or grid routing.
@@ -2099,6 +2222,36 @@ mod tests {
         }
     }
 
+    /// Build a `WindowApp` for unit tests, returning `None` on headless
+    /// environments where winit cannot construct an event loop (CI's
+    /// `ubuntu-latest` runner has no DISPLAY). Callers do
+    /// `let Some(mut app) = try_make_test_window_app() else { return; };`
+    /// — the test counts as passing on headless without exercising the
+    /// behaviour. Manual VNC smoke walk + the integration test in
+    /// `tests/cli_version.rs` cover the missing surface area.
+    fn try_make_test_window_app() -> Option<super::WindowApp> {
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            let event_loop =
+                winit::event_loop::EventLoop::<crate::config::AppUserEvent>::with_user_event()
+                    .with_any_thread(true)
+                    .build()
+                    .ok()?;
+            let proxy = event_loop.create_proxy();
+            Some(super::WindowApp::new(proxy))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let event_loop =
+                winit::event_loop::EventLoop::<crate::config::AppUserEvent>::with_user_event()
+                    .build()
+                    .ok()?;
+            let proxy = event_loop.create_proxy();
+            Some(super::WindowApp::new(proxy))
+        }
+    }
+
     #[test]
     fn rename_backspace_deletes_grapheme() {
         let mut rs = rename_state_init("hello", 5);
@@ -2296,6 +2449,111 @@ mod tests {
         assert!(
             actual.1 > requested.1,
             "more cols on the larger real window"
+        );
+    }
+
+    #[test]
+    fn show_about_action_sets_about_open_true() {
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        // Pre-condition: overlay closed.
+        assert!(!app.about_open(), "about_open must start false");
+
+        // Dispatch the menu action directly (no menu setup needed).
+        app.dispatch_menu_action_for_test(crate::render::context_menu::MenuAction::ShowAbout, None);
+        assert!(app.about_open(), "ShowAbout must set about_open = true");
+    }
+
+    /// Test-only wrapper that simulates an `ElementState::Pressed` keypress
+    /// while `about_open == true` and returns whether the overlay closed.
+    /// Bypasses the full winit event-loop machinery; verifies only the
+    /// branch-cover for the input-capture rule.
+    #[test]
+    fn escape_while_about_open_closes_overlay() {
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        app.set_about_open_for_test(true);
+        let consumed = app.try_handle_about_keypress_for_test(&winit::keyboard::Key::Named(
+            winit::keyboard::NamedKey::Escape,
+        ));
+        assert!(consumed, "ESC must be consumed by overlay");
+        assert!(!app.about_open(), "ESC must close the overlay");
+    }
+
+    #[test]
+    fn random_key_while_about_open_keeps_overlay_and_is_consumed() {
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        app.set_about_open_for_test(true);
+        let consumed =
+            app.try_handle_about_keypress_for_test(&winit::keyboard::Key::Character("a".into()));
+        assert!(consumed, "key press must be swallowed by overlay");
+        assert!(app.about_open(), "random key must NOT close the overlay");
+    }
+
+    #[test]
+    fn keypress_when_about_closed_is_not_consumed() {
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        // about_open stays false (default).
+        let consumed =
+            app.try_handle_about_keypress_for_test(&winit::keyboard::Key::Character("a".into()));
+        assert!(
+            !consumed,
+            "key event must fall through when overlay is closed"
+        );
+    }
+
+    #[test]
+    fn mouse_press_while_about_open_closes_overlay_and_is_consumed() {
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        app.set_about_open_for_test(true);
+        // Press at (100, 100) — anywhere is fine; rule is uniform.
+        let consumed = app.try_handle_about_mouse_for_test(
+            winit::event::MouseButton::Left,
+            winit::event::ElementState::Pressed,
+        );
+        assert!(consumed, "mouse Pressed must be consumed by overlay");
+        assert!(
+            !app.about_open(),
+            "any click while overlay is open closes it"
+        );
+    }
+
+    #[test]
+    fn mouse_release_after_overlay_close_falls_through() {
+        // After the close-on-Pressed step, about_open is false. The trailing
+        // Released the OS delivers must NOT be consumed — it falls through
+        // to the normal mouse handlers. (Safe because mouse_up without a
+        // preceding mouse_down is a no-op for the selection tracker.)
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        let consumed = app.try_handle_about_mouse_for_test(
+            winit::event::MouseButton::Left,
+            winit::event::ElementState::Released,
+        );
+        assert!(!consumed, "with overlay closed, events fall through");
+    }
+
+    #[test]
+    fn mouse_event_when_about_closed_is_not_consumed() {
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
+        let consumed = app.try_handle_about_mouse_for_test(
+            winit::event::MouseButton::Left,
+            winit::event::ElementState::Pressed,
+        );
+        assert!(
+            !consumed,
+            "mouse event must fall through when overlay is closed"
         );
     }
 }
