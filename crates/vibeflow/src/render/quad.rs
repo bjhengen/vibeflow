@@ -639,6 +639,13 @@ pub fn build_cell_instances(
         let mut decorations = underline_geometry(cell.flags, cell_w, cell_h);
         decorations.extend(strikeout_geometry(cell.flags, cell_w, cell_h, baseline_y));
         for (dx, dy, dw, dh) in decorations {
+            // Solid-color decoration: pass (fg, fg) so the shader's
+            // `mix(bg, fg, alpha)` resolves to pure `fg` regardless of what
+            // alpha happens to live at atlas (0,0). Same pattern as the
+            // standalone cursor quad below and the bg rect above. Passing
+            // (fg, bg) would blend with whatever the first-loaded glyph's
+            // pixel at the atlas origin happens to be — invisible-to-smeared
+            // decorations.
             out.push(QuadInstance::new(
                 screen_x + dx,
                 screen_y + dy,
@@ -647,9 +654,9 @@ pub fn build_cell_instances(
                 0.0,
                 0.0,
                 0.0,
-                0.0, // zero-size atlas rect → alpha=0 → solid color
+                0.0, // zero-size atlas rect → alpha sampled at (0,0)
                 fg,
-                bg,
+                fg,
                 KIND_MONO,
             ));
         }
@@ -1260,6 +1267,36 @@ mod tests {
             strike_y > 3.0 && strike_y < 13.0,
             "strikeout y should be roughly mid-height (3..13); got {}",
             strike_y
+        );
+    }
+
+    /// Pin the (fg, fg) — not (fg, bg) — argument pattern for decoration quads.
+    /// The shader's mono path resolves to `mix(bg, fg, alpha)`; with a zero-size
+    /// atlas rect, alpha is sampled at atlas (0, 0) which is unpredictable. Only
+    /// (fg, fg) produces a guaranteed solid-fg line regardless of what alpha lives
+    /// at that atlas origin. Holistic review caught the original (fg, bg) bug here.
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn underline_decoration_quad_uses_fg_for_both_fg_and_bg_channels() {
+        use alacritty_terminal::term::cell::Flags;
+        let term = flagged_term(Flags::UNDERLINE);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+        // Find the underline decoration quad: 1-2 px tall at the cell's bottom.
+        let deco = out
+            .iter()
+            .find(|q| {
+                q.screen_rect_px[0] == 0.0
+                    && q.screen_rect_px[3] <= 2.0
+                    && q.screen_rect_px[1] > 10.0
+            })
+            .expect("expected an underline decoration quad");
+        assert_eq!(
+            deco.fg, deco.bg,
+            "decoration quad must use (fg, fg) so shader mix() resolves to pure fg; got fg={:?}, bg={:?}",
+            deco.fg, deco.bg
         );
     }
 
