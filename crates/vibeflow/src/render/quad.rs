@@ -555,26 +555,27 @@ pub fn build_cell_instances(
             fg_rgb.b = (fg_rgb.b as f32 * 0.55) as u8;
         }
 
-        // Cursor invert — applies AFTER per-flag mutations (only when cursor on a content cell).
-        // Skip cursor highlight when scrolled into scrollback — the cursor
-        // lives on the live viewport, not in history.
+        // Cursor invert — applies AFTER per-flag mutations.
+        // Skip cursor highlight when scrolled into scrollback (cursor lives on
+        // the live viewport, not in history).
+        //
+        // CRITICAL: the cell content ALWAYS renders. We only swap fg/bg when
+        // the terminal cursor should be visible (DECTCEM ?25h, blink on, etc.).
+        // If we suppressed the cell when the cursor was hidden, we'd lose
+        // INVERSE-flagged "visual cursor" characters that TUI libraries like
+        // Ink draw at the cursor position after hiding the terminal cursor.
         let is_cursor = display_offset == 0 && cell.point == cursor_state.point;
         let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
         if is_cursor && is_session_alive && cursor_shape_visible && cursor_visible_per_blink {
             std::mem::swap(&mut fg, &mut bg);
             cursor_was_drawn_in_loop = true;
         } else if is_cursor {
-            // Cursor cell was iterated (cell has content) but cursor is
-            // currently invisible (blink off, dead session, or Hidden shape).
-            // Still mark as drawn so we don't emit a standalone quad on top.
-            // Skip emitting any quad for this empty cursor cell — the post-loop
-            // cursor emission handles visibility when needed.
+            // Cursor cell was iterated but the terminal cursor is currently
+            // invisible (DECTCEM ?25l, blink off-phase, dead session, or
+            // Hidden shape). Render the cell content normally — don't swap,
+            // don't skip. Mark as iterated so the post-loop standalone
+            // emission doesn't double-draw.
             cursor_was_drawn_in_loop = true;
-            // Only skip the cell entirely when the cell is empty (space/NUL) and
-            // cursor is invisible — don't suppress real content characters.
-            if cell.c == ' ' || cell.c == '\0' {
-                continue;
-            }
         }
 
         let screen_x = (col * cell_w) as f32;
@@ -961,13 +962,20 @@ mod tests {
         let now = std::time::Instant::now();
         let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
 
+        // Hidden cursor: the cell at the cursor position still renders normally
+        // (a bg quad). The KEY assertion is that NO cursor highlight is added:
+        // no fg/bg swap, no standalone cursor quad. We verify this by checking
+        // that the cell at col 5 has exactly 1 quad (the cell's natural bg
+        // quad) — no extra cursor-highlight overlay. This preserves Ink's
+        // visual cursor (INVERSE-flagged space at the cursor position).
         let cursor_col_quads: Vec<_> = out
             .iter()
             .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
             .collect();
-        assert!(
-            cursor_col_quads.is_empty(),
-            "Hidden cursor must not emit any quad; got {:?}",
+        assert_eq!(
+            cursor_col_quads.len(),
+            1,
+            "Hidden cursor: expected only the cell's natural bg quad, no cursor highlight; got {:?}",
             cursor_col_quads
         );
     }
@@ -1020,13 +1028,16 @@ mod tests {
             None,
         );
 
+        // Dead session: cell still renders normally (1 bg quad). No cursor
+        // highlight overlay, no standalone cursor quad.
         let cursor_col_quads: Vec<_> = out
             .iter()
             .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
             .collect();
-        assert!(
-            cursor_col_quads.is_empty(),
-            "dead session must not emit cursor quad; got {:?}",
+        assert_eq!(
+            cursor_col_quads.len(),
+            1,
+            "Dead session: expected only the cell's natural bg quad, no cursor highlight; got {:?}",
             cursor_col_quads
         );
     }
