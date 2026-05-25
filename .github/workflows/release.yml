@@ -109,7 +109,12 @@ jobs:
       - name: Generate SBOM (CycloneDX)
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
-          path: ./target/release/vibeflow
+          # syft expects a directory; the v0.1.2 first-run failed with
+          # "not a directory source" because this used to point at the
+          # binary file. Scanning the workspace root picks up Cargo.lock
+          # and produces a proper Cargo dependency SBOM. The AppImage
+          # we ship is the bin built from these same deps.
+          path: .
           format: cyclonedx-json
           output-file: vibeflow-x86_64.sbom.cdx.json
 
