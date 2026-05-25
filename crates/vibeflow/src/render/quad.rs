@@ -415,6 +415,7 @@ pub fn build_cell_instances(
     };
     let baseline_y = text_engine.baseline_y() as f32;
 
+    let mut cursor_was_drawn_in_loop = false;
     let mut out = Vec::new();
     for cell in content.display_iter {
         let line = cell.point.line.0;
@@ -445,6 +446,19 @@ pub fn build_cell_instances(
         let (mut fg, mut bg) = (rgb_to_f32(fg_rgb), rgb_to_f32(bg_rgb));
         if is_cursor && is_session_alive && cursor_shape_visible && cursor_visible_per_blink {
             std::mem::swap(&mut fg, &mut bg);
+            cursor_was_drawn_in_loop = true;
+        } else if is_cursor {
+            // Cursor cell was iterated (cell has content) but cursor is
+            // currently invisible (blink off, dead session, or Hidden shape).
+            // Still mark as drawn so we don't emit a standalone quad on top.
+            // Skip emitting any quad for this empty cursor cell — the post-loop
+            // cursor emission handles visibility when needed.
+            cursor_was_drawn_in_loop = true;
+            // Only skip the cell entirely when the cell is empty (space/NUL) and
+            // cursor is invisible — don't suppress real content characters.
+            if cell.c == ' ' || cell.c == '\0' {
+                continue;
+            }
         }
 
         let screen_x = (col * cell_w) as f32;
@@ -500,6 +514,56 @@ pub fn build_cell_instances(
             ));
         }
     }
+
+    // v0.1.2: emit a standalone cursor quad when the cursor cell wasn't
+    // iterated by the cell loop (alacritty's display_iter skips empty cells).
+    // This is the fix for "invisible cursor in Claude Code" — the TUI input
+    // box sits on a literal empty cell.
+    let cursor_should_show = display_offset == 0
+        && is_session_alive
+        && cursor_shape_visible
+        && cursor_visible_per_blink;
+    if cursor_should_show && !cursor_was_drawn_in_loop {
+        let col = cursor_state.point.column.0 as u32;
+        let line = cursor_state.point.line.0;
+        let visible_row = line + display_offset_i;
+        if visible_row >= 0 && visible_row < screen_lines {
+            let screen_x = (col * cell_w) as f32;
+            let screen_y = (visible_row as u32 * cell_h + y_offset_px) as f32;
+            let cursor_fg = rgb_to_f32(resolve_color(
+                alacritty_terminal::vte::ansi::Color::Named(
+                    alacritty_terminal::vte::ansi::NamedColor::Foreground,
+                ),
+                colors,
+                fg_default,
+                bg_default,
+            ));
+            let (quad_x, quad_y, quad_w, quad_h) = match cursor_state.shape {
+                alacritty_terminal::vte::ansi::CursorShape::Underline => {
+                    (screen_x, screen_y + cell_h as f32 - 2.0, cell_w as f32, 2.0)
+                }
+                alacritty_terminal::vte::ansi::CursorShape::Beam => {
+                    (screen_x, screen_y, 2.0, cell_h as f32)
+                }
+                alacritty_terminal::vte::ansi::CursorShape::HollowBlock => {
+                    // For v0.1.2: emit full Block as a fallback. A future enhancement
+                    // can emit the 4 thin border quads of a proper hollow outline.
+                    (screen_x, screen_y, cell_w as f32, cell_h as f32)
+                }
+                _ => {
+                    // Block (default).
+                    (screen_x, screen_y, cell_w as f32, cell_h as f32)
+                }
+            };
+            out.push(QuadInstance::new(
+                quad_x, quad_y, quad_w, quad_h,
+                0.0, 0.0, 0.0, 0.0,
+                cursor_fg, cursor_fg,
+                KIND_MONO,
+            ));
+        }
+    }
+
     out
 }
 
@@ -661,5 +725,114 @@ mod cell_layout_tests {
         // — otherwise we'd emit a 2× bg quad on top of the trailing spacer
         // and double-paint the cell.
         assert!(should_skip_cell(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_cell_instances;
+
+    // ---- cursor-as-own-quad ----------------------------------------------
+
+    fn cursor_fixture(content_char: Option<char>, cursor_col: usize) -> alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener> {
+        use alacritty_terminal::term::test::TermSize;
+        use alacritty_terminal::term::{Config, Term};
+        use alacritty_terminal::vte::ansi::Handler;
+        let mut term = Term::new(
+            Config::default(),
+            &TermSize::new(10, 3),
+            alacritty_terminal::event::VoidListener,
+        );
+        if let Some(c) = content_char {
+            term.input(c);
+            term.goto(0i32, cursor_col);
+        } else {
+            term.goto(0i32, cursor_col);
+        }
+        term
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_on_empty_cell_emits_standalone_cursor_quad() {
+        // Cursor at col 5 with NO content at col 5 (only at col 0).
+        let term = cursor_fixture(Some('A'), 5);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+
+        // Expect at least one quad whose screen_x == 5*8 == 40 (the cursor column).
+        let cursor_col_quads: Vec<_> = out.iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert!(!cursor_col_quads.is_empty(), "expected standalone cursor quad at col 5; got {:?}", out);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_on_content_cell_does_not_emit_standalone_cursor_quad() {
+        // Cursor at col 0 WITH content at col 0 — the cell loop covers the cursor.
+        let term = cursor_fixture(Some('A'), 0);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+
+        // Count quads at col 0 row 0: cell loop emits bg + glyph (1-2 quads).
+        // No third quad should be added.
+        let cursor_col_quads: Vec<_> = out.iter()
+            .filter(|q| q.screen_rect_px[0] == 0.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert!(cursor_col_quads.len() <= 2,
+            "expected at most 2 quads (bg + glyph) at cursor cell, got {}: {:?}",
+            cursor_col_quads.len(), cursor_col_quads);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_hidden_emits_no_standalone_quad() {
+        use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Handler};
+        let mut term = cursor_fixture(Some('A'), 5);
+        term.set_cursor_style(Some(CursorStyle { shape: CursorShape::Hidden, blinking: false }));
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, 0, None);
+
+        let cursor_col_quads: Vec<_> = out.iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert!(cursor_col_quads.is_empty(), "Hidden cursor must not emit any quad; got {:?}", cursor_col_quads);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_in_scrollback_view_emits_no_standalone_quad() {
+        let term = cursor_fixture(Some('A'), 5);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, true, /* display_offset */ 5, None);
+
+        let cursor_col_quads: Vec<_> = out.iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0)
+            .collect();
+        assert!(cursor_col_quads.is_empty(), "scrollback view must not emit cursor quad; got {:?}", cursor_col_quads);
+    }
+
+    #[test]
+    #[ignore = "requires Mesa software GL (LIBGL_ALWAYS_SOFTWARE=1); run with --ignored"]
+    fn cursor_when_session_dead_emits_no_standalone_quad() {
+        let term = cursor_fixture(Some('A'), 5);
+        let mut engine = crate::render::text_engine::tests::test_engine();
+        let cursor = crate::render::cursor::CursorBlink::new();
+        let now = std::time::Instant::now();
+        let out = build_cell_instances(&term, &mut engine, &cursor, now, 8, 16, 0, /* is_session_alive */ false, 0, None);
+
+        let cursor_col_quads: Vec<_> = out.iter()
+            .filter(|q| q.screen_rect_px[0] == 40.0 && q.screen_rect_px[1] == 0.0)
+            .collect();
+        assert!(cursor_col_quads.is_empty(), "dead session must not emit cursor quad; got {:?}", cursor_col_quads);
     }
 }
