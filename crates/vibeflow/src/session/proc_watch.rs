@@ -44,7 +44,6 @@ pub fn foreground_command_name(child_pid: i32) -> Option<String> {
 /// Note: `tpgid` is `-1` when there is no controlling terminal, which most
 /// callers want to treat as "no foreground process". Callers should usually
 /// guard on `tpgid > 0`.
-#[allow(dead_code)]
 pub fn foreground_pgid(child_pid: i32) -> Option<i32> {
     #[cfg(target_os = "linux")]
     {

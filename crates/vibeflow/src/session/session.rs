@@ -162,6 +162,12 @@ pub struct PtySession {
     /// Stage 13: resolved color table for `theme`, consulted by the renderer
     /// (`Term` has no colors_mut(), so we keep colors here, not on `term`).
     pub(crate) theme_colors: Option<alacritty_terminal::term::color::Colors>,
+    /// v0.1.3 confirm-on-close: name of the most-recently-matched tool from
+    /// `tools_list` (set during `tick()`'s foreground-process check, cleared
+    /// when the match drops). Surfaces via `detected_ai_tool()` so the
+    /// confirm-on-close dialog can show "claude" / "codex" instead of the
+    /// raw FG process comm. `None` when no match is active.
+    detected_ai_tool: Option<String>,
 }
 
 impl PtySession {
@@ -235,6 +241,7 @@ impl PtySession {
             history_lines,
             theme: None,
             theme_colors: None,
+            detected_ai_tool: None,
         })
     }
 
@@ -394,11 +401,13 @@ impl PtySession {
             // callers to retain their manually-set value).
             if !self.tools_list.is_empty() {
                 let pid = self.child_pid();
-                let matched =
-                    match pid.and_then(crate::session::proc_watch::foreground_command_name) {
-                        Some(name) => self.tools_list.iter().any(|t| t == &name),
-                        None => false,
-                    };
+                let fg_name = pid.and_then(crate::session::proc_watch::foreground_command_name);
+                // v0.1.3: preserve the matched name so the confirm-on-close
+                // dialog can show "claude" / "codex" instead of "shell".
+                let matched_name: Option<String> = fg_name
+                    .filter(|name| self.tools_list.iter().any(|t| t == name));
+                let matched = matched_name.is_some();
+                self.detected_ai_tool = matched_name;
                 let was_armed = self.heuristic_was_active;
                 self.tracker.set_heuristic_active(matched);
                 self.heuristic_was_active = matched;
@@ -492,6 +501,35 @@ impl PtySession {
     /// rationale as `last_proc_check` — needed for integration tests.
     pub fn tracker_state(&self) -> crate::session::tracker::TabState {
         self.tracker.state()
+    }
+
+    /// v0.1.3 confirm-on-close: true when the controlling terminal's foreground
+    /// process group is NOT the shell itself — i.e., the shell is running a
+    /// subprocess that has terminal control (python3, vim, claude, make, etc.).
+    /// Used by `App::busy_tabs` to identify tabs worth confirming-on-close.
+    ///
+    /// Returns false on non-Linux, when the shell is reaped, when the FG pgid
+    /// can't be read, or when tpgid is the shell's own pid (idle shell).
+    ///
+    /// `pub fn` so integration tests at `crates/vibeflow/tests/` can call it
+    /// across the compilation-unit boundary (same lesson as `last_proc_check`).
+    pub fn has_foreground_child(&self) -> bool {
+        let Some(child_pid) = self.child_pid() else {
+            return false;
+        };
+        match crate::session::proc_watch::foreground_pgid(child_pid) {
+            Some(tpgid) => tpgid > 0 && tpgid != child_pid,
+            None => false,
+        }
+    }
+
+    /// v0.1.3 confirm-on-close: name of the most-recently-matched AI tool from
+    /// `tools_list` (set during `tick()`, cleared when the match drops).
+    /// Returns None when no match is active OR no tools are configured.
+    ///
+    /// Cloned per call (the field is small; no hot-path callers).
+    pub fn detected_ai_tool(&self) -> Option<String> {
+        self.detected_ai_tool.clone()
     }
 
     /// Resize the PTY to `rows` rows × `cols` cols, AND resize the per-session
@@ -1648,5 +1686,91 @@ mod tests {
         let (selection, text) = observed.expect("Osc52ClipboardWrite within 3s");
         assert_eq!(selection, Osc52Selection::Clipboard);
         assert_eq!(text, "Hello");
+    }
+
+    // ---------------- v0.1.3 confirm-on-close ----------------
+
+    #[test]
+    fn has_foreground_child_returns_false_for_idle_shell() {
+        // Spawn a real PtySession running bash, give it ~250 ms for the shell to
+        // settle at its prompt, then check. The shell IS the foreground process
+        // group, so has_foreground_child should be false.
+        let mut s = PtySession::spawn(
+            &["/bin/bash"],
+            TrackerConfig::default(),
+            1000,
+        )
+        .expect("spawn bash");
+        // Give bash a moment to take over the controlling terminal.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let _ = s.poll(std::time::Instant::now());
+        assert!(
+            !s.has_foreground_child(),
+            "idle bash should report no foreground child, got true"
+        );
+    }
+
+    #[test]
+    fn has_foreground_child_returns_true_when_shell_runs_subprocess() {
+        // Spawn bash, send a sleep command, give it time to start, check.
+        let mut s = PtySession::spawn(
+            &["/bin/bash"],
+            TrackerConfig::default(),
+            1000,
+        )
+        .expect("spawn bash");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let _ = s.poll(std::time::Instant::now());
+        // Send a long-running command. The trailing \n triggers execution.
+        s.send_input(b"sleep 30\n").expect("send sleep cmd");
+        // Give bash time to fork sleep and yield terminal control.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = s.poll(std::time::Instant::now());
+        assert!(
+            s.has_foreground_child(),
+            "bash running `sleep 30` should report a foreground child, got false"
+        );
+    }
+
+    #[test]
+    fn detected_ai_tool_returns_none_for_idle_shell_with_no_tools_configured() {
+        let mut s = PtySession::spawn(
+            &["/bin/bash"],
+            TrackerConfig::default(),
+            1000,
+        )
+        .expect("spawn bash");
+        // tools_list defaults to empty; tick() leaves detected_ai_tool untouched
+        // when the list is empty, so it stays None.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _ = s.poll(std::time::Instant::now());
+        let _ = s.tick(std::time::Instant::now());
+        assert_eq!(s.detected_ai_tool(), None);
+    }
+
+    #[test]
+    fn detected_ai_tool_returns_matched_name_when_shell_runs_listed_tool() {
+        // Configure tools_list to include "sleep" so a `sleep` subprocess
+        // counts as a "detected AI tool" for the purposes of this test.
+        // (We can't easily spawn `claude` from a unit test; `sleep` is a
+        // standard binary present on every system AND short enough to fit
+        // the kernel's 15-char `comm` truncation.)
+        let mut s = PtySession::spawn(
+            &["/bin/bash"],
+            TrackerConfig::default(),
+            1000,
+        )
+        .expect("spawn bash");
+        // Configure tools_list directly on the session (pub(crate) field, in
+        // same crate — fine from tests in the same module).
+        s.tools_list = vec!["sleep".to_string()];
+        s.proc_check_interval = std::time::Duration::from_millis(50);
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let _ = s.poll(std::time::Instant::now());
+        s.send_input(b"sleep 30\n").expect("send sleep cmd");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = s.poll(std::time::Instant::now());
+        let _ = s.tick(std::time::Instant::now());
+        assert_eq!(s.detected_ai_tool(), Some("sleep".to_string()));
     }
 }
