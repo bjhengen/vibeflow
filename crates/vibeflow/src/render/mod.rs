@@ -272,6 +272,7 @@ impl Renderer {
 
     /// Submit a single-frame render. If `term` is `Some`, draws every visible
     /// cell of the grid; if `None`, just clears to the dark theme color.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         term: Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>>,
@@ -280,6 +281,7 @@ impl Renderer {
         rename_state: Option<&crate::render::tabs::RenameInputState>,
         context_menu: Option<&crate::render::context_menu::ContextMenuState>,
         about_open: bool,
+        confirm_close: Option<&crate::render::confirm_close::ConfirmCloseState>,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         use crate::render::tabs::TabBarLayout;
 
@@ -549,18 +551,100 @@ impl Renderer {
                 crate::render::about::build_about_glyphs(surface_size, &mut self.text_engine, c)
             })
             .unwrap_or_default();
+        // v0.1.3 confirm-close overlay: re-use About's palette, then derive
+        // button colours by lightening the panel_bg. Built after About so the
+        // confirm dialog paints on top (though in practice the two are mutually
+        // exclusive — CloseRequested never fires while About captures input).
+        let confirm_close_colors: Option<crate::render::confirm_close::ConfirmCloseColors> =
+            if confirm_close.is_some() {
+                fn lighten(c: [f32; 4], amount: f32) -> [f32; 4] {
+                    [
+                        (c[0] + amount).min(1.0),
+                        (c[1] + amount).min(1.0),
+                        (c[2] + amount).min(1.0),
+                        c[3],
+                    ]
+                }
+                let proto = about_colors.unwrap_or_else(|| {
+                    // About may not be open; derive the same palette inline.
+                    use alacritty_terminal::vte::ansi::NamedColor;
+                    let panel_bg: [f32; 4] =
+                        match active_theme_colors.and_then(|c| c[NamedColor::Background]) {
+                            Some(rgb) => [
+                                rgb.r as f32 / 255.0,
+                                rgb.g as f32 / 255.0,
+                                rgb.b as f32 / 255.0,
+                                1.0,
+                            ],
+                            None => [
+                                CLEAR_COLOR.r as f32,
+                                CLEAR_COLOR.g as f32,
+                                CLEAR_COLOR.b as f32,
+                                1.0,
+                            ],
+                        };
+                    let fg: [f32; 4] =
+                        match active_theme_colors.and_then(|c| c[NamedColor::Foreground]) {
+                            Some(rgb) => [
+                                rgb.r as f32 / 255.0,
+                                rgb.g as f32 / 255.0,
+                                rgb.b as f32 / 255.0,
+                                1.0,
+                            ],
+                            None => [0.9, 0.9, 0.9, 1.0],
+                        };
+                    crate::render::about::AboutColors {
+                        backdrop: [0.0, 0.0, 0.0, 0.5],
+                        panel_bg,
+                        border_fg: fg,
+                        text_fg: fg,
+                    }
+                });
+                Some(crate::render::confirm_close::ConfirmCloseColors {
+                    backdrop: proto.backdrop,
+                    panel_bg: proto.panel_bg,
+                    border_fg: proto.border_fg,
+                    text_fg: proto.text_fg,
+                    button_idle_bg: lighten(proto.panel_bg, 0.08),
+                    button_focus_bg: lighten(proto.panel_bg, 0.22),
+                    button_text_fg: proto.text_fg,
+                })
+            } else {
+                None
+            };
+        let confirm_close_rects: Vec<crate::render::tabs::RectInstance> = confirm_close
+            .and_then(|s| confirm_close_colors.as_ref().map(|c| (s, c)))
+            .map(|(s, c)| {
+                crate::render::confirm_close::build_confirm_close_rects(surface_size, s, c)
+            })
+            .unwrap_or_default();
+        let confirm_close_glyphs: Vec<crate::render::quad::QuadInstance> = confirm_close
+            .and_then(|s| confirm_close_colors.as_ref().map(|c| (s, c)))
+            .map(|(s, c)| {
+                crate::render::confirm_close::build_confirm_close_glyphs(
+                    surface_size,
+                    s,
+                    &mut self.text_engine,
+                    c,
+                )
+            })
+            .unwrap_or_default();
         let menu_glyph_offset = banner_glyph_offset + banner_glyph_count;
         let menu_glyph_count = menu_glyphs.len() as u32;
         let about_glyph_offset = menu_glyph_offset + menu_glyph_count;
         let about_glyph_count = about_glyphs.len() as u32;
-        let total_quads = about_glyph_offset + about_glyph_count;
+        let confirm_close_glyph_offset = about_glyph_offset + about_glyph_count;
+        let confirm_close_glyph_count = confirm_close_glyphs.len() as u32;
+        let total_quads = confirm_close_glyph_offset + confirm_close_glyph_count;
         let scrollbar_rect_count = scrollbar_rects.len() as u32;
         let scrollbar_rect_offset = bell_rect_offset + bell_rect_count;
         let menu_rect_offset = scrollbar_rect_offset + scrollbar_rect_count;
         let menu_rect_count = menu_rects.len() as u32;
         let about_rect_offset = menu_rect_offset + menu_rect_count;
         let about_rect_count = about_rects.len() as u32;
-        let total_rects = about_rect_offset + about_rect_count;
+        let confirm_close_rect_offset = about_rect_offset + about_rect_count;
+        let confirm_close_rect_count = confirm_close_rects.len() as u32;
+        let total_rects = confirm_close_rect_offset + confirm_close_rect_count;
 
         let mut all_quads = Vec::with_capacity(total_quads as usize);
         all_quads.extend_from_slice(&cell_instances);
@@ -572,6 +656,8 @@ impl Renderer {
         all_quads.extend_from_slice(&menu_glyphs);
         // v0.1.2 About overlay paints above the menu glyph batch.
         all_quads.extend_from_slice(&about_glyphs);
+        // v0.1.3 confirm-close overlay paints above the About glyph batch.
+        all_quads.extend_from_slice(&confirm_close_glyphs);
 
         let mut all_rects = Vec::with_capacity(total_rects as usize);
         all_rects.extend_from_slice(&tab_rects);
@@ -589,6 +675,8 @@ impl Renderer {
         all_rects.extend_from_slice(&menu_rects);
         // v0.1.2 About overlay paints above the menu rect batch.
         all_rects.extend_from_slice(&about_rects);
+        // v0.1.3 confirm-close overlay paints above the About rect batch.
+        all_rects.extend_from_slice(&confirm_close_rects);
 
         // Now grow the GPU buffers + write all instance data (still outside
         // the render-pass scope). Writes happen ONCE per pipeline per frame
@@ -704,13 +792,25 @@ impl Renderer {
             // ---- About overlay rects (backdrop + panel + borders) ----
             if about_rect_count > 0 {
                 self.tab_bar_pipeline
-                    .draw_range(&mut pass, about_rect_offset..total_rects);
+                    .draw_range(&mut pass, about_rect_offset..confirm_close_rect_offset);
             }
 
-            // ---- About overlay glyphs (topmost glyph layer) ----
+            // ---- About overlay glyphs (topmost glyph layer below confirm-close) ----
             if about_glyph_count > 0 {
                 self.quad_pipeline
-                    .draw_range(&mut pass, about_glyph_offset..total_quads);
+                    .draw_range(&mut pass, about_glyph_offset..confirm_close_glyph_offset);
+            }
+
+            // ---- Confirm-close overlay rects (topmost rect layer) ----
+            if confirm_close_rect_count > 0 {
+                self.tab_bar_pipeline
+                    .draw_range(&mut pass, confirm_close_rect_offset..total_rects);
+            }
+
+            // ---- Confirm-close overlay glyphs (topmost glyph layer) ----
+            if confirm_close_glyph_count > 0 {
+                self.quad_pipeline
+                    .draw_range(&mut pass, confirm_close_glyph_offset..total_quads);
             }
         }
 
