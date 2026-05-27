@@ -6,6 +6,7 @@
 pub mod about;
 pub mod bell;
 pub mod colors;
+pub mod confirm_close;
 pub mod context_menu;
 pub mod cursor;
 pub mod mouse_encoder;
