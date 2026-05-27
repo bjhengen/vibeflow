@@ -4,6 +4,21 @@
 use crate::session::tracker::TrackerConfig;
 use crate::session::{PtySession, SessionEvent};
 
+/// v0.1.3 confirm-on-close: per-tab summary surfaced to the confirmation
+/// dialog when the user attempts to close a vibeflow window. Snapshot
+/// captured at dialog-open time; immutable thereafter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusyTabInfo {
+    /// 1-based tab index for display ("Tab 1", "Tab 2", …).
+    pub tab_index: usize,
+    /// What to show in the dialog as the process / tool name.
+    /// Priority: AI tool name (if Working/Waiting) > FG process comm > "process".
+    pub display_label: String,
+    /// What to show as the state. "Working" / "Waiting" for AI; "running"
+    /// for non-AI foreground subprocesses. Elapsed-time deferred to v0.1.4.
+    pub state_label: String,
+}
+
 /// Default per-tracker config used for every new tab. Stage 8 will replace
 /// this with a TOML-loaded config sourced from `~/.config/vibeflow/config.toml`.
 fn default_tracker_config() -> TrackerConfig {
@@ -234,6 +249,65 @@ impl App {
         &self,
     ) -> Option<&alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>> {
         self.tabs.get(self.active).map(|t| t.term())
+    }
+
+    /// v0.1.3 confirm-on-close: snapshot the list of "busy" tabs.
+    /// A tab is busy when EITHER it has a foreground subprocess beyond the
+    /// shell OR its AI tracker is in Working/Waiting state.
+    ///
+    /// Returns an empty vec when all tabs are idle. Caller decides what to do
+    /// with that (single idle tab → silent close; multi-tab idle → confirm
+    /// with a different message; etc.).
+    pub fn busy_tabs(&self) -> Vec<BusyTabInfo> {
+        use crate::session::tracker::TabState;
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, sess)| {
+                let busy_fg = sess.has_foreground_child();
+                let tracker = sess.tracker_state();
+                let busy_ai = matches!(tracker, TabState::Working | TabState::Waiting);
+                if !busy_fg && !busy_ai {
+                    return None;
+                }
+                // display_label priority: AI tool name first (most informative),
+                // then FG process comm, then a generic fallback.
+                let display_label = sess
+                    .detected_ai_tool()
+                    .filter(|_| busy_ai)
+                    .or_else(|| {
+                        if busy_fg {
+                            sess.child_pid().and_then(
+                                crate::session::proc_watch::foreground_command_name,
+                            )
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| "process".to_string());
+                let state_label = if busy_ai {
+                    format!("{tracker:?}") // "Working" / "Waiting"
+                } else {
+                    "running".to_string() // elapsed-time deferred to v0.1.4
+                };
+                Some(BusyTabInfo {
+                    tab_index: idx + 1,
+                    display_label,
+                    state_label,
+                })
+            })
+            .collect()
+    }
+
+    /// v0.1.3: true when `WindowEvent::CloseRequested` should show the confirm
+    /// dialog instead of exiting immediately. iTerm2-style: confirm if
+    /// multi-tab OR any tab busy. Bypassed entirely when
+    /// `ui.confirm_on_close == false`.
+    pub fn close_needs_confirmation(&self, ui: &crate::config::Ui) -> bool {
+        if !ui.confirm_on_close {
+            return false;
+        }
+        self.tabs.len() > 1 || !self.busy_tabs().is_empty()
     }
 
     /// Index of the currently focused tab. Valid only when `tabs()` is non-empty.
@@ -663,5 +737,106 @@ mod tests {
         app.set_default_theme(Some("solarized".to_owned()));
         let idx = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).expect("spawn");
         assert_eq!(app.tabs()[idx].theme.as_deref(), Some("solarized"));
+    }
+
+    use crate::config::Ui;
+
+    fn make_app_with_n_idle_tabs(n: usize) -> App {
+        let mut app = App::new();
+        for _ in 0..n {
+            app.new_tab(&["/bin/bash"]).expect("spawn bash");
+        }
+        // Allow shells to settle so has_foreground_child is stable.
+        std::thread::sleep(Duration::from_millis(250));
+        for tab in app.tabs_mut().iter_mut() {
+            let _ = tab.poll(std::time::Instant::now());
+        }
+        app
+    }
+
+    #[test]
+    fn busy_tabs_empty_for_zero_tab_app() {
+        let app = App::new();
+        assert!(app.busy_tabs().is_empty());
+    }
+
+    #[test]
+    fn busy_tabs_empty_for_single_idle_tab() {
+        let app = make_app_with_n_idle_tabs(1);
+        assert!(
+            app.busy_tabs().is_empty(),
+            "single idle bash tab should report no busy tabs"
+        );
+    }
+
+    #[test]
+    fn busy_tabs_empty_for_multiple_idle_tabs() {
+        let app = make_app_with_n_idle_tabs(3);
+        assert!(
+            app.busy_tabs().is_empty(),
+            "multiple idle tabs should still report no busy tabs (busy != multi-tab)"
+        );
+    }
+
+    #[test]
+    fn busy_tabs_lists_tab_with_foreground_subprocess() {
+        let mut app = make_app_with_n_idle_tabs(1);
+        app.tabs_mut()[0]
+            .send_input(b"sleep 30\n")
+            .expect("send sleep");
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+        let busy = app.busy_tabs();
+        assert_eq!(busy.len(), 1, "exactly one busy tab expected");
+        assert_eq!(busy[0].tab_index, 1, "1-based tab index for display");
+        assert_eq!(busy[0].display_label, "sleep");
+        assert_eq!(busy[0].state_label, "running");
+    }
+
+    #[test]
+    fn close_needs_confirmation_false_for_single_idle_tab() {
+        let app = make_app_with_n_idle_tabs(1);
+        let ui = Ui::default();
+        assert!(
+            !app.close_needs_confirmation(&ui),
+            "single idle tab should close silently"
+        );
+    }
+
+    #[test]
+    fn close_needs_confirmation_true_for_multiple_idle_tabs() {
+        let app = make_app_with_n_idle_tabs(2);
+        let ui = Ui::default();
+        assert!(
+            app.close_needs_confirmation(&ui),
+            "multi-tab (even all idle) should confirm per iTerm2 convention"
+        );
+    }
+
+    #[test]
+    fn close_needs_confirmation_true_for_single_busy_tab() {
+        let mut app = make_app_with_n_idle_tabs(1);
+        app.tabs_mut()[0]
+            .send_input(b"sleep 30\n")
+            .expect("send sleep");
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+        let ui = Ui::default();
+        assert!(app.close_needs_confirmation(&ui));
+    }
+
+    #[test]
+    fn close_needs_confirmation_false_when_ui_disables_it() {
+        let mut app = make_app_with_n_idle_tabs(5);
+        app.tabs_mut()[0]
+            .send_input(b"sleep 30\n")
+            .expect("send sleep");
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+        let ui = Ui { confirm_on_close: false };
+        assert!(
+            !app.close_needs_confirmation(&ui),
+            "confirm_on_close = false should bypass entirely"
+        );
     }
 }
