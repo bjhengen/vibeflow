@@ -260,6 +260,23 @@ pub struct WindowApp {
     /// `context_menu`: opening About closes any open menu (see
     /// `MenuAction::ShowAbout` dispatch arm).
     about_open: bool,
+    /// v0.1.3 confirm-on-close: `Some` while the modal dialog is open
+    /// (captured snapshot of busy tabs + total count + focused button).
+    /// `None` when no dialog is showing. Mutually exclusive with `about_open`
+    /// in practice — `CloseRequested` never fires while About is up because
+    /// About consumes all input first.
+    confirm_close: Option<crate::render::confirm_close::ConfirmCloseState>,
+    /// v0.1.3: mirror of `Config.ui.confirm_on_close` populated by
+    /// `apply_config`. Read by the `CloseRequested` gate. Direct field
+    /// (not via `self.config`) because `WindowApp` doesn't store the
+    /// resolved `Config`; it absorbs config values into primitive fields
+    /// at apply time (same pattern as `bell_mode`, `snap_on_esc`, etc.).
+    confirm_on_close: bool,
+    /// v0.1.3: set by confirm-close intercepts when the user picks "Close
+    /// anyway" via keyboard or mouse. Drained at the top of `window_event`
+    /// — that's the only call site with `ActiveEventLoop` in scope from
+    /// which `event_loop.exit()` can be called.
+    pending_exit: bool,
     /// v0.1.2 perf: timestamp of the most recent `request_redraw()` call from
     /// either `about_to_wait`'s cadence path or a high-frequency event source
     /// (PTY `TermUpdated`). Used by `about_to_wait` to schedule the next pulse
@@ -366,6 +383,57 @@ impl WindowApp {
         }
     }
 
+    /// v0.1.3 confirm-on-close: handle a `Pressed` key when the dialog is
+    /// open. Returns `true` if consumed; `false` lets the caller fall
+    /// through to normal key handling.
+    ///
+    /// - Esc → dismiss (Cancel)
+    /// - Enter → activate focused button (Cancel = dismiss; CloseAnyway = exit)
+    /// - Tab / Shift+Tab → cycle focus
+    /// - Left / Right → cycle focus
+    /// - Bare modifiers → consumed, no action (per lesson_keypress_clears_selection)
+    /// - Anything else → consumed, no action
+    fn try_consume_confirm_close_keypress(&mut self, key: &winit::keyboard::Key) -> bool {
+        if self.confirm_close.is_none() {
+            return false;
+        }
+        use winit::keyboard::{Key, NamedKey};
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.confirm_close = None;
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                let exit = matches!(
+                    self.confirm_close.as_ref().map(|s| s.focus),
+                    Some(crate::render::confirm_close::FocusedButton::CloseAnyway),
+                );
+                self.confirm_close = None;
+                if exit {
+                    self.pending_exit = true; // see Step 6.8
+                }
+                true
+            }
+            Key::Named(NamedKey::Tab)
+            | Key::Named(NamedKey::ArrowLeft)
+            | Key::Named(NamedKey::ArrowRight) => {
+                if let Some(state) = self.confirm_close.as_mut() {
+                    state.cycle_focus();
+                }
+                true
+            }
+            Key::Named(
+                NamedKey::Control
+                | NamedKey::Shift
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper,
+            ) => true,
+            _ => true,
+        }
+    }
+
     /// v0.1.2 About overlay: handle a `Pressed` key when `about_open == true`.
     /// Returns `true` if the event was consumed (and the caller must
     /// short-circuit further dispatch); `false` when the overlay is closed
@@ -398,6 +466,72 @@ impl WindowApp {
             ) => true,
             _ => true,
         }
+    }
+
+    /// v0.1.3 confirm-on-close: handle a mouse-button event when the dialog
+    /// is open. Returns `true` if consumed.
+    ///
+    /// Logic: only LMB Pressed has effects.
+    /// - Inside Cancel button → dismiss.
+    /// - Inside Close-anyway button → set pending_exit (will exit on tick).
+    /// - Inside panel but not on a button → consume, no effect.
+    /// - Outside panel → dismiss.
+    /// - Any other button or state → consume but no action.
+    fn try_consume_confirm_close_mouse(
+        &mut self,
+        button: winit::event::MouseButton,
+        state: winit::event::ElementState,
+    ) -> bool {
+        if self.confirm_close.is_none() {
+            return false;
+        }
+        // Only act on LMB Pressed; consume everything else (LMB Released,
+        // RMB, MMB) so they don't leak to underlying handlers.
+        if !(button == winit::event::MouseButton::Left
+            && state == winit::event::ElementState::Pressed)
+        {
+            return true;
+        }
+        // cursor_pos: Option<(u32, u32)> per window.rs. If we don't have
+        // one yet (no CursorMoved fired) treat the click as off-panel and
+        // dismiss.
+        let Some((px, py)) = self.cursor_pos else {
+            self.confirm_close = None;
+            return true;
+        };
+        let click_f = (px as f32, py as f32);
+        let window_size = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .map(|s| (s.width, s.height))
+            .unwrap_or((0, 0));
+        let dialog_state = self.confirm_close.as_ref().unwrap();
+        if let Some(hit) = crate::render::confirm_close::hit_test_buttons(
+            window_size,
+            dialog_state,
+            click_f,
+        ) {
+            match hit {
+                crate::render::confirm_close::FocusedButton::Cancel => {
+                    self.confirm_close = None;
+                }
+                crate::render::confirm_close::FocusedButton::CloseAnyway => {
+                    self.confirm_close = None;
+                    self.pending_exit = true;
+                }
+            }
+            return true;
+        }
+        if !crate::render::confirm_close::click_is_inside_panel(
+            window_size,
+            dialog_state,
+            click_f,
+        ) {
+            // Click missed the panel entirely → dismiss.
+            self.confirm_close = None;
+        }
+        true
     }
 
     /// v0.1.2 About overlay: handle a mouse-button event when
@@ -461,6 +595,27 @@ impl WindowApp {
         self.try_consume_about_mouse(button, state)
     }
 
+    #[cfg(test)]
+    pub(crate) fn confirm_close(&self) -> Option<&crate::render::confirm_close::ConfirmCloseState> {
+        self.confirm_close.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_confirm_close_for_test(
+        &mut self,
+        state: crate::render::confirm_close::ConfirmCloseState,
+    ) {
+        self.confirm_close = Some(state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_handle_confirm_close_keypress_for_test(
+        &mut self,
+        key: &winit::keyboard::Key,
+    ) -> bool {
+        self.try_consume_confirm_close_keypress(key)
+    }
+
     /// Build a `WindowApp` with no window and no tabs. Call
     /// `event_loop.run_app(&mut app)` to drive it.
     #[must_use]
@@ -507,6 +662,9 @@ impl WindowApp {
             ),
             initial_size_reconciled: false,
             about_open: false,
+            confirm_close: None,
+            confirm_on_close: true, // matches Ui::default()
+            pending_exit: false,
             // Far-past epoch ensures the first about_to_wait paint fires promptly.
             last_redraw_request: Instant::now() - Duration::from_secs(3600),
             last_activity_at: Instant::now() - Duration::from_secs(3600),
@@ -827,6 +985,9 @@ impl WindowApp {
         // Stage 13 (T4 carryover): [bell] section → runtime cache.
         self.bell_mode = config.bell.mode;
         self.bell_debounce = std::time::Duration::from_millis(config.bell.debounce_ms);
+
+        // v0.1.3 [ui] section absorption.
+        self.confirm_on_close = config.ui.confirm_on_close;
 
         // Stage 13: theme preset. Reload the registry FIRST (so freshly
         // imported themes resolve), set the app default for new/restarted
@@ -1160,10 +1321,42 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if self.pending_exit {
+            self.pending_exit = false;
+            tracing::info!("confirm-close dialog accepted; exiting");
+            event_loop.exit();
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
-                tracing::info!("close requested; exiting");
-                event_loop.exit();
+                // Rage-quit: second close-request while dialog open → just exit.
+                if self.confirm_close.is_some() {
+                    tracing::info!("close requested while confirm dialog open; exiting");
+                    event_loop.exit();
+                    return;
+                }
+                // Synthesize a transient Ui struct so we don't pull `crate::config`
+                // into this hot path. `App::close_needs_confirmation` just reads
+                // the bool — cheaper than threading a borrow through everything.
+                let ui = crate::config::Ui { confirm_on_close: self.confirm_on_close };
+                if !self.app.close_needs_confirmation(&ui) {
+                    tracing::info!("close requested; no confirmation needed; exiting");
+                    event_loop.exit();
+                    return;
+                }
+                let busy = self.app.busy_tabs();
+                let tab_count = self.app.tabs().len();
+                tracing::info!(
+                    tab_count,
+                    busy_count = busy.len(),
+                    "close requested; showing confirm dialog"
+                );
+                self.confirm_close = Some(
+                    crate::render::confirm_close::ConfirmCloseState::new(busy, tab_count),
+                );
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
             WindowEvent::RedrawRequested => {
                 if !self.initial_size_reconciled {
@@ -1277,6 +1470,14 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // Mark recent activity so about_to_wait uses the tight
                 // 8 ms wake cadence — keeps PTY-echo latency at ~vsync.
                 self.last_activity_at = Instant::now();
+                // v0.1.3 confirm-close overlay: runs BEFORE About so the dialog
+                // consumes input first when both could theoretically be open.
+                if self.try_consume_confirm_close_keypress(&event.logical_key) {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 // v0.1.2 About overlay (mutex-with menu + rename overlays).
                 // The About panel sits on top of all other layers in
                 // render order; its input capture mirrors that priority.
@@ -1561,6 +1762,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     return;
                 };
 
+                // v0.1.3 confirm-close overlay: runs BEFORE About.
+                if self.try_consume_confirm_close_mouse(button, state) {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                    return;
+                }
                 // v0.1.2 About overlay: any click while open closes it and
                 // swallows the event. Must run BEFORE the context-menu and
                 // grid/tab-bar branches.
@@ -2621,5 +2829,44 @@ mod tests {
             !consumed,
             "mouse event must fall through when overlay is closed"
         );
+    }
+
+    use crate::render::confirm_close::{ConfirmCloseState, FocusedButton};
+
+    #[test]
+    fn open_confirm_close_dialog_for_test_sets_field() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        assert!(app.confirm_close().is_none());
+        app.open_confirm_close_for_test(ConfirmCloseState::new(Vec::new(), 2));
+        assert!(app.confirm_close().is_some());
+    }
+
+    #[test]
+    fn try_consume_confirm_close_keypress_returns_false_when_closed() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        use winit::keyboard::{Key, NamedKey};
+        assert!(!app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Escape)));
+    }
+
+    #[test]
+    fn esc_dismisses_dialog() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        app.open_confirm_close_for_test(ConfirmCloseState::new(Vec::new(), 2));
+        use winit::keyboard::{Key, NamedKey};
+        let consumed = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Escape));
+        assert!(consumed);
+        assert!(app.confirm_close().is_none(), "Esc should clear the dialog state");
+    }
+
+    #[test]
+    fn tab_cycles_focus_between_buttons() {
+        let Some(mut app) = try_make_test_window_app() else { return; };
+        app.open_confirm_close_for_test(ConfirmCloseState::new(Vec::new(), 2));
+        use winit::keyboard::{Key, NamedKey};
+        let consumed = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Tab));
+        assert!(consumed);
+        assert_eq!(app.confirm_close().unwrap().focus, FocusedButton::CloseAnyway);
+        let _ = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Tab));
+        assert_eq!(app.confirm_close().unwrap().focus, FocusedButton::Cancel);
     }
 }
