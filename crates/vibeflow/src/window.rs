@@ -342,6 +342,10 @@ impl WindowApp {
             }
             MenuAction::CloseOtherTabs => {
                 let target = target_idx.unwrap_or_else(|| self.app.active());
+                if self.try_open_confirm_close_for_other_tabs(target) {
+                    // Gate engaged: dialog open, action deferred to confirm.
+                    return;
+                }
                 // Close from end to start so indices stay stable for `target`.
                 let mut idx = self.app.tabs().len();
                 while idx > 0 {
@@ -404,13 +408,14 @@ impl WindowApp {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                let exit = matches!(
+                let confirm = matches!(
                     self.confirm_close.as_ref().map(|s| s.focus),
                     Some(crate::render::confirm_close::FocusedButton::CloseAnyway),
                 );
-                self.confirm_close = None;
-                if exit {
-                    self.pending_exit = true; // see Step 6.8
+                if confirm {
+                    self.dispatch_confirm_close_confirm();
+                } else {
+                    self.confirm_close = None;
                 }
                 true
             }
@@ -468,6 +473,106 @@ impl WindowApp {
         }
     }
 
+    /// v0.1.3 per-tab close amendment: try to gate `Shortcut::CloseTab` /
+    /// `TabBarHit::TabClose`. Returns `true` if a dialog was opened (caller
+    /// must skip the actual close), `false` if the close should proceed
+    /// silently (no confirmation needed, or `confirm_on_close` is off).
+    fn try_open_confirm_close_for_single_tab(&mut self, idx: usize) -> bool {
+        if self.confirm_close.is_some() {
+            return true;
+        }
+        let ui = crate::config::Ui { confirm_on_close: self.confirm_on_close };
+        if !self.app.tab_close_needs_confirmation(idx, &ui) {
+            return false;
+        }
+        let busy: Vec<_> = self.app.tab_busy_info(idx).into_iter().collect();
+        tracing::info!(
+            tab_index = idx,
+            "single-tab close requested; showing confirm dialog"
+        );
+        self.confirm_close = Some(
+            crate::render::confirm_close::ConfirmCloseState::with_scope(
+                busy,
+                1,
+                crate::render::confirm_close::ConfirmCloseScope::SingleTab { tab_index: idx },
+            ),
+        );
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        true
+    }
+
+    /// v0.1.3 per-tab close amendment: try to gate `MenuAction::CloseOtherTabs`.
+    /// Same return semantics as `try_open_confirm_close_for_single_tab`.
+    fn try_open_confirm_close_for_other_tabs(&mut self, keep_idx: usize) -> bool {
+        if self.confirm_close.is_some() {
+            return true;
+        }
+        let ui = crate::config::Ui { confirm_on_close: self.confirm_on_close };
+        if !self.app.close_others_needs_confirmation(keep_idx, &ui) {
+            return false;
+        }
+        let total = self.app.tabs().len();
+        let tab_count = total.saturating_sub(if keep_idx < total { 1 } else { 0 });
+        let busy = self.app.tabs_busy_except(keep_idx);
+        tracing::info!(
+            keep_idx,
+            tab_count,
+            busy_count = busy.len(),
+            "close-other-tabs requested; showing confirm dialog"
+        );
+        self.confirm_close = Some(
+            crate::render::confirm_close::ConfirmCloseState::with_scope(
+                busy,
+                tab_count,
+                crate::render::confirm_close::ConfirmCloseScope::OtherTabs { keep_tab_index: keep_idx },
+            ),
+        );
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        true
+    }
+
+    /// v0.1.3 per-tab close amendment: dispatch the confirmed close action
+    /// based on the dialog's scope. Clears `self.confirm_close`. For
+    /// `Window` scope this just sets `pending_exit`; for `SingleTab` and
+    /// `OtherTabs` it performs the close directly because we have `App` in
+    /// scope here (unlike the window-close path which needs `ActiveEventLoop`).
+    fn dispatch_confirm_close_confirm(&mut self) {
+        use crate::render::confirm_close::ConfirmCloseScope;
+        let Some(state) = self.confirm_close.take() else { return };
+        match state.scope {
+            ConfirmCloseScope::Window => {
+                self.pending_exit = true;
+            }
+            ConfirmCloseScope::SingleTab { tab_index } => {
+                self.app.close_tab(tab_index);
+                self.context_menu = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            ConfirmCloseScope::OtherTabs { keep_tab_index } => {
+                let mut idx = self.app.tabs().len();
+                while idx > 0 {
+                    idx -= 1;
+                    if idx != keep_tab_index {
+                        self.app.close_tab(idx);
+                    }
+                }
+                if !self.app.tabs().is_empty() {
+                    self.app.set_active(0);
+                }
+                self.context_menu = None;
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+
     /// v0.1.3 confirm-on-close: handle a mouse-button event when the dialog
     /// is open. Returns `true` if consumed.
     ///
@@ -517,8 +622,7 @@ impl WindowApp {
                     self.confirm_close = None;
                 }
                 crate::render::confirm_close::FocusedButton::CloseAnyway => {
-                    self.confirm_close = None;
-                    self.pending_exit = true;
+                    self.dispatch_confirm_close_confirm();
                 }
             }
             return true;
@@ -825,6 +929,10 @@ impl WindowApp {
                 }
             }
             TabBarHit::TabClose(idx) => {
+                if self.try_open_confirm_close_for_single_tab(idx) {
+                    // Gate engaged: dialog opened, close deferred until confirm.
+                    return;
+                }
                 self.app.close_tab(idx);
                 // Stage 10: dismiss context menu if one is open when a tab closes.
                 if self.context_menu.is_some() {
@@ -849,7 +957,12 @@ impl WindowApp {
                 }
             }
             Shortcut::CloseTab => {
-                self.app.close_tab(self.app.active());
+                let idx = self.app.active();
+                if self.try_open_confirm_close_for_single_tab(idx) {
+                    // Gate engaged: dialog opened, close deferred until confirm.
+                    return;
+                }
+                self.app.close_tab(idx);
                 // Stage 10: dismiss context menu when a tab closes.
                 if self.context_menu.is_some() {
                     self.context_menu = None;
