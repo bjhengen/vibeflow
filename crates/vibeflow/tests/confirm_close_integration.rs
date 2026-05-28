@@ -5,7 +5,22 @@
 use vibeflow::app::App;
 use vibeflow::config::Ui;
 use vibeflow::render::confirm_close::{ConfirmCloseState, FocusedButton};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Poll-with-deadline helper for PTY-driven integration tests. Mirrors the
+/// `wait_until` in `session::session::tests` — parallel `cargo test` load
+/// makes fixed `thread::sleep` windows unreliable for bash-fork-subprocess
+/// scenarios.
+fn wait_until<F: FnMut() -> bool>(timeout: Duration, mut cond: F) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    cond()
+}
 
 fn spawn_idle(app: &mut App, n: usize) {
     for _ in 0..n {
@@ -13,7 +28,7 @@ fn spawn_idle(app: &mut App, n: usize) {
     }
     std::thread::sleep(Duration::from_millis(300));
     for tab in app.tabs_mut().iter_mut() {
-        let _ = tab.poll(std::time::Instant::now());
+        let _ = tab.poll(Instant::now());
     }
 }
 
@@ -36,9 +51,13 @@ fn busy_tab_needs_confirmation_even_if_single() {
     let mut app = App::new();
     spawn_idle(&mut app, 1);
     app.tabs_mut()[0].send_input(b"sleep 30\n").expect("send sleep");
-    std::thread::sleep(Duration::from_millis(500));
-    let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
-    assert!(app.close_needs_confirmation(&Ui::default()));
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            let _ = app.tabs_mut()[0].poll(Instant::now());
+            app.close_needs_confirmation(&Ui::default())
+        }),
+        "single busy tab should require confirmation within 5s"
+    );
 }
 
 #[test]
@@ -46,8 +65,11 @@ fn confirm_on_close_false_bypasses_dialog_for_any_tab_count() {
     let mut app = App::new();
     spawn_idle(&mut app, 5);
     app.tabs_mut()[0].send_input(b"sleep 30\n").expect("send sleep");
-    std::thread::sleep(Duration::from_millis(500));
-    let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+    // Wait for bash to fork sleep so the assertion is meaningful.
+    let _ = wait_until(Duration::from_secs(5), || {
+        let _ = app.tabs_mut()[0].poll(Instant::now());
+        !app.busy_tabs().is_empty()
+    });
     let ui = Ui { confirm_on_close: false };
     assert!(!app.close_needs_confirmation(&ui));
 }
@@ -69,8 +91,13 @@ fn busy_tabs_lists_subprocess_with_running_label() {
     let mut app = App::new();
     spawn_idle(&mut app, 1);
     app.tabs_mut()[0].send_input(b"sleep 30\n").expect("send sleep");
-    std::thread::sleep(Duration::from_millis(500));
-    let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            let _ = app.tabs_mut()[0].poll(Instant::now());
+            !app.busy_tabs().is_empty()
+        }),
+        "bash running `sleep 30` should surface a busy tab within 5s"
+    );
     let busy = app.busy_tabs();
     assert_eq!(busy.len(), 1);
     assert_eq!(busy[0].display_label, "sleep");

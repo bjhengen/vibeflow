@@ -447,6 +447,19 @@ mod tests {
     use std::time::{Duration, Instant};
     use vibeflow_protocol::{Frame as ProtoFrame, State as ProtoState};
 
+    /// Poll-with-deadline helper. See `session::session::tests::wait_until`
+    /// for the rationale (parallel PTY load defeats fixed sleep windows).
+    fn wait_until<F: FnMut() -> bool>(timeout: Duration, mut cond: F) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        cond()
+    }
+
     #[test]
     fn tick_all_returns_empty_when_no_timeouts_have_fired() {
         let mut app = App::new();
@@ -784,8 +797,13 @@ mod tests {
         app.tabs_mut()[0]
             .send_input(b"sleep 30\n")
             .expect("send sleep");
-        std::thread::sleep(Duration::from_millis(500));
-        let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                let _ = app.tabs_mut()[0].poll(Instant::now());
+                !app.busy_tabs().is_empty()
+            }),
+            "bash running `sleep 30` should surface a busy tab within 5s"
+        );
         let busy = app.busy_tabs();
         assert_eq!(busy.len(), 1, "exactly one busy tab expected");
         assert_eq!(busy[0].tab_index, 1, "1-based tab index for display");
@@ -819,10 +837,14 @@ mod tests {
         app.tabs_mut()[0]
             .send_input(b"sleep 30\n")
             .expect("send sleep");
-        std::thread::sleep(Duration::from_millis(500));
-        let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
         let ui = Ui::default();
-        assert!(app.close_needs_confirmation(&ui));
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                let _ = app.tabs_mut()[0].poll(Instant::now());
+                app.close_needs_confirmation(&ui)
+            }),
+            "single tab running `sleep 30` should require confirmation within 5s"
+        );
     }
 
     #[test]
@@ -831,8 +853,12 @@ mod tests {
         app.tabs_mut()[0]
             .send_input(b"sleep 30\n")
             .expect("send sleep");
-        std::thread::sleep(Duration::from_millis(500));
-        let _ = app.tabs_mut()[0].poll(std::time::Instant::now());
+        // Wait for bash to actually fork sleep so the bypass assertion below
+        // is meaningfully testing the "busy + 5 tabs but switch is off" case.
+        let _ = wait_until(Duration::from_secs(5), || {
+            let _ = app.tabs_mut()[0].poll(Instant::now());
+            !app.busy_tabs().is_empty()
+        });
         let ui = Ui { confirm_on_close: false };
         assert!(
             !app.close_needs_confirmation(&ui),
