@@ -87,7 +87,9 @@ pub struct Ui {
 
 impl Default for Ui {
     fn default() -> Self {
-        Self { confirm_on_close: true }
+        Self {
+            confirm_on_close: true,
+        }
     }
 }
 
@@ -1332,7 +1334,9 @@ snap_on_esc = false
 
     #[test]
     fn apply_ui_overrides_default_when_false() {
-        let schema = crate::config::schema::UiSection { confirm_on_close: Some(false) };
+        let schema = crate::config::schema::UiSection {
+            confirm_on_close: Some(false),
+        };
         let mut resolved = Ui::default();
         apply_ui(schema, &mut resolved);
         assert!(!resolved.confirm_on_close);
@@ -1340,9 +1344,14 @@ snap_on_esc = false
 
     #[test]
     fn apply_ui_no_op_when_none() {
-        let schema = crate::config::schema::UiSection { confirm_on_close: None };
+        let schema = crate::config::schema::UiSection {
+            confirm_on_close: None,
+        };
         let mut resolved = Ui::default();
         apply_ui(schema, &mut resolved);
-        assert!(resolved.confirm_on_close, "None should leave default unchanged");
+        assert!(
+            resolved.confirm_on_close,
+            "None should leave default unchanged"
+        );
     }
 }

@@ -163,7 +163,7 @@ pub fn panel_rect(window_size: (u32, u32), state: &ConfirmCloseState) -> (f32, f
 /// rect-builder (for drawing) and `hit_test_buttons` (for click routing).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonGeom {
-    pub cancel: (f32, f32, f32, f32),       // x, y, w, h
+    pub cancel: (f32, f32, f32, f32), // x, y, w, h
     pub close_anyway: (f32, f32, f32, f32),
 }
 
@@ -316,7 +316,13 @@ pub fn build_confirm_close_rects(
         RectInstance::new(px, py + ph - BORDER_PX, pw, BORDER_PX, colors.border_fg),
         RectInstance::new(px, py, BORDER_PX, ph, colors.border_fg),
         RectInstance::new(px + pw - BORDER_PX, py, BORDER_PX, ph, colors.border_fg),
-        RectInstance::new(bg.cancel.0, bg.cancel.1, bg.cancel.2, bg.cancel.3, cancel_color),
+        RectInstance::new(
+            bg.cancel.0,
+            bg.cancel.1,
+            bg.cancel.2,
+            bg.cancel.3,
+            cancel_color,
+        ),
         RectInstance::new(
             bg.close_anyway.0,
             bg.close_anyway.1,
@@ -474,13 +480,17 @@ pub fn hit_test_buttons(
 ) -> Option<FocusedButton> {
     let bg = button_rects(panel_rect(window_size, state));
     let (x, y) = click_pos;
-    if x >= bg.cancel.0 && x <= bg.cancel.0 + bg.cancel.2 &&
-       y >= bg.cancel.1 && y <= bg.cancel.1 + bg.cancel.3
+    if x >= bg.cancel.0
+        && x <= bg.cancel.0 + bg.cancel.2
+        && y >= bg.cancel.1
+        && y <= bg.cancel.1 + bg.cancel.3
     {
         return Some(FocusedButton::Cancel);
     }
-    if x >= bg.close_anyway.0 && x <= bg.close_anyway.0 + bg.close_anyway.2 &&
-       y >= bg.close_anyway.1 && y <= bg.close_anyway.1 + bg.close_anyway.3
+    if x >= bg.close_anyway.0
+        && x <= bg.close_anyway.0 + bg.close_anyway.2
+        && y >= bg.close_anyway.1
+        && y <= bg.close_anyway.1 + bg.close_anyway.3
     {
         return Some(FocusedButton::CloseAnyway);
     }
@@ -568,7 +578,10 @@ mod tests_content {
         let panel = panel_rect((1920, 1080), &state);
         let bg = button_rects(panel);
         let click = (bg.cancel.0 + 5.0, bg.cancel.1 + 5.0);
-        assert_eq!(hit_test_buttons((1920, 1080), &state, click), Some(FocusedButton::Cancel));
+        assert_eq!(
+            hit_test_buttons((1920, 1080), &state, click),
+            Some(FocusedButton::Cancel)
+        );
     }
 
     #[test]
@@ -577,7 +590,10 @@ mod tests_content {
         let panel = panel_rect((1920, 1080), &state);
         let bg = button_rects(panel);
         let click = (bg.close_anyway.0 + 5.0, bg.close_anyway.1 + 5.0);
-        assert_eq!(hit_test_buttons((1920, 1080), &state, click), Some(FocusedButton::CloseAnyway));
+        assert_eq!(
+            hit_test_buttons((1920, 1080), &state, click),
+            Some(FocusedButton::CloseAnyway)
+        );
     }
 
     #[test]

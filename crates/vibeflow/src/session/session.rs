@@ -404,8 +404,8 @@ impl PtySession {
                 let fg_name = pid.and_then(crate::session::proc_watch::foreground_command_name);
                 // v0.1.3: preserve the matched name so the confirm-on-close
                 // dialog can show "claude" / "codex" instead of "shell".
-                let matched_name: Option<String> = fg_name
-                    .filter(|name| self.tools_list.iter().any(|t| t == name));
+                let matched_name: Option<String> =
+                    fg_name.filter(|name| self.tools_list.iter().any(|t| t == name));
                 let matched = matched_name.is_some();
                 self.detected_ai_tool = matched_name;
                 let was_armed = self.heuristic_was_active;
@@ -1720,12 +1720,8 @@ mod tests {
         // Spawn a real PtySession running bash, give it ~250 ms for the shell to
         // settle at its prompt, then check. The shell IS the foreground process
         // group, so has_foreground_child should be false.
-        let mut s = PtySession::spawn(
-            &["/bin/bash"],
-            TrackerConfig::default(),
-            1000,
-        )
-        .expect("spawn bash");
+        let mut s =
+            PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000).expect("spawn bash");
         // Give bash a moment to take over the controlling terminal.
         std::thread::sleep(std::time::Duration::from_millis(250));
         let _ = s.poll(std::time::Instant::now());
@@ -1738,8 +1734,8 @@ mod tests {
     #[test]
     fn has_foreground_child_returns_true_when_shell_runs_subprocess() {
         // Spawn bash, send a sleep command, poll-until-detected.
-        let mut s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000)
-            .expect("spawn bash");
+        let mut s =
+            PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000).expect("spawn bash");
         // Wait for bash to take controlling terminal.
         assert!(
             wait_until(Duration::from_secs(5), || {
@@ -1762,12 +1758,8 @@ mod tests {
 
     #[test]
     fn detected_ai_tool_returns_none_for_idle_shell_with_no_tools_configured() {
-        let mut s = PtySession::spawn(
-            &["/bin/bash"],
-            TrackerConfig::default(),
-            1000,
-        )
-        .expect("spawn bash");
+        let mut s =
+            PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000).expect("spawn bash");
         // tools_list defaults to empty; tick() leaves detected_ai_tool untouched
         // when the list is empty, so it stays None.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1783,8 +1775,8 @@ mod tests {
         // (We can't easily spawn `claude` from a unit test; `sleep` is a
         // standard binary present on every system AND short enough to fit
         // the kernel's 15-char `comm` truncation.)
-        let mut s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000)
-            .expect("spawn bash");
+        let mut s =
+            PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000).expect("spawn bash");
         s.tools_list = vec!["sleep".to_string()];
         s.proc_check_interval = Duration::from_millis(50);
         s.send_input(b"sleep 30\n").expect("send sleep cmd");

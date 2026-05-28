@@ -2,10 +2,10 @@
 //! only — no real winit window, so we exercise via App's public surface
 //! and the `render::confirm_close` state-struct directly.
 
+use std::time::{Duration, Instant};
 use vibeflow::app::App;
 use vibeflow::config::Ui;
 use vibeflow::render::confirm_close::{ConfirmCloseState, FocusedButton};
-use std::time::{Duration, Instant};
 
 /// Poll-with-deadline helper for PTY-driven integration tests. Mirrors the
 /// `wait_until` in `session::session::tests` — parallel `cargo test` load
@@ -50,7 +50,9 @@ fn multi_idle_tabs_need_confirmation() {
 fn busy_tab_needs_confirmation_even_if_single() {
     let mut app = App::new();
     spawn_idle(&mut app, 1);
-    app.tabs_mut()[0].send_input(b"sleep 30\n").expect("send sleep");
+    app.tabs_mut()[0]
+        .send_input(b"sleep 30\n")
+        .expect("send sleep");
     assert!(
         wait_until(Duration::from_secs(5), || {
             let _ = app.tabs_mut()[0].poll(Instant::now());
@@ -64,13 +66,17 @@ fn busy_tab_needs_confirmation_even_if_single() {
 fn confirm_on_close_false_bypasses_dialog_for_any_tab_count() {
     let mut app = App::new();
     spawn_idle(&mut app, 5);
-    app.tabs_mut()[0].send_input(b"sleep 30\n").expect("send sleep");
+    app.tabs_mut()[0]
+        .send_input(b"sleep 30\n")
+        .expect("send sleep");
     // Wait for bash to fork sleep so the assertion is meaningful.
     let _ = wait_until(Duration::from_secs(5), || {
         let _ = app.tabs_mut()[0].poll(Instant::now());
         !app.busy_tabs().is_empty()
     });
-    let ui = Ui { confirm_on_close: false };
+    let ui = Ui {
+        confirm_on_close: false,
+    };
     assert!(!app.close_needs_confirmation(&ui));
 }
 
@@ -90,7 +96,9 @@ fn busy_tabs_idle_multi_tab_returns_empty_with_correct_tab_count() {
 fn busy_tabs_lists_subprocess_with_running_label() {
     let mut app = App::new();
     spawn_idle(&mut app, 1);
-    app.tabs_mut()[0].send_input(b"sleep 30\n").expect("send sleep");
+    app.tabs_mut()[0]
+        .send_input(b"sleep 30\n")
+        .expect("send sleep");
     assert!(
         wait_until(Duration::from_secs(5), || {
             let _ = app.tabs_mut()[0].poll(Instant::now());

@@ -351,11 +351,7 @@ impl App {
     /// (everything except `keep_idx`) should surface a confirm dialog.
     /// Confirm if more than one tab would be closed OR any of those tabs is
     /// busy. False if zero tabs would be closed (keep_idx is the only tab).
-    pub fn close_others_needs_confirmation(
-        &self,
-        keep_idx: usize,
-        ui: &crate::config::Ui,
-    ) -> bool {
+    pub fn close_others_needs_confirmation(&self, keep_idx: usize, ui: &crate::config::Ui) -> bool {
         if !ui.confirm_on_close {
             return false;
         }
@@ -916,7 +912,9 @@ mod tests {
             let _ = app.tabs_mut()[0].poll(Instant::now());
             !app.busy_tabs().is_empty()
         });
-        let ui = Ui { confirm_on_close: false };
+        let ui = Ui {
+            confirm_on_close: false,
+        };
         assert!(
             !app.close_needs_confirmation(&ui),
             "confirm_on_close = false should bypass entirely"
@@ -990,7 +988,9 @@ mod tests {
             let _ = app.tabs_mut()[0].poll(Instant::now());
             !app.busy_tabs().is_empty()
         });
-        let ui = Ui { confirm_on_close: false };
+        let ui = Ui {
+            confirm_on_close: false,
+        };
         assert!(!app.tab_close_needs_confirmation(0, &ui));
     }
 
@@ -1044,7 +1044,9 @@ mod tests {
     #[test]
     fn close_others_needs_confirmation_false_when_ui_disables_it() {
         let app = make_app_with_n_idle_tabs(5);
-        let ui = Ui { confirm_on_close: false };
+        let ui = Ui {
+            confirm_on_close: false,
+        };
         assert!(!app.close_others_needs_confirmation(0, &ui));
     }
 }
