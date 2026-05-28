@@ -13,25 +13,54 @@ pub enum FocusedButton {
     CloseAnyway,
 }
 
+/// v0.1.3 per-tab close amendment: which close action the dialog is gating.
+/// Drives title text, confirm-button label, and (in `window.rs`) which close
+/// operation to perform when the user confirms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmCloseScope {
+    /// Whole window: equivalent to `WindowEvent::CloseRequested`.
+    Window,
+    /// Closing one tab (Ctrl+W or X-button click). 0-based App index.
+    SingleTab { tab_index: usize },
+    /// Closing every tab except `keep_tab_index` (context-menu action).
+    OtherTabs { keep_tab_index: usize },
+}
+
 /// State carried while the dialog is open. Captured at open time and
 /// immutable thereafter (snapshot of busy tabs at that moment).
 #[derive(Debug, Clone)]
 pub struct ConfirmCloseState {
     pub busy_tabs: Vec<BusyTabInfo>,
-    /// Total number of tabs open at dialog-open time. Used to render the
-    /// "multi-tab all idle" copy variant (busy_tabs is empty but tab_count > 1).
+    /// Number of tabs the dialog action would close if Confirm were clicked.
+    /// - `Window`: total tabs.
+    /// - `SingleTab`: 1.
+    /// - `OtherTabs(keep)`: total − 1.
     pub tab_count: usize,
     pub focus: FocusedButton,
+    pub scope: ConfirmCloseScope,
 }
 
 impl ConfirmCloseState {
-    /// Capture state at dialog-open time. Cancel is the default focus —
-    /// muscle-memory Enter spam shouldn't kill in-flight work.
+    /// Capture state at dialog-open time for the window-close path. Cancel
+    /// is the default focus — muscle-memory Enter spam shouldn't kill
+    /// in-flight work. Backwards-compatible with the v0.1.3 §3 spec; defaults
+    /// `scope = Window`.
     pub fn new(busy_tabs: Vec<BusyTabInfo>, tab_count: usize) -> Self {
+        Self::with_scope(busy_tabs, tab_count, ConfirmCloseScope::Window)
+    }
+
+    /// v0.1.3 per-tab close amendment: same as `new` but caller selects the
+    /// dialog scope (single-tab close, "close other tabs", or whole window).
+    pub fn with_scope(
+        busy_tabs: Vec<BusyTabInfo>,
+        tab_count: usize,
+        scope: ConfirmCloseScope,
+    ) -> Self {
         Self {
             busy_tabs,
             tab_count,
             focus: FocusedButton::Cancel,
+            scope,
         }
     }
 
@@ -47,6 +76,24 @@ impl ConfirmCloseState {
     /// False when in "multi-tab all idle mode" (just a count + Close all?).
     pub fn is_busy_mode(&self) -> bool {
         !self.busy_tabs.is_empty()
+    }
+}
+
+/// v0.1.3 per-tab amendment: title text shown at the top of the dialog.
+pub fn title_text(state: &ConfirmCloseState) -> &'static str {
+    match state.scope {
+        ConfirmCloseScope::Window => "Close vibeflow?",
+        ConfirmCloseScope::SingleTab { .. } => "Close this tab?",
+        ConfirmCloseScope::OtherTabs { .. } => "Close other tabs?",
+    }
+}
+
+/// v0.1.3 per-tab amendment: label for the destructive (right) button.
+pub fn confirm_button_label(state: &ConfirmCloseState) -> &'static str {
+    match state.scope {
+        ConfirmCloseScope::Window => "Close anyway",
+        ConfirmCloseScope::SingleTab { .. } => "Close tab",
+        ConfirmCloseScope::OtherTabs { .. } => "Close other tabs",
     }
 }
 
@@ -287,7 +334,7 @@ pub fn build_confirm_close_rects(
 pub fn content_lines(state: &ConfirmCloseState) -> Vec<String> {
     const MAX_LIST_ROWS: usize = 8;
     let mut lines: Vec<String> = Vec::new();
-    lines.push("Close vibeflow?".to_string());
+    lines.push(title_text(state).to_string());
     lines.push(String::new()); // visual gap
 
     if state.is_busy_mode() {
@@ -306,7 +353,21 @@ pub fn content_lines(state: &ConfirmCloseState) -> Vec<String> {
             lines.push(format!("  … and {extra} more"));
         }
     } else {
-        lines.push(format!("{} tabs are open. Close all?", state.tab_count));
+        match state.scope {
+            ConfirmCloseScope::Window => {
+                lines.push(format!("{} tabs are open. Close all?", state.tab_count));
+            }
+            ConfirmCloseScope::OtherTabs { .. } => {
+                let n = state.tab_count;
+                let word = if n == 1 { "tab" } else { "tabs" };
+                lines.push(format!("Close {n} other {word}?"));
+            }
+            ConfirmCloseScope::SingleTab { .. } => {
+                // Silent path in production (close_needs_confirmation = false
+                // for an idle tab) — body kept terse for testability.
+                lines.push("Close this tab?".to_string());
+            }
+        }
     }
 
     lines
@@ -372,7 +433,11 @@ pub fn build_confirm_close_glyphs(
     let bg = button_rects(panel);
     for (label, geom, is_focused) in [
         ("Cancel", bg.cancel, state.focus == FocusedButton::Cancel),
-        ("Close anyway", bg.close_anyway, state.focus == FocusedButton::CloseAnyway),
+        (
+            confirm_button_label(state),
+            bg.close_anyway,
+            state.focus == FocusedButton::CloseAnyway,
+        ),
     ] {
         let (bx, by, bw, bh) = geom;
         let text_w = label.chars().count() as f32 * cell_w_f;
@@ -531,5 +596,111 @@ mod tests_content {
     fn click_is_inside_panel_accepts_centre() {
         let state = ConfirmCloseState::new(one_busy(), 2);
         assert!(click_is_inside_panel((1920, 1080), &state, (960.0, 540.0)));
+    }
+
+    // -------- v0.1.3 per-tab close amendment --------
+
+    #[test]
+    fn new_defaults_scope_to_window() {
+        let state = ConfirmCloseState::new(Vec::new(), 2);
+        assert!(matches!(state.scope, ConfirmCloseScope::Window));
+    }
+
+    #[test]
+    fn with_scope_records_single_tab() {
+        let state = ConfirmCloseState::with_scope(
+            Vec::new(),
+            1,
+            ConfirmCloseScope::SingleTab { tab_index: 2 },
+        );
+        match state.scope {
+            ConfirmCloseScope::SingleTab { tab_index } => assert_eq!(tab_index, 2),
+            _ => panic!("expected SingleTab scope"),
+        }
+    }
+
+    #[test]
+    fn with_scope_records_other_tabs() {
+        let state = ConfirmCloseState::with_scope(
+            Vec::new(),
+            4,
+            ConfirmCloseScope::OtherTabs { keep_tab_index: 1 },
+        );
+        match state.scope {
+            ConfirmCloseScope::OtherTabs { keep_tab_index } => assert_eq!(keep_tab_index, 1),
+            _ => panic!("expected OtherTabs scope"),
+        }
+    }
+
+    #[test]
+    fn title_text_per_scope() {
+        let win = ConfirmCloseState::new(Vec::new(), 2);
+        let one = ConfirmCloseState::with_scope(
+            Vec::new(),
+            1,
+            ConfirmCloseScope::SingleTab { tab_index: 0 },
+        );
+        let oth = ConfirmCloseState::with_scope(
+            Vec::new(),
+            3,
+            ConfirmCloseScope::OtherTabs { keep_tab_index: 0 },
+        );
+        assert_eq!(title_text(&win), "Close vibeflow?");
+        assert_eq!(title_text(&one), "Close this tab?");
+        assert_eq!(title_text(&oth), "Close other tabs?");
+    }
+
+    #[test]
+    fn confirm_button_label_per_scope() {
+        let win = ConfirmCloseState::new(Vec::new(), 2);
+        let one = ConfirmCloseState::with_scope(
+            Vec::new(),
+            1,
+            ConfirmCloseScope::SingleTab { tab_index: 0 },
+        );
+        let oth = ConfirmCloseState::with_scope(
+            Vec::new(),
+            3,
+            ConfirmCloseScope::OtherTabs { keep_tab_index: 0 },
+        );
+        assert_eq!(confirm_button_label(&win), "Close anyway");
+        assert_eq!(confirm_button_label(&one), "Close tab");
+        assert_eq!(confirm_button_label(&oth), "Close other tabs");
+    }
+
+    #[test]
+    fn content_lines_single_tab_busy_shows_title_and_entry() {
+        let state = ConfirmCloseState::with_scope(
+            one_busy(),
+            1,
+            ConfirmCloseScope::SingleTab { tab_index: 1 },
+        );
+        let lines = content_lines(&state);
+        assert_eq!(lines[0], "Close this tab?");
+        assert!(lines[3].contains("Tab 2"));
+        assert!(lines[3].contains("claude"));
+    }
+
+    #[test]
+    fn content_lines_other_tabs_idle_shows_count() {
+        let state = ConfirmCloseState::with_scope(
+            Vec::new(),
+            2,
+            ConfirmCloseScope::OtherTabs { keep_tab_index: 1 },
+        );
+        let lines = content_lines(&state);
+        assert_eq!(lines[0], "Close other tabs?");
+        assert_eq!(lines[2], "Close 2 other tabs?");
+    }
+
+    #[test]
+    fn content_lines_other_tabs_singular_word() {
+        let state = ConfirmCloseState::with_scope(
+            Vec::new(),
+            1,
+            ConfirmCloseScope::OtherTabs { keep_tab_index: 1 },
+        );
+        let lines = content_lines(&state);
+        assert_eq!(lines[2], "Close 1 other tab?");
     }
 }
