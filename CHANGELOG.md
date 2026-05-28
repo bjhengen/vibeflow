@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-28
+
+Confirm-on-close: a modal dialog now guards close paths that would discard active sessions or AI work. Two-part landing — the original spec covers window-close (`WindowEvent::CloseRequested`); a same-day amendment after the VNC smoke walk extends the gate to per-tab close paths (Ctrl+Shift+W, X-button, "Close Other Tabs"). Plus stability fixes and a long-deferred TODO closeout.
+
+### Added
+
+- **Confirm-on-close dialog for window close.** `WindowEvent::CloseRequested` now opens a centred modal overlay when the window has >1 tab open OR any tab is "busy" (foreground subprocess beyond the shell, OR AI tracker in `Working` / `Waiting`). Single idle tab still closes silently. iTerm2-style protective default. Cancel button is focused first so muscle-memory Enter spam can't discard in-flight work. ESC dismisses; second close-request rage-quits. Mirrors the v0.1.2 About-overlay rendering pattern (rects through `TabBarPipeline`, glyphs through `QuadPipeline` — no new render pass).
+- **Per-tab close confirmation** (same-release amendment). `Shortcut::CloseTab` (Ctrl+Shift+W / Super+W), `TabBarHit::TabClose` (X-button click), and `MenuAction::CloseOtherTabs` now route through the same dialog with scope-appropriate title ("Close this tab?" / "Close other tabs?") and confirm-button label ("Close tab" / "Close other tabs"). Single-idle-tab close stays silent even in a multi-tab window — closing one idle tab is a contained, deliberate action; surviving tabs are safe. "Close Other Tabs" confirms when >1 tab would close OR any of those tabs is busy.
+- **`[ui]` config section** with `confirm_on_close: bool` (default `true`). Flipping to `false` bypasses all four confirm paths (window close + the three per-tab paths) — for users who never want a dialog.
+- **`PtySession::has_foreground_child`** — Linux `/proc/<pid>/stat` tpgid check. True when something other than the shell holds terminal control (`python3`, `vim`, `claude`, `make`, …). Used by busy detection and surfaced via `App::busy_tabs` for the dialog's session list.
+- **`PtySession::detected_ai_tool`** — name of the most-recently-matched `tools_list` entry, captured during the existing Stage 11 proc check. Lets the dialog show "claude" / "codex" instead of the raw FG comm.
+- **`proc_watch::foreground_pgid`** — companion to `foreground_command_name` that returns the tpgid directly (no extra `/proc/<tpgid>/comm` read). Used by `has_foreground_child`.
+
+### Changed
+
+- **`App::close_tab` last-tab behaviour: tabless window → exit.** The v0.1.0 sentinel state ("close last tab, app sits there with no tabs") was a deferred TODO at `App::close_tab` line ~203. After the per-tab amendment landed it was immediately visible during smoke walk; `WindowApp` now treats `App.tabs().is_empty()` as exit-time via a small `exit_if_no_tabs` helper called from every close-tab dispatch site.
+- **Stderr default filter** raised to `vibeflow=warn` for the v0.1.2 file-logging facility (already shipped; no user-visible change in v0.1.3, restated for completeness).
+
+### Fixed
+
+- **6 timing-flaky lib + integration tests** under default parallel `cargo test` load. The pattern `send_input("sleep 30\n") + thread::sleep(500ms) + assert_busy` wasn't long enough for bash to fork sleep with ~50 concurrent PtySession tests competing for CPU. Replaced with a `wait_until(timeout, cond)` poll-with-deadline helper (mirrors the existing `app::tests` polling pattern at lines 477+). 3× consecutive parallel runs now pass with zero failures.
+- **`tier_3_arms_on_rising_edge_even_without_real_output`** (pre-existing Stage 11 test). Was synthetic-time previously; switching to real-time polling exposed a latent flake: `/bin/sh -c "sleep 5"` `exec()`s into `sleep` mid-test, so a single-name `tools_list = ["sh"]` un-arms the heuristic on the silence-check tick after the comm flips from `"sh"` to `"sleep"`. Fix: arm with a candidate set `{sh, bash, dash, sleep}` so the heuristic stays armed regardless of exec timing or which `sh` implementation is at `/bin/sh`.
+
+### Internal
+
+- **`busy_info_for(&PtySession, idx)`** extracted from inline `busy_tabs` logic; now shared by `App::busy_tabs`, `App::tab_busy_info`, and `App::tabs_busy_except`. Same predicate, three call sites.
+- **`ConfirmCloseScope { Window, SingleTab(idx), OtherTabs(keep_idx) }`** drives per-scope title text and confirm-button label. Constructor `ConfirmCloseState::new(busy, tab_count)` keeps existing call sites + tests working (defaults `scope = Window`); new `with_scope` covers the per-tab paths.
+- **`dispatch_confirm_close_confirm`** centralises the confirm action across keyboard Enter + LMB Pressed on the destructive button. Match on scope: `Window → pending_exit`, `SingleTab(idx) → close_tab + redraw`, `OtherTabs(k) → loop close + set_active(0) + redraw`.
+
 ## [0.1.2] - 2026-05-25
 
 The first feature-bundle release after v0.1. Five sub-features merged via individual PRs (#1–#4 plus the direct-merged logging facility), each with senior pre-execution review of plans vs actual source, subagent-driven per-task implementation with two-stage review, and a manual VNC smoke walk before merge.
