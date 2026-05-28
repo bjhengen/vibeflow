@@ -701,7 +701,23 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    /// Poll-with-deadline helper for PTY tests that depend on bash forking a
+    /// subprocess within an indeterminate wall-clock window. Under parallel
+    /// `cargo test` load (50+ concurrent PTYs) a fixed `thread::sleep(500ms)`
+    /// isn't enough for the shell to parse input and fork the subprocess.
+    /// Returns true if `cond` ever observed true before `timeout` elapsed.
+    fn wait_until<F: FnMut() -> bool>(timeout: Duration, mut cond: F) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        cond()
+    }
 
     #[test]
     fn poll_routes_osc_1338_through_dispatcher_and_tracker() {
@@ -1321,26 +1337,46 @@ mod tests {
             "armed=false → state stays Active"
         );
 
-        // Discover the actual comm name for the spawned child.
+        // Discover the actual comm name for the spawned child. Under parallel
+        // test load /proc/<tpgid>/comm can race and return a Rust test thread
+        // comm like "session::sessio" — retry until we see a plausible shell
+        // name (lowercase ascii, no `::`).
         let pid = s.child_pid().unwrap();
-        let comm = crate::session::proc_watch::foreground_command_name(pid);
-        eprintln!("DEBUG: child comm = {comm:?}");
-
-        // Now arm the heuristic by adding a matcher for the running command (sh).
-        // /proc/<pgid>/comm for our spawned child will read "sh" (or similar).
+        let mut comm: Option<String> = None;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match crate::session::proc_watch::foreground_command_name(pid) {
+                Some(name)
+                    if !name.is_empty()
+                        && !name.contains("::")
+                        && name.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == '-') =>
+                {
+                    comm = Some(name);
+                    break;
+                }
+                _ => std::thread::sleep(Duration::from_millis(25)),
+            }
+        }
         let tool_name = comm.unwrap_or_else(|| "sh".to_owned());
         s.tools_list = vec![tool_name];
-        let _ = s.tick(t0 + std::time::Duration::from_millis(50));
-        // Rising edge of heuristic_active should have synthesized an OutputObserved,
-        // which transitions Active → Working.
-        assert_eq!(
-            s.tracker_state(),
-            TabState::Working,
-            "rising edge of heuristic_active should promote state to Working"
+
+        // Tick repeatedly: under load the first tick after arming may race
+        // with /proc state. Poll up to 2s for the rising edge to promote
+        // Active → Working.
+        let promoted = wait_until(Duration::from_secs(2), || {
+            let _ = s.tick(Instant::now());
+            s.tracker_state() == TabState::Working
+        });
+        assert!(
+            promoted,
+            "rising edge of heuristic_active should promote state to Working within 2s, got {:?}",
+            s.tracker_state()
         );
 
         // Without further output bytes, silence threshold elapses and state → Waiting.
-        let _ = s.tick(t0 + std::time::Duration::from_millis(700));
+        // heuristic_silence is 500ms; sleep 700ms past the promotion to be safe.
+        std::thread::sleep(Duration::from_millis(700));
+        let _ = s.tick(Instant::now());
         assert_eq!(
             s.tracker_state(),
             TabState::Waiting,
@@ -1712,23 +1748,26 @@ mod tests {
 
     #[test]
     fn has_foreground_child_returns_true_when_shell_runs_subprocess() {
-        // Spawn bash, send a sleep command, give it time to start, check.
-        let mut s = PtySession::spawn(
-            &["/bin/bash"],
-            TrackerConfig::default(),
-            1000,
-        )
-        .expect("spawn bash");
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        let _ = s.poll(std::time::Instant::now());
+        // Spawn bash, send a sleep command, poll-until-detected.
+        let mut s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000)
+            .expect("spawn bash");
+        // Wait for bash to take controlling terminal.
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                let _ = s.poll(Instant::now());
+                !s.has_foreground_child()
+            }),
+            "bash should reach idle (no foreground child) within 5s"
+        );
         // Send a long-running command. The trailing \n triggers execution.
         s.send_input(b"sleep 30\n").expect("send sleep cmd");
-        // Give bash time to fork sleep and yield terminal control.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let _ = s.poll(std::time::Instant::now());
+        // Poll until bash forks sleep and the foreground pgid flips.
         assert!(
-            s.has_foreground_child(),
-            "bash running `sleep 30` should report a foreground child, got false"
+            wait_until(Duration::from_secs(5), || {
+                let _ = s.poll(Instant::now());
+                s.has_foreground_child()
+            }),
+            "bash running `sleep 30` should report a foreground child within 5s"
         );
     }
 
@@ -1755,22 +1794,19 @@ mod tests {
         // (We can't easily spawn `claude` from a unit test; `sleep` is a
         // standard binary present on every system AND short enough to fit
         // the kernel's 15-char `comm` truncation.)
-        let mut s = PtySession::spawn(
-            &["/bin/bash"],
-            TrackerConfig::default(),
-            1000,
-        )
-        .expect("spawn bash");
-        // Configure tools_list directly on the session (pub(crate) field, in
-        // same crate — fine from tests in the same module).
+        let mut s = PtySession::spawn(&["/bin/bash"], TrackerConfig::default(), 1000)
+            .expect("spawn bash");
         s.tools_list = vec!["sleep".to_string()];
-        s.proc_check_interval = std::time::Duration::from_millis(50);
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        let _ = s.poll(std::time::Instant::now());
+        s.proc_check_interval = Duration::from_millis(50);
         s.send_input(b"sleep 30\n").expect("send sleep cmd");
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let _ = s.poll(std::time::Instant::now());
-        let _ = s.tick(std::time::Instant::now());
-        assert_eq!(s.detected_ai_tool(), Some("sleep".to_string()));
+        // Poll until bash forks sleep AND a tick has propagated the match.
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                let _ = s.poll(Instant::now());
+                let _ = s.tick(Instant::now());
+                s.detected_ai_tool().as_deref() == Some("sleep")
+            }),
+            "bash running `sleep 30` should surface detected_ai_tool=\"sleep\" within 5s"
+        );
     }
 }
