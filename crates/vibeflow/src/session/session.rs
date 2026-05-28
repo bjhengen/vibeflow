@@ -1337,31 +1337,20 @@ mod tests {
             "armed=false → state stays Active"
         );
 
-        // Discover the actual comm name for the spawned child. Under parallel
-        // test load /proc/<tpgid>/comm can race and return a Rust test thread
-        // comm like "session::sessio" — retry until we see a plausible shell
-        // name (lowercase ascii, no `::`).
-        let pid = s.child_pid().unwrap();
-        let mut comm: Option<String> = None;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            match crate::session::proc_watch::foreground_command_name(pid) {
-                Some(name)
-                    if !name.is_empty()
-                        && !name.contains("::")
-                        && name.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == '-') =>
-                {
-                    comm = Some(name);
-                    break;
-                }
-                _ => std::thread::sleep(Duration::from_millis(25)),
-            }
-        }
-        let tool_name = comm.unwrap_or_else(|| "sh".to_owned());
-        s.tools_list = vec![tool_name];
+        // Arm the heuristic with a fixed candidate list. We avoid
+        // `foreground_command_name` here for two reasons:
+        // (1) under parallel test load /proc/<tpgid>/comm can race and return
+        //     a Rust test thread comm (e.g. "session::sessio");
+        // (2) `sh -c "sleep 5"` exec()'s into `sleep` on some shells, so the
+        //     comm changes from "sh" to "sleep" during the test's 700 ms
+        //     silence window and a single-name list would un-arm before the
+        //     Working → Waiting transition fires.
+        // Covering all plausible names keeps the heuristic armed regardless
+        // of exec timing or which sh implementation is at /bin/sh.
+        s.tools_list = vec!["sh".into(), "bash".into(), "dash".into(), "sleep".into()];
 
         // Tick repeatedly: under load the first tick after arming may race
-        // with /proc state. Poll up to 2s for the rising edge to promote
+        // with /proc state. Poll up to 2 s for the rising edge to promote
         // Active → Working.
         let promoted = wait_until(Duration::from_secs(2), || {
             let _ = s.tick(Instant::now());
@@ -1374,7 +1363,7 @@ mod tests {
         );
 
         // Without further output bytes, silence threshold elapses and state → Waiting.
-        // heuristic_silence is 500ms; sleep 700ms past the promotion to be safe.
+        // heuristic_silence is 500 ms; sleep 700 ms past the promotion to be safe.
         std::thread::sleep(Duration::from_millis(700));
         let _ = s.tick(Instant::now());
         assert_eq!(
