@@ -358,6 +358,7 @@ impl WindowApp {
                 if !self.app.tabs().is_empty() {
                     self.app.set_active(0);
                 }
+                self.exit_if_no_tabs();
             }
             MenuAction::OpenConfig => {
                 let path = self.config_path.clone();
@@ -550,6 +551,7 @@ impl WindowApp {
             ConfirmCloseScope::SingleTab { tab_index } => {
                 self.app.close_tab(tab_index);
                 self.context_menu = None;
+                self.exit_if_no_tabs();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -566,10 +568,23 @@ impl WindowApp {
                     self.app.set_active(0);
                 }
                 self.context_menu = None;
+                self.exit_if_no_tabs();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
             }
+        }
+    }
+
+    /// v0.1.3 per-tab close amendment closeout (also fixes a v0.1.0 TODO
+    /// left at `App::close_tab` line ~203): when the last tab is closed,
+    /// the app should exit instead of leaving a tabless window. Uses
+    /// `pending_exit` so we don't need `ActiveEventLoop` in scope at the
+    /// call site.
+    fn exit_if_no_tabs(&mut self) {
+        if self.app.tabs().is_empty() {
+            tracing::info!("no tabs remaining; scheduling exit");
+            self.pending_exit = true;
         }
     }
 
@@ -938,6 +953,7 @@ impl WindowApp {
                 if self.context_menu.is_some() {
                     self.context_menu = None;
                 }
+                self.exit_if_no_tabs();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -967,6 +983,7 @@ impl WindowApp {
                 if self.context_menu.is_some() {
                     self.context_menu = None;
                 }
+                self.exit_if_no_tabs();
             }
             Shortcut::NextTab => self.app.cycle_active(1),
             Shortcut::PrevTab => self.app.cycle_active(-1),
