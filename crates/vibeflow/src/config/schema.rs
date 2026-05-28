@@ -18,6 +18,7 @@ pub struct ConfigFile {
     pub ai: Option<AiSection>,
     pub scrollback: Option<ScrollbackSection>,
     pub bell: Option<BellSection>,
+    pub ui: Option<UiSection>,
 }
 
 /// `[shortcuts]` table. Each known action key (e.g. `new_tab`, `copy`) maps
@@ -135,6 +136,17 @@ pub struct ScrollbackSection {
     pub wheel_lines_per_detent: Option<u32>,
     pub scrollbar_fade_ms: Option<u64>,
     pub snap_on_esc: Option<bool>,
+}
+
+/// `[ui]` table. v0.1.3: UI behavior knobs.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiSection {
+    /// When `true` (default), `WindowEvent::CloseRequested` shows a modal
+    /// confirm dialog if the window has >1 tab open OR any tab is busy
+    /// (foreground process beyond shell, OR AI tracker in Working/Waiting).
+    /// Single idle-shell tabs always close silently.
+    pub confirm_on_close: Option<bool>,
 }
 
 #[cfg(test)]
@@ -377,5 +389,32 @@ explicit_stale_state_s = 120
         let cs: super::ConfigFile = toml::from_str(toml).expect("parse");
         let a = cs.ai.expect("ai present");
         assert_eq!(a.explicit_stale_state_s, Some(120));
+    }
+
+    #[test]
+    fn ui_section_parses_with_confirm_on_close_true() {
+        let cf = parse("[ui]\nconfirm_on_close = true\n");
+        let ui = cf.ui.expect("ui section present");
+        assert_eq!(ui.confirm_on_close, Some(true));
+    }
+
+    #[test]
+    fn ui_section_parses_with_confirm_on_close_false() {
+        let cf = parse("[ui]\nconfirm_on_close = false\n");
+        let ui = cf.ui.expect("ui section present");
+        assert_eq!(ui.confirm_on_close, Some(false));
+    }
+
+    #[test]
+    fn ui_section_rejects_unknown_field() {
+        let result: Result<ConfigFile, _> = toml::from_str("[ui]\nbogus = 1\n");
+        assert!(result.is_err(), "deny_unknown_fields should reject 'bogus'");
+    }
+
+    #[test]
+    fn empty_ui_section_parses_to_some_with_none_field() {
+        let cf = parse("[ui]\n");
+        let ui = cf.ui.expect("empty ui section still parses");
+        assert_eq!(ui.confirm_on_close, None);
     }
 }

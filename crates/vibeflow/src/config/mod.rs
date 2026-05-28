@@ -30,6 +30,7 @@ pub struct Config {
     pub ai: Ai,
     pub scrollback: Scrollback,
     pub bell: Bell,
+    pub ui: Ui,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +77,20 @@ impl std::str::FromStr for BellMode {
 pub struct Bell {
     pub mode: BellMode,
     pub debounce_ms: u64,
+}
+
+/// Resolved `[ui]` configuration. v0.1.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ui {
+    pub confirm_on_close: bool,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self {
+            confirm_on_close: true,
+        }
+    }
 }
 
 /// Action → list of (modifiers, key) pairs that trigger it.
@@ -255,6 +270,7 @@ impl Config {
                 mode: BellMode::Visual,
                 debounce_ms: 100,
             },
+            ui: Ui::default(),
         }
     }
 
@@ -336,6 +352,9 @@ impl Config {
         }
         if let Some(b) = file.bell {
             apply_bell(b, &mut defaults.bell, &mut errors);
+        }
+        if let Some(u) = file.ui {
+            apply_ui(u, &mut defaults.ui);
         }
 
         (defaults, errors)
@@ -646,6 +665,12 @@ fn apply_bell(schema: schema::BellSection, resolved: &mut Bell, errors: &mut Vec
             BELL_DEBOUNCE_MS_MIN,
             BELL_DEBOUNCE_MS_MAX,
         );
+    }
+}
+
+fn apply_ui(schema: schema::UiSection, resolved: &mut Ui) {
+    if let Some(v) = schema.confirm_on_close {
+        resolved.confirm_on_close = v;
     }
 }
 
@@ -1298,6 +1323,35 @@ snap_on_esc = false
         assert_eq!(
             resolved.history_lines, 1_000_000,
             "must clamp to SCROLLBACK_HISTORY_LINES_MAX"
+        );
+    }
+
+    #[test]
+    fn ui_default_is_confirm_on_close_true() {
+        let cfg = Ui::default();
+        assert!(cfg.confirm_on_close);
+    }
+
+    #[test]
+    fn apply_ui_overrides_default_when_false() {
+        let schema = crate::config::schema::UiSection {
+            confirm_on_close: Some(false),
+        };
+        let mut resolved = Ui::default();
+        apply_ui(schema, &mut resolved);
+        assert!(!resolved.confirm_on_close);
+    }
+
+    #[test]
+    fn apply_ui_no_op_when_none() {
+        let schema = crate::config::schema::UiSection {
+            confirm_on_close: None,
+        };
+        let mut resolved = Ui::default();
+        apply_ui(schema, &mut resolved);
+        assert!(
+            resolved.confirm_on_close,
+            "None should leave default unchanged"
         );
     }
 }
