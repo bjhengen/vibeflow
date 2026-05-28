@@ -482,7 +482,9 @@ impl WindowApp {
         if self.confirm_close.is_some() {
             return true;
         }
-        let ui = crate::config::Ui { confirm_on_close: self.confirm_on_close };
+        let ui = crate::config::Ui {
+            confirm_on_close: self.confirm_on_close,
+        };
         if !self.app.tab_close_needs_confirmation(idx, &ui) {
             return false;
         }
@@ -491,13 +493,11 @@ impl WindowApp {
             tab_index = idx,
             "single-tab close requested; showing confirm dialog"
         );
-        self.confirm_close = Some(
-            crate::render::confirm_close::ConfirmCloseState::with_scope(
-                busy,
-                1,
-                crate::render::confirm_close::ConfirmCloseScope::SingleTab { tab_index: idx },
-            ),
-        );
+        self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::with_scope(
+            busy,
+            1,
+            crate::render::confirm_close::ConfirmCloseScope::SingleTab { tab_index: idx },
+        ));
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -510,7 +510,9 @@ impl WindowApp {
         if self.confirm_close.is_some() {
             return true;
         }
-        let ui = crate::config::Ui { confirm_on_close: self.confirm_on_close };
+        let ui = crate::config::Ui {
+            confirm_on_close: self.confirm_on_close,
+        };
         if !self.app.close_others_needs_confirmation(keep_idx, &ui) {
             return false;
         }
@@ -523,13 +525,13 @@ impl WindowApp {
             busy_count = busy.len(),
             "close-other-tabs requested; showing confirm dialog"
         );
-        self.confirm_close = Some(
-            crate::render::confirm_close::ConfirmCloseState::with_scope(
-                busy,
-                tab_count,
-                crate::render::confirm_close::ConfirmCloseScope::OtherTabs { keep_tab_index: keep_idx },
-            ),
-        );
+        self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::with_scope(
+            busy,
+            tab_count,
+            crate::render::confirm_close::ConfirmCloseScope::OtherTabs {
+                keep_tab_index: keep_idx,
+            },
+        ));
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -543,7 +545,9 @@ impl WindowApp {
     /// scope here (unlike the window-close path which needs `ActiveEventLoop`).
     fn dispatch_confirm_close_confirm(&mut self) {
         use crate::render::confirm_close::ConfirmCloseScope;
-        let Some(state) = self.confirm_close.take() else { return };
+        let Some(state) = self.confirm_close.take() else {
+            return;
+        };
         match state.scope {
             ConfirmCloseScope::Window => {
                 self.pending_exit = true;
@@ -627,11 +631,9 @@ impl WindowApp {
             .map(|s| (s.width, s.height))
             .unwrap_or((0, 0));
         let dialog_state = self.confirm_close.as_ref().unwrap();
-        if let Some(hit) = crate::render::confirm_close::hit_test_buttons(
-            window_size,
-            dialog_state,
-            click_f,
-        ) {
+        if let Some(hit) =
+            crate::render::confirm_close::hit_test_buttons(window_size, dialog_state, click_f)
+        {
             match hit {
                 crate::render::confirm_close::FocusedButton::Cancel => {
                     self.confirm_close = None;
@@ -642,11 +644,8 @@ impl WindowApp {
             }
             return true;
         }
-        if !crate::render::confirm_close::click_is_inside_panel(
-            window_size,
-            dialog_state,
-            click_f,
-        ) {
+        if !crate::render::confirm_close::click_is_inside_panel(window_size, dialog_state, click_f)
+        {
             // Click missed the panel entirely → dismiss.
             self.confirm_close = None;
         }
@@ -1468,7 +1467,9 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // Synthesize a transient Ui struct so we don't pull `crate::config`
                 // into this hot path. `App::close_needs_confirmation` just reads
                 // the bool — cheaper than threading a borrow through everything.
-                let ui = crate::config::Ui { confirm_on_close: self.confirm_on_close };
+                let ui = crate::config::Ui {
+                    confirm_on_close: self.confirm_on_close,
+                };
                 if !self.app.close_needs_confirmation(&ui) {
                     tracing::info!("close requested; no confirmation needed; exiting");
                     event_loop.exit();
@@ -1481,9 +1482,9 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     busy_count = busy.len(),
                     "close requested; showing confirm dialog"
                 );
-                self.confirm_close = Some(
-                    crate::render::confirm_close::ConfirmCloseState::new(busy, tab_count),
-                );
+                self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::new(
+                    busy, tab_count,
+                ));
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -2966,7 +2967,9 @@ mod tests {
 
     #[test]
     fn open_confirm_close_dialog_for_test_sets_field() {
-        let Some(mut app) = try_make_test_window_app() else { return; };
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
         assert!(app.confirm_close().is_none());
         app.open_confirm_close_for_test(ConfirmCloseState::new(Vec::new(), 2));
         assert!(app.confirm_close().is_some());
@@ -2974,29 +2977,42 @@ mod tests {
 
     #[test]
     fn try_consume_confirm_close_keypress_returns_false_when_closed() {
-        let Some(mut app) = try_make_test_window_app() else { return; };
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
         use winit::keyboard::{Key, NamedKey};
         assert!(!app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Escape)));
     }
 
     #[test]
     fn esc_dismisses_dialog() {
-        let Some(mut app) = try_make_test_window_app() else { return; };
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
         app.open_confirm_close_for_test(ConfirmCloseState::new(Vec::new(), 2));
         use winit::keyboard::{Key, NamedKey};
-        let consumed = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Escape));
+        let consumed =
+            app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Escape));
         assert!(consumed);
-        assert!(app.confirm_close().is_none(), "Esc should clear the dialog state");
+        assert!(
+            app.confirm_close().is_none(),
+            "Esc should clear the dialog state"
+        );
     }
 
     #[test]
     fn tab_cycles_focus_between_buttons() {
-        let Some(mut app) = try_make_test_window_app() else { return; };
+        let Some(mut app) = try_make_test_window_app() else {
+            return;
+        };
         app.open_confirm_close_for_test(ConfirmCloseState::new(Vec::new(), 2));
         use winit::keyboard::{Key, NamedKey};
         let consumed = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Tab));
         assert!(consumed);
-        assert_eq!(app.confirm_close().unwrap().focus, FocusedButton::CloseAnyway);
+        assert_eq!(
+            app.confirm_close().unwrap().focus,
+            FocusedButton::CloseAnyway
+        );
         let _ = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Tab));
         assert_eq!(app.confirm_close().unwrap().focus, FocusedButton::Cancel);
     }
