@@ -2284,7 +2284,14 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         // latency low without holding the event loop in a tight loop on idle.
         const ACTIVE_WINDOW: Duration = Duration::from_millis(500);
         const ACTIVE_WAKE_INTERVAL: Duration = Duration::from_millis(4);
-        let wake_deadline = if now.duration_since(self.last_activity_at) < ACTIVE_WINDOW {
+        let wake_deadline = if self.app.any_output_pending() {
+            // #10: a poll stopped at the per-poll byte budget with backlog left.
+            // Re-wake immediately to finish draining — winit services pending
+            // keyboard events between these back-to-back cycles, so a big output
+            // burst catches up at full throughput while staying responsive,
+            // instead of one multi-second frozen drain.
+            now
+        } else if now.duration_since(self.last_activity_at) < ACTIVE_WINDOW {
             let active_wake = now + ACTIVE_WAKE_INTERVAL;
             std::cmp::min(active_wake, paint_deadline)
         } else {
