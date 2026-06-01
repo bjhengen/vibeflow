@@ -23,6 +23,14 @@ use crate::session::tracker::{AiStateTracker, TabState, TrackerConfig, TrackerIn
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
 
+/// #10: maximum bytes `poll` will consume from the reader channel in a single
+/// call. Bounds the per-cycle parse cost so a rapid output burst can't freeze
+/// the main loop on one giant synchronous drain. At the measured ~9 MB/s
+/// byte-by-byte parse, 64 KB is ~7 ms — under one 60 Hz frame, leaving room for
+/// the render in the same cycle. Remaining backlog drains on the next poll,
+/// which the window layer schedules immediately (see `output_pending`).
+const MAX_POLL_BYTES: usize = 64 * 1024;
+
 /// Display label for a tab. The renderer in [`crate::render::tabs`] reads
 /// this to draw the title (line 1) and subtitle (line 2). Stage 9's TOML
 /// config will call [`PtySession::set_label`] to override based on the
@@ -122,6 +130,14 @@ pub struct PtySession {
     /// Set true when a stray BEL byte (0x07) is observed in PassThrough output.
     /// Drained into a [`SessionEvent::Bell`] at the end of each `poll`.
     bell_pending: bool,
+    /// #10: set by `poll` when it stopped because it hit `MAX_POLL_BYTES` (more
+    /// output is queued). The window layer re-wakes immediately so catch-up runs
+    /// at full throughput without freezing the main loop on one giant drain.
+    output_pending: bool,
+    /// #10: bytes consumed by the most recent `poll` call. Test/bench-only
+    /// instrumentation (read via the `#[cfg(test)]` accessor).
+    #[cfg_attr(not(test), allow(dead_code))]
+    last_poll_bytes: usize,
     /// Per-tab mouse-driven cell selection. Stage 8.
     pub selection: crate::render::selection::SelectionTracker,
     /// True once the user has manually renamed via Ctrl+Shift+E or
@@ -229,6 +245,8 @@ impl PtySession {
             alive: true,
             label,
             bell_pending: false,
+            output_pending: false,
+            last_poll_bytes: 0,
             selection: crate::render::selection::SelectionTracker::new(),
             user_renamed: false,
             respect_osc_title: true,
@@ -299,9 +317,21 @@ impl PtySession {
     /// Non-blocking — returns immediately if the channel is empty.
     pub fn poll(&mut self, now: Instant) -> Vec<SessionEvent> {
         let mut events = Vec::new();
+        self.output_pending = false;
+        let mut consumed = 0usize;
+        let mut had_passthrough = false;
         loop {
+            // #10: bound work per call. Once we've hit the byte budget, stop and
+            // flag that more output is queued so the window layer re-wakes
+            // immediately — instead of draining an unbounded backlog (megabytes)
+            // in one synchronous parse that freezes the main loop.
+            if consumed >= MAX_POLL_BYTES {
+                self.output_pending = true;
+                break;
+            }
             match self.rx.try_recv() {
                 Ok(chunk) => {
+                    consumed += chunk.len();
                     for ev in self.dispatcher.feed(&chunk) {
                         match ev {
                             DispatchEvent::AiState(frame) => {
@@ -361,7 +391,11 @@ impl PtySession {
                                     }
                                     self.parser.advance(&mut self.term, byte);
                                 }
-                                events.push(SessionEvent::TermUpdated);
+                                // #10: defer to a single coalesced TermUpdated per
+                                // poll (the dispatcher yields many PassThrough
+                                // segments per drain → one-per-segment redraws
+                                // were pure churn).
+                                had_passthrough = true;
                             }
                         }
                     }
@@ -380,6 +414,10 @@ impl PtySession {
                 }
             }
         }
+        if had_passthrough {
+            events.push(SessionEvent::TermUpdated);
+        }
+        self.last_poll_bytes = consumed;
         events
     }
 
@@ -570,6 +608,21 @@ impl PtySession {
     #[must_use]
     pub fn is_alive(&self) -> bool {
         self.alive
+    }
+
+    /// #10: true when the most recent `poll` stopped at the per-poll byte budget
+    /// with output still queued. The window layer re-wakes immediately so the
+    /// remaining backlog drains without one giant main-loop stall.
+    #[must_use]
+    pub fn output_pending(&self) -> bool {
+        self.output_pending
+    }
+
+    /// #10: bytes consumed by the most recent `poll` call (test/bench-only).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn last_poll_bytes(&self) -> usize {
+        self.last_poll_bytes
     }
 
     /// Read-only access to the per-session `Term` for rendering.
@@ -1844,6 +1897,115 @@ mod tests {
                 s.detected_ai_tool().as_deref() == Some("sleep")
             }),
             "bash running `sleep 30` should surface detected_ai_tool=\"sleep\" within 5s"
+        );
+    }
+
+    // #10: a single poll must not drain an unbounded backlog — it caps at
+    // MAX_POLL_BYTES (+ up to one ≤4 KB chunk) and signals output_pending so the
+    // main loop re-wakes to finish, instead of freezing on one giant parse.
+    #[test]
+    fn poll_caps_bytes_per_call_and_signals_pending() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "seq 1 2000000"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        s.resize(60, 200).ok();
+        // Let the reader thread queue far more than the budget (a `seq` flood
+        // pushes MBs into the channel in well under this window).
+        std::thread::sleep(Duration::from_millis(250));
+
+        let _ = s.poll(Instant::now());
+        assert!(
+            s.last_poll_bytes() <= MAX_POLL_BYTES + 4096,
+            "one poll consumed {} bytes; must be capped at MAX_POLL_BYTES (+1 chunk)",
+            s.last_poll_bytes()
+        );
+        assert!(
+            s.output_pending(),
+            "backlog remained, so poll must report output_pending"
+        );
+
+        // Repeated polls must eventually drain everything and reach EOF.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            let _ = s.poll(Instant::now());
+            if !s.is_alive() && !s.output_pending() && s.last_poll_bytes() == 0 {
+                break;
+            }
+        }
+        assert!(!s.output_pending(), "backlog should be fully drained");
+        assert!(!s.is_alive(), "child should have exited (EOF reached)");
+    }
+
+    // #10: a poll that consumes multiple pass-through chunks coalesces them into
+    // exactly one TermUpdated (was one-per-chunk → redundant redraws).
+    #[test]
+    fn poll_coalesces_term_updated_per_call() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "seq 1 2000000"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        s.resize(60, 200).ok();
+        std::thread::sleep(Duration::from_millis(250));
+
+        let evs = s.poll(Instant::now());
+        // The budgeted poll processed ~64 KB = many ≤4 KB chunks...
+        assert!(
+            s.last_poll_bytes() > 4096,
+            "expected multiple chunks consumed, got {} bytes",
+            s.last_poll_bytes()
+        );
+        // ...but emitted exactly one TermUpdated.
+        let term_updates = evs
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::TermUpdated))
+            .count();
+        assert_eq!(
+            term_updates, 1,
+            "expected exactly one coalesced TermUpdated"
+        );
+    }
+
+    // ---- #10 perf probes (throwaway; run explicitly, not in the normal suite) ----
+    // cargo test -p vibeflow --lib perf_probe -- --ignored --nocapture --test-threads=1
+    // `seq 1 2000000` ≈ 14.9 MB raw / ~16.9 MB after PTY CRLF translation.
+
+    #[test]
+    #[ignore = "perf probe"]
+    fn perf_probe_parse_drain_throughput() {
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "seq 1 2000000"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        s.resize(60, 200).ok();
+        let t0 = Instant::now();
+        let mut polls = 0u64;
+        let mut idle = 0u32;
+        loop {
+            let evs = s.poll(Instant::now());
+            polls += 1;
+            if !s.is_alive() && evs.is_empty() {
+                idle += 1;
+                if idle > 5 {
+                    break;
+                }
+            } else {
+                idle = 0;
+            }
+            if t0.elapsed() > Duration::from_secs(60) {
+                break;
+            }
+        }
+        let dur = t0.elapsed();
+        eprintln!(
+            "[#10 parse_drain] ~16.9MB consumed in {dur:?} over {polls} tight polls (no render) => ~{:.0} MB/s",
+            16.9 / dur.as_secs_f64()
         );
     }
 }
