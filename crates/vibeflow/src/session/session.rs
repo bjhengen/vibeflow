@@ -344,7 +344,14 @@ impl PtySession {
                                 events.push(SessionEvent::Osc52ClipboardWrite { selection, text });
                             }
                             DispatchEvent::PassThrough(bytes) => {
-                                self.tracker.on_input(TrackerInput::OutputObserved, now);
+                                // Issue #7 (v0.1.4): OutputObserved can drive a
+                                // Tier-3 transition (Active/Idle/Waiting → Working).
+                                // Surface it as StateChanged so the tab repaints and
+                                // its cached subtitle refreshes — not just TermUpdated.
+                                if self.tracker.on_input(TrackerInput::OutputObserved, now) {
+                                    self.refresh_default_subtitle();
+                                    events.push(SessionEvent::StateChanged(self.tracker.state()));
+                                }
                                 for &byte in &bytes {
                                     // BEL bytes that terminate an OSC sequence are consumed by the
                                     // OscDispatcher and never reach here; only stray BEL (e.g.
@@ -388,6 +395,11 @@ impl PtySession {
     /// Run the tracker's timeout checks at `now`. Returns a [`SessionEvent`]
     /// per timeout-driven state change (currently zero or one event).
     pub fn tick(&mut self, now: Instant) -> Vec<SessionEvent> {
+        // v0.1.4 (#7): state can change outside `tracker.tick()` — the heuristic
+        // falling-edge clear (Change C) and the rising-edge OutputObserved
+        // promotion. Accumulate any change so it surfaces as a single
+        // StateChanged event (and refreshes the cached subtitle).
+        let mut state_changed = false;
         // Stage 11: Tier 3 foreground-process check, throttled.
         let due = match self.last_proc_check {
             Some(last) => now.saturating_duration_since(last) >= self.proc_check_interval,
@@ -409,20 +421,23 @@ impl PtySession {
                 let matched = matched_name.is_some();
                 self.detected_ai_tool = matched_name;
                 let was_armed = self.heuristic_was_active;
-                self.tracker.set_heuristic_active(matched);
+                // Change C (#7): the active→inactive edge clears a Tier-3 Waiting
+                // tab; capture it so it surfaces as StateChanged.
+                state_changed |= self.tracker.set_heuristic_active(matched);
                 self.heuristic_was_active = matched;
                 // Rising edge: heuristic just armed. Synthesize an OutputObserved so
                 // the tracker promotes Active/Idle → Working AND seeds last_output_at
                 // for the silence guard. Real subsequent output bytes will refresh
                 // the baseline; pure silence lets the heuristic-silence timer fire.
                 if matched && !was_armed {
-                    self.tracker
+                    state_changed |= self
+                        .tracker
                         .on_input(crate::session::tracker::TrackerInput::OutputObserved, now);
                 }
             }
         }
-        // Existing tracker.tick() pathway unchanged.
-        if self.tracker.tick(now) {
+        state_changed |= self.tracker.tick(now);
+        if state_changed {
             self.refresh_default_subtitle();
             vec![SessionEvent::StateChanged(self.tracker.state())]
         } else {
@@ -432,8 +447,8 @@ impl PtySession {
 
     /// Toggle the Tier 3 heuristic-silence inference. The App calls this when
     /// the foreground process matches the configured AI-tool list.
-    pub fn set_heuristic_active(&mut self, active: bool) {
-        self.tracker.set_heuristic_active(active);
+    pub fn set_heuristic_active(&mut self, active: bool) -> bool {
+        self.tracker.set_heuristic_active(active)
     }
 
     /// Stage 11: PID of the spawned child, for `/proc/<pid>/…` reads. Returns
@@ -785,6 +800,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(saw_term_updated, "expected TermUpdated from output");
+    }
+
+    // Issue #7 (v0.1.4): when heuristic output drives a tracker transition inside
+    // poll()'s PassThrough arm, poll() must emit StateChanged (not just
+    // TermUpdated) so the tab repaints AND its cached subtitle refreshes. This is
+    // the wiring the Waiting→Working recovery relies on (and also fixes the
+    // pre-existing Active→Working case).
+    #[test]
+    fn poll_emits_state_changed_on_heuristic_output_promotion() {
+        let mut s = PtySession::spawn(
+            &[
+                "python3",
+                "-c",
+                "import sys, time; sys.stdout.buffer.write(b'x'); sys.stdout.flush(); time.sleep(2)",
+            ],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        // Arm the Tier-3 heuristic directly (no /proc dependency). Output arriving
+        // through poll() should now promote Active → Working AND surface a
+        // StateChanged event.
+        s.set_heuristic_active(true);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_state_changed_working = false;
+        let mut events = Vec::new();
+        while Instant::now() < deadline && !saw_state_changed_working {
+            for ev in s.poll(Instant::now()) {
+                if matches!(ev, SessionEvent::StateChanged(TabState::Working)) {
+                    saw_state_changed_working = true;
+                }
+                events.push(ev);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            saw_state_changed_working,
+            "expected StateChanged(Working) from heuristic output; got: {events:?}"
+        );
+        assert_eq!(s.state(), TabState::Working);
     }
 
     #[test]
