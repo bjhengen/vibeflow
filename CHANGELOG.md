@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+Daily-driver fixes from real-world use (GitHub issues #6, #7, #8). The `vibeflow` app reports `0.1.4-dev` until the release-finale; `vibeflow-protocol` stays `0.1.3` (unchanged this cycle).
+
+### Added
+
+- **Tab rename selects the whole name on entry** (#8). Starting a rename now shows the existing name highlighted with the caret suppressed, so the first keystroke or Backspace replaces it; Arrow/Home/End collapse the selection without clearing. Fixes the prior bug where a name wider than the tab rendered the edit caret off-tab (over the next tab) until you backspaced it back into view.
+
+### Fixed
+
+- **New tabs fill the window width immediately** (#6). New sessions spawned at the 80×24 default and weren't resized to the live window until the next resize event, so a new tab opened in a constrained column. Both the keyboard (Ctrl+Shift+T) and `+`-button paths now size the tab to the current window on creation.
+- **AI-state Waiting indicator no longer vanishes after 30 s** (#7). On the Tier-3 heuristic path (Claude Code detected via `/proc`, no OSC 1338 hooks), the amber "Waiting" cue used to revert to neutral "active" after the 30 s stale-state timeout. `Waiting` is now exempt from that timeout, recovers to `Working` when output resumes, and clears when the AI tool exits. The explicit OSC 1338 path is unchanged.
+
 ## [0.1.3] - 2026-05-28
 
 Confirm-on-close: a modal dialog now guards close paths that would discard active sessions or AI work. Two-part landing — the original spec covers window-close (`WindowEvent::CloseRequested`); a same-day amendment after the VNC smoke walk extends the gate to per-tab close paths (Ctrl+Shift+W, X-button, "Close Other Tabs"). Plus stability fixes and a long-deferred TODO closeout.
