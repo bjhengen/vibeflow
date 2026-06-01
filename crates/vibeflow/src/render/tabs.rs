@@ -93,6 +93,11 @@ pub struct RenameInputState {
     pub cursor_pos: usize,
     /// Original title before rename, for Esc-cancel restore.
     pub original: String,
+    /// #8: true from rename entry until the first edit/navigation. While set, the
+    /// whole buffer is shown selected (highlighted, no caret) and the first
+    /// insert/Backspace replaces it. Cleared by any insert, Backspace/Delete, or
+    /// cursor movement.
+    pub select_all: bool,
 }
 
 impl TabBarLayout {
@@ -704,17 +709,38 @@ impl TabBarRenderer {
                     let title_x_start =
                         tab.body.x as f32 + (INDICATOR_STRIPE_WIDTH_PX as f32) + 6.0;
                     let title_y = tab.body.y as f32 + 2.0;
-                    let chars_before = rs.buffer[..rs.cursor_pos].chars().count() as f32;
-                    let caret_x = title_x_start + chars_before * cell_w as f32;
-                    // Gate caret visibility on the active tab's blink phase.
-                    if cursor_blink.visible(now) {
-                        rects.push(RectInstance::new(
-                            caret_x,
-                            title_y,
-                            2.0,
-                            cell_h as f32,
-                            [1.0, 1.0, 1.0, 0.85],
-                        ));
+                    if rs.select_all && !rs.buffer.is_empty() {
+                        // #8: whole-buffer selection — highlight the title (clipped
+                        // to the same text area the glyphs use) and SUPPRESS the
+                        // caret, so a name wider than the tab never renders its
+                        // caret off-tab on rename entry.
+                        let text_w = rs.buffer.chars().count() as f32 * cell_w as f32;
+                        let clip_right =
+                            tab.body.x as f32 + tab.body.w as f32 - tab.close_button.w as f32 - 4.0;
+                        let max_w = (clip_right - title_x_start).max(0.0);
+                        let hl_w = text_w.min(max_w);
+                        if hl_w > 0.0 {
+                            rects.push(RectInstance::new(
+                                title_x_start,
+                                title_y,
+                                hl_w,
+                                cell_h as f32,
+                                [0.25, 0.50, 0.95, 0.45],
+                            ));
+                        }
+                    } else {
+                        let chars_before = rs.buffer[..rs.cursor_pos].chars().count() as f32;
+                        let caret_x = title_x_start + chars_before * cell_w as f32;
+                        // Gate caret visibility on the active tab's blink phase.
+                        if cursor_blink.visible(now) {
+                            rects.push(RectInstance::new(
+                                caret_x,
+                                title_y,
+                                2.0,
+                                cell_h as f32,
+                                [1.0, 1.0, 1.0, 0.85],
+                            ));
+                        }
                     }
                 }
             }
