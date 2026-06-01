@@ -4,7 +4,9 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-Daily-driver fixes from real-world use (GitHub issues #6, #7, #8). The `vibeflow` app reports `0.1.4-dev` until the release-finale; `vibeflow-protocol` stays `0.1.3` (unchanged this cycle).
+## [0.1.4] - 2026-06-01
+
+Daily-driver fixes from real-world use (GitHub issues #6, #7, #8, #10). The `vibeflow` app moves to `0.1.4`; `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).
 
 ### Added
 
@@ -14,6 +16,7 @@ Daily-driver fixes from real-world use (GitHub issues #6, #7, #8). The `vibeflow
 
 - **New tabs fill the window width immediately** (#6). New sessions spawned at the 80×24 default and weren't resized to the live window until the next resize event, so a new tab opened in a constrained column. Both the keyboard (Ctrl+Shift+T) and `+`-button paths now size the tab to the current window on creation.
 - **AI-state Waiting indicator no longer vanishes after 30 s** (#7). On the Tier-3 heuristic path (Claude Code detected via `/proc`, no OSC 1338 hooks), the amber "Waiting" cue used to revert to neutral "active" after the 30 s stale-state timeout. `Waiting` is now exempt from that timeout, recovers to `Working` when output resumes, and clears when the AI tool exits. The explicit OSC 1338 path is unchanged.
+- **UI stays responsive during heavy output bursts** (#10). `PtySession::poll()` drained the entire reader-channel backlog in one synchronous byte-by-byte parse, so a multi-MB burst (agent builds/diffs/file dumps) froze the main loop for hundreds of ms to seconds — no input, no repaint. `poll()` now consumes at most 64 KB per call and re-wakes immediately while a backlog remains, so output catches up at full throughput while input and repaint stay live and interruptible. `TermUpdated` is coalesced to one per poll.
 
 ## [0.1.3] - 2026-05-28
 
