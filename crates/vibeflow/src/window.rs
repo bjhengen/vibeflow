@@ -1226,6 +1226,9 @@ impl WindowApp {
             cursor_pos: title.len(),
             buffer: title.clone(),
             original: title,
+            // #8: whole name selected on entry — first keystroke/Backspace
+            // overwrites; the off-tab caret for a long name is suppressed.
+            select_all: true,
         });
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -1347,51 +1350,37 @@ impl WindowApp {
                 Key::Named(NamedKey::Enter) => RenameOutcome::Commit,
                 Key::Named(NamedKey::Escape) => RenameOutcome::Cancel,
                 Key::Named(NamedKey::Backspace) => {
-                    if rs.cursor_pos > 0 {
-                        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
-                        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
-                        rs.cursor_pos = new_pos;
-                    }
+                    rs.backspace();
                     RenameOutcome::None
                 }
                 Key::Named(NamedKey::Delete) => {
-                    if rs.cursor_pos < rs.buffer.len() {
-                        let new_end = next_grapheme(&rs.buffer, rs.cursor_pos);
-                        rs.buffer.replace_range(rs.cursor_pos..new_end, "");
-                    }
+                    rs.delete();
                     RenameOutcome::None
                 }
                 Key::Named(NamedKey::ArrowLeft) => {
-                    if rs.cursor_pos > 0 {
-                        rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
-                    }
+                    rs.move_left();
                     RenameOutcome::None
                 }
                 Key::Named(NamedKey::ArrowRight) => {
-                    if rs.cursor_pos < rs.buffer.len() {
-                        rs.cursor_pos = next_grapheme(&rs.buffer, rs.cursor_pos);
-                    }
+                    rs.move_right();
                     RenameOutcome::None
                 }
                 Key::Named(NamedKey::Home) => {
-                    rs.cursor_pos = 0;
+                    rs.move_home();
                     RenameOutcome::None
                 }
                 Key::Named(NamedKey::End) => {
-                    rs.cursor_pos = rs.buffer.len();
+                    rs.move_end();
                     RenameOutcome::None
                 }
                 Key::Named(NamedKey::Space) => {
                     // winit routes spacebar through `Named(Space)`, not
                     // `Character(" ")` — without this arm the space is dropped.
-                    rs.buffer.insert(rs.cursor_pos, ' ');
-                    rs.cursor_pos += 1;
+                    rs.insert_str(" ");
                     RenameOutcome::None
                 }
                 Key::Character(c) => {
-                    let s = c.as_str();
-                    rs.buffer.insert_str(rs.cursor_pos, s);
-                    rs.cursor_pos += s.len();
+                    rs.insert_str(c.as_str());
                     RenameOutcome::None
                 }
                 _ => RenameOutcome::None,
@@ -2346,6 +2335,95 @@ fn next_grapheme(s: &str, pos: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+/// Edit operations for an in-progress tab rename. Extracted from
+/// `WindowApp::handle_rename_keyboard` so the production logic is unit-testable
+/// (the keyboard handler is a thin winit-`Key` → method translator).
+impl crate::render::tabs::RenameInputState {
+    /// Clear the whole-buffer selection (#8) if active, emptying the buffer.
+    /// Returns true if a selection was cleared. Callers that replace the
+    /// selection (insert) discard the empty buffer; callers that delete it
+    /// (Backspace/Delete) keep it empty.
+    fn take_select_all(&mut self) -> bool {
+        if self.select_all {
+            self.select_all = false;
+            self.buffer.clear();
+            self.cursor_pos = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Insert literal text at the cursor. With the whole buffer selected (#8),
+    /// the insert replaces it.
+    fn insert_str(&mut self, s: &str) {
+        self.take_select_all();
+        self.buffer.insert_str(self.cursor_pos, s);
+        self.cursor_pos += s.len();
+    }
+
+    /// Delete the grapheme before the cursor — or the whole selection (#8).
+    fn backspace(&mut self) {
+        if self.take_select_all() {
+            return;
+        }
+        if self.cursor_pos > 0 {
+            let new_pos = prev_grapheme(&self.buffer, self.cursor_pos);
+            self.buffer.replace_range(new_pos..self.cursor_pos, "");
+            self.cursor_pos = new_pos;
+        }
+    }
+
+    /// Delete the grapheme at the cursor — or the whole selection (#8).
+    fn delete(&mut self) {
+        if self.take_select_all() {
+            return;
+        }
+        if self.cursor_pos < self.buffer.len() {
+            let new_end = next_grapheme(&self.buffer, self.cursor_pos);
+            self.buffer.replace_range(self.cursor_pos..new_end, "");
+        }
+    }
+
+    /// Move the cursor one grapheme left. With the whole buffer selected (#8),
+    /// collapse the selection to the start (keep the text).
+    fn move_left(&mut self) {
+        if self.select_all {
+            self.select_all = false;
+            self.cursor_pos = 0;
+            return;
+        }
+        if self.cursor_pos > 0 {
+            self.cursor_pos = prev_grapheme(&self.buffer, self.cursor_pos);
+        }
+    }
+
+    /// Move the cursor one grapheme right. With the whole buffer selected (#8),
+    /// collapse the selection to the end (keep the text).
+    fn move_right(&mut self) {
+        if self.select_all {
+            self.select_all = false;
+            self.cursor_pos = self.buffer.len();
+            return;
+        }
+        if self.cursor_pos < self.buffer.len() {
+            self.cursor_pos = next_grapheme(&self.buffer, self.cursor_pos);
+        }
+    }
+
+    /// Move the cursor to the start (collapses any #8 selection).
+    fn move_home(&mut self) {
+        self.select_all = false;
+        self.cursor_pos = 0;
+    }
+
+    /// Move the cursor to the end (collapses any #8 selection).
+    fn move_end(&mut self) {
+        self.select_all = false;
+        self.cursor_pos = self.buffer.len();
+    }
+}
+
 fn build_shortcut_table(
     bindings: &crate::config::ShortcutBindings,
 ) -> crate::keymap::ShortcutTable {
@@ -2646,6 +2724,7 @@ mod tests {
             buffer: buffer.to_string(),
             cursor_pos: cursor,
             original: buffer.to_string(),
+            select_all: false,
         }
     }
 
@@ -2682,9 +2761,7 @@ mod tests {
     #[test]
     fn rename_backspace_deletes_grapheme() {
         let mut rs = rename_state_init("hello", 5);
-        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
-        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
-        rs.cursor_pos = new_pos;
+        rs.backspace();
         assert_eq!(rs.buffer, "hell");
         assert_eq!(rs.cursor_pos, 4);
     }
@@ -2692,9 +2769,7 @@ mod tests {
     #[test]
     fn rename_backspace_handles_multibyte() {
         let mut rs = rename_state_init("café", 5);
-        let new_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
-        rs.buffer.replace_range(new_pos..rs.cursor_pos, "");
-        rs.cursor_pos = new_pos;
+        rs.backspace();
         assert_eq!(rs.buffer, "caf");
         assert_eq!(rs.cursor_pos, 3);
     }
@@ -2702,31 +2777,105 @@ mod tests {
     #[test]
     fn rename_arrow_left_moves_by_grapheme() {
         let mut rs = rename_state_init("abc", 3);
-        rs.cursor_pos = prev_grapheme(&rs.buffer, rs.cursor_pos);
+        rs.move_left();
         assert_eq!(rs.cursor_pos, 2);
     }
 
     #[test]
     fn rename_home_jumps_to_zero() {
         let mut rs = rename_state_init("abc", 2);
-        rs.cursor_pos = 0;
+        rs.move_home();
         assert_eq!(rs.cursor_pos, 0);
     }
 
     #[test]
     fn rename_end_jumps_to_len() {
         let mut rs = rename_state_init("abc", 0);
-        rs.cursor_pos = rs.buffer.len();
+        rs.move_end();
         assert_eq!(rs.cursor_pos, 3);
     }
 
     #[test]
     fn rename_insert_at_cursor() {
         let mut rs = rename_state_init("ab", 1);
-        rs.buffer.insert(rs.cursor_pos, 'X');
-        rs.cursor_pos += 1;
+        rs.insert_str("X");
         assert_eq!(rs.buffer, "aXb");
         assert_eq!(rs.cursor_pos, 2);
+    }
+
+    // #8: with the whole buffer selected on entry, the first insert replaces it.
+    #[test]
+    fn rename_select_all_insert_replaces_buffer() {
+        let mut rs = rename_state_init("oldname", 7);
+        rs.select_all = true;
+        rs.insert_str("x");
+        assert_eq!(rs.buffer, "x");
+        assert_eq!(rs.cursor_pos, 1);
+        assert!(!rs.select_all, "first edit clears select_all");
+    }
+
+    // #8: Backspace with the whole buffer selected clears it entirely.
+    #[test]
+    fn rename_select_all_backspace_clears_buffer() {
+        let mut rs = rename_state_init("oldname", 7);
+        rs.select_all = true;
+        rs.backspace();
+        assert_eq!(rs.buffer, "");
+        assert_eq!(rs.cursor_pos, 0);
+        assert!(!rs.select_all);
+    }
+
+    // #8: Delete with the whole buffer selected also clears it entirely.
+    #[test]
+    fn rename_select_all_delete_clears_buffer() {
+        let mut rs = rename_state_init("oldname", 0);
+        rs.select_all = true;
+        rs.delete();
+        assert_eq!(rs.buffer, "");
+        assert_eq!(rs.cursor_pos, 0);
+        assert!(!rs.select_all);
+    }
+
+    // #8: ←/Home collapse the selection to the start without clearing text.
+    #[test]
+    fn rename_select_all_left_collapses_to_start() {
+        let mut rs = rename_state_init("oldname", 7);
+        rs.select_all = true;
+        rs.move_left();
+        assert!(!rs.select_all);
+        assert_eq!(rs.cursor_pos, 0);
+        assert_eq!(rs.buffer, "oldname", "text preserved on deselect");
+    }
+
+    #[test]
+    fn rename_select_all_home_collapses_to_start() {
+        let mut rs = rename_state_init("oldname", 7);
+        rs.select_all = true;
+        rs.move_home();
+        assert!(!rs.select_all);
+        assert_eq!(rs.cursor_pos, 0);
+        assert_eq!(rs.buffer, "oldname");
+    }
+
+    // #8: →/End collapse the selection to the end without clearing text.
+    #[test]
+    fn rename_select_all_right_collapses_to_end() {
+        let mut rs = rename_state_init("oldname", 0);
+        rs.select_all = true;
+        rs.move_right();
+        assert!(!rs.select_all);
+        assert_eq!(rs.cursor_pos, "oldname".len());
+        assert_eq!(rs.buffer, "oldname");
+    }
+
+    #[test]
+    fn rename_select_all_end_collapses_to_end() {
+        let mut rs = rename_state_init("oldname", 0);
+        rs.select_all = true;
+        rs.move_end();
+        assert!(!rs.select_all);
+        assert_eq!(rs.cursor_pos, "oldname".len());
+        assert_eq!(rs.buffer, "oldname");
     }
 
     #[test]
