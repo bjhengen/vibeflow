@@ -229,6 +229,14 @@ impl App {
         all
     }
 
+    /// #10: true if any session's last `poll` stopped at the per-poll byte
+    /// budget with output still queued. The window layer uses this to re-wake
+    /// immediately and finish draining without freezing on one giant parse.
+    #[must_use]
+    pub fn any_output_pending(&self) -> bool {
+        self.tabs.iter().any(PtySession::output_pending)
+    }
+
     /// Run [`PtySession::tick`] on every session at `now` and collect any
     /// timeout-driven [`SessionEvent`]s with their tab index.
     pub fn tick_all(&mut self, now: std::time::Instant) -> Vec<(usize, SessionEvent)> {
