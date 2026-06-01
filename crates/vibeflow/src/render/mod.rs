@@ -613,13 +613,13 @@ impl Renderer {
                 None
             };
         let confirm_close_rects: Vec<crate::render::tabs::RectInstance> = confirm_close
-            .and_then(|s| confirm_close_colors.as_ref().map(|c| (s, c)))
+            .zip(confirm_close_colors.as_ref())
             .map(|(s, c)| {
                 crate::render::confirm_close::build_confirm_close_rects(surface_size, s, c)
             })
             .unwrap_or_default();
         let confirm_close_glyphs: Vec<crate::render::quad::QuadInstance> = confirm_close
-            .and_then(|s| confirm_close_colors.as_ref().map(|c| (s, c)))
+            .zip(confirm_close_colors.as_ref())
             .map(|(s, c)| {
                 crate::render::confirm_close::build_confirm_close_glyphs(
                     surface_size,

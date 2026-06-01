@@ -162,9 +162,17 @@ impl AiStateTracker {
                 // Working from observed output activity. This is the "rapid output → working"
                 // half of the Tier 3 heuristic; the Working → Waiting (silence) half lives
                 // in `tick()`.
+                //
+                // Issue #7 (v0.1.4): `Waiting` is included as a source state, so resumed
+                // output recovers a Tier-3 Waiting tab back to Working — the symmetric
+                // counterpart to the silence rule, and the "output resumes" recovery that
+                // replaces the removed stale-state demotion.
                 if !self.explicit_seen
                     && self.heuristic_active
-                    && matches!(self.state, TabState::Active | TabState::Idle)
+                    && matches!(
+                        self.state,
+                        TabState::Active | TabState::Idle | TabState::Waiting
+                    )
                 {
                     return self.transition_to(TabState::Working, now);
                 }
@@ -259,7 +267,15 @@ impl AiStateTracker {
         }
         // Stale-state timeout: reset to Active if non-Active and inactive for
         // longer than `config.stale_state`.
-        if self.state != TabState::Active {
+        //
+        // Issue #7 (v0.1.4): `Waiting` is exempt. On the Tier-3 heuristic path it
+        // is the headline "needs you" cue and must persist until the AI resumes
+        // output (recovered to `Working` in `on_input`) or the tool exits
+        // (cleared in `set_heuristic_active`) — not silently demoted on a timer.
+        // `Working`/`Idle`/`Done` keep the timeout. (The explicit OSC-1338 path
+        // never reaches here while authoritative, and after its fuse fires the
+        // `Waiting` arm nulls `last_event_at`, so this guard is also a no-op there.)
+        if self.state != TabState::Active && self.state != TabState::Waiting {
             if let Some(last) = self.last_event_at {
                 if now.saturating_duration_since(last) >= self.config.stale_state {
                     self.state = TabState::Active;
@@ -273,8 +289,24 @@ impl AiStateTracker {
 
     /// Toggle the Tier 3 heuristic — set true when the foreground process is
     /// in the configured AI-tool list, false otherwise.
-    pub fn set_heuristic_active(&mut self, active: bool) {
+    ///
+    /// Returns `true` if this call changed the visual state. Issue #7 Change C:
+    /// on the active→inactive edge (the AI tool exited), a Tier-3 `Waiting` tab
+    /// is cleared to `Active` — the amber "needs you" cue is moot once the tool
+    /// is gone. Explicit OSC-1338 sessions are exempt: their `Waiting`
+    /// persistence is governed by the explicit-stale fuse, not the heuristic.
+    pub fn set_heuristic_active(&mut self, active: bool) -> bool {
+        let was_active = self.heuristic_active;
         self.heuristic_active = active;
+        if was_active && !active && !self.explicit_seen && self.state == TabState::Waiting {
+            // Direct-set (not `transition_to`): this is a fuse-tier signal that
+            // must not be debounce-suppressed, matching the other direct-sets in
+            // `tick()`. `last_event_at` is intentionally left as-is — `Active` is
+            // exempt from the stale-state block, so the stale baseline is unused.
+            self.state = TabState::Active;
+            return true;
+        }
+        false
     }
 
     /// Update timing config at runtime. Used by hot-reload (`apply_config`).
@@ -924,6 +956,88 @@ mod tests {
         let now = Instant::now();
         t.on_input(TrackerInput::AiFrame(Frame::new(State::Working)), now);
         assert!(!t.tick(now + Duration::from_secs(3600)));
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    /// Helper: drive a Tier-3 (non-explicit) tracker into `Waiting` by arming the
+    /// heuristic, observing output (→ Working), then ticking past the silence
+    /// window (→ Waiting). Returns the `now` baseline used.
+    fn tier3_into_waiting(t: &mut AiStateTracker) -> Instant {
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        t.on_input(TrackerInput::OutputObserved, now);
+        assert_eq!(t.state(), TabState::Working, "output should arm Working");
+        assert!(t.tick(now + Duration::from_secs(5)), "silence should fire");
+        assert_eq!(t.state(), TabState::Waiting, "silence → Waiting");
+        now
+    }
+
+    // Issue #7 (v0.1.4): a Tier-3 (heuristic-detected, no OSC 1338) Waiting tab
+    // is the headline "needs you" cue. It must NOT silently disappear after the
+    // 30 s stale_state timeout the way other non-Active states do.
+    #[test]
+    fn tier3_waiting_persists_past_stale_state() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = tier3_into_waiting(&mut t);
+        // Far past the 30 s stale_state, with no further input. Waiting holds.
+        let changed = t.tick(now + Duration::from_secs(60));
+        assert!(!changed, "stale_state must not demote Waiting");
+        assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    // Issue #7 recovery (user choice: "output resumes only"): when the AI tool
+    // produces output again, a Tier-3 Waiting tab returns to Working — the
+    // symmetric counterpart of the Working → Waiting silence rule.
+    #[test]
+    fn tier3_waiting_recovers_to_working_on_output() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = tier3_into_waiting(&mut t);
+        let changed = t.on_input(TrackerInput::OutputObserved, now + Duration::from_secs(6));
+        assert!(changed, "resumed output should recover Waiting → Working");
+        assert_eq!(t.state(), TabState::Working);
+    }
+
+    // Issue #7 Change C: when the AI tool exits (heuristic flips active→inactive)
+    // while a Tier-3 tab is Waiting, clear the amber — there's nothing left to
+    // respond to. Prevents a stuck-amber-on-bare-shell state.
+    #[test]
+    fn tier3_waiting_clears_when_ai_tool_exits() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let _ = tier3_into_waiting(&mut t);
+        let changed = t.set_heuristic_active(false);
+        assert!(changed, "AI-tool exit should clear Tier-3 Waiting");
+        assert_eq!(t.state(), TabState::Active);
+    }
+
+    // Change C is gated on `!explicit_seen`: an explicit OSC-1338 Waiting tab is
+    // governed by the fuse, not the /proc heuristic, so a heuristic-inactive edge
+    // must NOT clear it.
+    #[test]
+    fn explicit_waiting_not_cleared_by_heuristic_exit() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        t.on_input(TrackerInput::AiFrame(Frame::new(State::Waiting)), now);
+        assert_eq!(t.state(), TabState::Waiting);
+        let changed = t.set_heuristic_active(false);
+        assert!(
+            !changed,
+            "explicit Waiting must survive a heuristic-exit edge"
+        );
+        assert_eq!(t.state(), TabState::Waiting);
+    }
+
+    // Change C only clears `Waiting`; other Tier-3 states are untouched by a
+    // heuristic-inactive edge (they keep their normal stale_state behavior).
+    #[test]
+    fn tier3_working_not_cleared_by_heuristic_exit() {
+        let mut t = AiStateTracker::new(TrackerConfig::default());
+        let now = Instant::now();
+        t.set_heuristic_active(true);
+        t.on_input(TrackerInput::OutputObserved, now); // Active → Working
+        assert_eq!(t.state(), TabState::Working);
+        let changed = t.set_heuristic_active(false);
+        assert!(!changed, "heuristic exit must not clear non-Waiting states");
         assert_eq!(t.state(), TabState::Working);
     }
 }

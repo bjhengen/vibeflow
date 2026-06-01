@@ -931,6 +931,8 @@ impl WindowApp {
                 if let Err(e) = self.app.new_tab(&[shell.as_str()]) {
                     tracing::warn!(error = ?e, "new_tab failed");
                 }
+                // #6: size the new tab to the current window immediately.
+                self.resize_all_to_window();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -961,6 +963,31 @@ impl WindowApp {
         }
     }
 
+    /// Resize every session's PTY + grid to the current surface size.
+    ///
+    /// `PtySession::spawn` defaults to 80×24, which is wrong whenever the window
+    /// is larger. `resumed()` corrects the first tab this way; this helper lets
+    /// the new-tab paths do the same so a freshly opened tab fills the window
+    /// immediately instead of opening narrow and only correcting on the next
+    /// `WindowEvent::Resized` (issue #6). No-op until the renderer exists; redraw
+    /// is the caller's responsibility. (The `WindowEvent::Resized` handler keeps
+    /// its own path: it sizes from the event-authoritative `new_size` and resizes
+    /// the renderer first, which `surface_size()` can lag on some compositors/VNC.)
+    fn resize_all_to_window(&mut self) {
+        let Some(renderer) = self.renderer.as_ref() else {
+            return;
+        };
+        let (width, height) = renderer.surface_size();
+        let (cell_w, cell_h) = renderer.cell_pitch();
+        // Reserve the tab-bar strip; the PTY only sees the visible cell area.
+        let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
+        let visible_h = height.saturating_sub(bar_h);
+        let (rows, cols) = pixels_to_grid(width, visible_h, cell_w, cell_h);
+        if let Err(e) = self.app.resize_all(rows, cols) {
+            tracing::warn!(error = %e, rows, cols, "PTY resize failed");
+        }
+    }
+
     fn handle_shortcut(&mut self, shortcut: crate::keymap::Shortcut) {
         use crate::keymap::Shortcut;
         match shortcut {
@@ -969,6 +996,12 @@ impl WindowApp {
                 let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
                 if let Err(e) = self.app.new_tab(&[argv.as_str()]) {
                     tracing::warn!("new tab spawn failed: {e}");
+                }
+                // #6: size the new tab to the current window immediately, and
+                // request a redraw (this path previously did neither).
+                self.resize_all_to_window();
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
                 }
             }
             Shortcut::CloseTab => {
@@ -1426,22 +1459,10 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         }
 
         // Resize the freshly-spawned PTY to match the actual window size.
-        // `spawn_pty` defaults to 80×24, which is wrong if the user opened a
-        // larger window. Some compositors don't fire `WindowEvent::Resized`
-        // on initial show, so we don't rely on that to correct the size.
-        if let Some(renderer) = self.renderer.as_ref() {
-            let (width, height) = renderer.surface_size();
-            let (cell_w, cell_h) = renderer.cell_pitch();
-            // Reserve the tab-bar strip at the top — the PTY only sees the
-            // visible cell area, so its row count matches what's actually
-            // rendered below the bar.
-            let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
-            let visible_h = height.saturating_sub(bar_h);
-            let (rows, cols) = pixels_to_grid(width, visible_h, cell_w, cell_h);
-            if let Err(e) = self.app.resize_all(rows, cols) {
-                tracing::warn!(error = %e, rows, cols, "initial PTY resize failed");
-            }
-        }
+        // `spawn` defaults to 80×24, which is wrong if the user opened a larger
+        // window. Some compositors don't fire `WindowEvent::Resized` on initial
+        // show, so we don't rely on that to correct the size.
+        self.resize_all_to_window();
     }
 
     fn window_event(
