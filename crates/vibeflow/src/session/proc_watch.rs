@@ -1,7 +1,7 @@
 //! Linux foreground-process detection for Tier 3 heuristic AI-tool awareness.
 //!
 //! Reads `/proc/<child_pid>/stat` to find the foreground process group of the
-//! controlling terminal (field 7, `tpgid`), then reads `/proc/<tpgid>/comm`
+//! controlling terminal (field 8, `tpgid`), then reads `/proc/<tpgid>/comm`
 //! to get the process name. Linux-only; non-Linux targets get a stub that
 //! always returns `None`.
 //!
@@ -33,7 +33,7 @@ pub fn foreground_command_name(child_pid: i32) -> Option<String> {
     }
 }
 
-/// Read `/proc/<child_pid>/stat` and return field 7 (`tpgid`: the foreground
+/// Read `/proc/<child_pid>/stat` and return field 8 (`tpgid`: the foreground
 /// process group ID of the controlling terminal). Returns `None` on non-Linux,
 /// on read error, or if the stat line is malformed.
 ///
@@ -57,7 +57,8 @@ pub fn foreground_pgid(child_pid: i32) -> Option<i32> {
     }
 }
 
-/// Parse `tpgid` (field 7 in canonical proc(5) numbering) from a
+/// Parse `tpgid` (field 8 in canonical 1-based proc(5) numbering: pid, comm,
+/// state, ppid, pgrp, session, tty_nr, tpgid) from a
 /// `/proc/<pid>/stat` line. The trick: `comm` (field 2) is paren-wrapped
 /// and may itself contain `(`, `)`, or whitespace, so split-from-the-start
 /// is wrong. Find the LAST `)` and operate on the suffix; tpgid is the 6th
