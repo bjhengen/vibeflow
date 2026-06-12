@@ -630,7 +630,9 @@ impl WindowApp {
             .map(|w| w.inner_size())
             .map(|s| (s.width, s.height))
             .unwrap_or((0, 0));
-        let dialog_state = self.confirm_close.as_ref().unwrap();
+        let Some(dialog_state) = self.confirm_close.as_ref() else {
+            return false;
+        };
         if let Some(hit) =
             crate::render::confirm_close::hit_test_buttons(window_size, dialog_state, click_f)
         {
@@ -1937,7 +1939,9 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     }
                     if state == ElementState::Released {
                         let cursor = (px as f32, py as f32);
-                        let menu = self.context_menu.as_ref().unwrap();
+                        let Some(menu) = self.context_menu.as_ref() else {
+                            return;
+                        };
                         match menu.layout.hit_test(cursor) {
                             crate::render::context_menu::HitRegion::Inside(idx) => {
                                 let item = &menu.items[idx];

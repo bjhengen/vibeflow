@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::term::test::TermSize;
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use portable_pty::Child;
@@ -31,10 +31,43 @@ const DEFAULT_COLS: u16 = 80;
 /// which the window layer schedules immediately (see `output_pending`).
 const MAX_POLL_BYTES: usize = 64 * 1024;
 
+/// Viewport size handed to `Term::new` / `Term::resize` (both are generic
+/// over [`Dimensions`]). `total_lines == screen_lines`: scrollback history is
+/// configured separately via `TermConfig::scrolling_history`, and the grid
+/// grows it internally. (alacritty_terminal's own equivalent lives in its
+/// `term::test` module, which production code shouldn't import.)
+struct GridSize {
+    columns: usize,
+    screen_lines: usize,
+}
+
+impl GridSize {
+    fn new(columns: usize, screen_lines: usize) -> Self {
+        Self {
+            columns,
+            screen_lines,
+        }
+    }
+}
+
+impl Dimensions for GridSize {
+    fn total_lines(&self) -> usize {
+        self.screen_lines
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.screen_lines
+    }
+
+    fn columns(&self) -> usize {
+        self.columns
+    }
+}
+
 /// Display label for a tab. The renderer in [`crate::render::tabs`] reads
-/// this to draw the title (line 1) and subtitle (line 2). Stage 9's TOML
-/// config will call [`PtySession::set_label`] to override based on the
-/// `default_title_from` setting (`cwd` / `process` / `auto`).
+/// this to draw the title (line 1) and subtitle (line 2). Overridable as a
+/// whole via [`PtySession::set_label`] (custom subtitle sticks) or title-only
+/// via [`PtySession::set_title`] (the rename UI).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TabLabel {
     pub title: String,
@@ -125,7 +158,7 @@ pub struct PtySession {
     alive: bool,
     /// Display label for the tab bar. Updated automatically when the tracker
     /// state changes (default policy = shell binary + state); overridable via
-    /// [`Self::set_label`] from the config layer.
+    /// [`Self::set_label`].
     label: TabLabel,
     /// Set true when a stray BEL byte (0x07) is observed in PassThrough output.
     /// Drained into a [`SessionEvent::Bell`] at the end of each `poll`.
@@ -184,6 +217,10 @@ pub struct PtySession {
     /// confirm-on-close dialog can show "claude" / "codex" instead of the
     /// raw FG process comm. `None` when no match is active.
     detected_ai_tool: Option<String>,
+    /// True once [`Self::set_label`] installed a custom subtitle;
+    /// [`Self::refresh_default_subtitle`] then leaves the subtitle alone
+    /// instead of re-deriving it from tracker state on every transition.
+    custom_subtitle: bool,
 }
 
 impl PtySession {
@@ -223,7 +260,7 @@ impl PtySession {
                 }
             })?;
 
-        let term_size = TermSize::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize);
+        let term_size = GridSize::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize);
         let term_config = TermConfig {
             scrolling_history: history_lines.max(1),
             ..TermConfig::default()
@@ -260,6 +297,7 @@ impl PtySession {
             theme: None,
             theme_colors: None,
             detected_ai_tool: None,
+            custom_subtitle: false,
         })
     }
 
@@ -275,20 +313,14 @@ impl PtySession {
         &self.label
     }
 
-    /// Override the tab's label. Stage 9's TOML config uses this to apply
-    /// templates like `default_title_from = "cwd"`.
-    ///
-    /// NOTE (Q2): `refresh_default_subtitle` unconditionally overwrites
-    /// `subtitle` from tracker state on every state change. `set_label` is
-    /// currently unused in production, so that is safe today. WHEN a real
-    /// `set_label` call site is added (e.g. Stage 9 TOML config supplying a
-    /// custom subtitle), `refresh_default_subtitle` MUST gain a guard (e.g.
-    /// skip when a custom subtitle is set) or the config subtitle will be
-    /// stomped every tick.
-    // TODO(stage9-config): add a guard in refresh_default_subtitle before wiring
-    // this method from the config layer (see NOTE above).
+    /// Override the tab's label (title and subtitle). The subtitle installed
+    /// here is treated as custom: [`Self::refresh_default_subtitle`] stops
+    /// re-deriving it from tracker state, so it survives state transitions.
+    /// (Contrast [`Self::set_title`], which leaves the subtitle
+    /// activity-driven.)
     pub fn set_label(&mut self, label: TabLabel) {
         self.label = label;
+        self.custom_subtitle = true;
     }
 
     /// Replace only the title (line 1) of the label, preserving the current
@@ -299,15 +331,18 @@ impl PtySession {
     }
 
     /// Recompute the activity subtitle (line 2) from the current tracker
-    /// state. Called on every state transition. The subtitle is ALWAYS
-    /// activity-driven (interactive rename via [`Self::set_title`] overrides
-    /// only the title, never the subtitle — see its doc); [`Self::set_label`]
-    /// is not used in production. The previous `!title.contains(' ')` heuristic
+    /// state. Called on every state transition. The subtitle is activity-
+    /// driven unless [`Self::set_label`] installed a custom one (interactive
+    /// rename via [`Self::set_title`] overrides only the title, never the
+    /// subtitle — see its doc). The previous `!title.contains(' ')` heuristic
     /// wrongly froze the subtitle once any spaced OSC/PS1 title arrived (e.g.
     /// bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`), and re-deriving via
     /// `default_for` here also clobbered OSC-set titles — both fixed by only
     /// touching `subtitle`.
     pub fn refresh_default_subtitle(&mut self) {
+        if self.custom_subtitle {
+            return;
+        }
         self.label.subtitle = TabLabel::subtitle_for(self.tracker.state()).to_string();
     }
 
@@ -600,7 +635,7 @@ impl PtySession {
             })
             .map_err(std::io::Error::other)?;
         self.term
-            .resize(TermSize::new(cols as usize, rows as usize));
+            .resize(GridSize::new(cols as usize, rows as usize));
         Ok(())
     }
 
@@ -1158,6 +1193,17 @@ mod tests {
     }
 
     #[test]
+    fn grid_size_dimensions_match_viewport() {
+        use alacritty_terminal::grid::Dimensions;
+        let g = GridSize::new(120, 40);
+        assert_eq!(g.columns(), 120);
+        assert_eq!(g.screen_lines(), 40);
+        // Scrollback history is configured via `TermConfig::scrolling_history`,
+        // not baked into the size handed to `Term::new`/`Term::resize`.
+        assert_eq!(g.total_lines(), 40);
+    }
+
+    #[test]
     fn ptysession_default_label_is_bash_active() {
         // PtySession::spawn always starts with TabState::Active. The default
         // label tracks that.
@@ -1180,6 +1226,40 @@ mod tests {
         });
         assert_eq!(s.label().title, "custom");
         assert_eq!(s.label().subtitle, "claude · waiting");
+    }
+
+    #[test]
+    fn ptysession_custom_subtitle_survives_refresh() {
+        // A subtitle installed via `set_label` is custom: the activity-driven
+        // refresh on state transitions must not stomp it.
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        s.set_label(TabLabel {
+            title: "custom".into(),
+            subtitle: "my subtitle".into(),
+        });
+        s.refresh_default_subtitle();
+        assert_eq!(s.label().subtitle, "my subtitle");
+    }
+
+    #[test]
+    fn ptysession_set_title_keeps_subtitle_activity_driven() {
+        // Contrast: the rename UI's `set_title` touches only the title, so
+        // the subtitle stays activity-driven and refresh still updates it.
+        let mut s = PtySession::spawn(
+            &["/bin/sh", "-c", "sleep 5"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        s.set_title("renamed".into());
+        s.refresh_default_subtitle();
+        assert_eq!(s.label().title, "renamed");
+        assert_eq!(s.label().subtitle, "active");
     }
 
     #[test]
