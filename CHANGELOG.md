@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-06-12
+
+Input-path hardening and repo hygiene ahead of the public launch posts (PRs #15, #16). The `vibeflow` app moves to `0.1.5`; `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).
+
+### Security
+
+- **Tab titles are sanitised before rendering.** OSC 0/2 title payloads now strip control characters (C0/C1/DEL) and Unicode bidi formatting codepoints (overrides, embeddings, isolates, direction marks) before the existing 1024-char cap. Previously a guest program could plant RTL overrides or raw controls in the rendered tab title — visual spoofing of the tab's apparent name or state.
+- **Bracketed-paste sanitisation hardened.** The paste-end marker strip now also covers the 8-bit C1 form (`U+009B` + `201~`) and loops until stable, closing a splice where removing one marker could reassemble a fresh one from the surrounding bytes (`ESC[2` + marker + `01~`).
+- **OSC 52 decode allocation bounded.** The base64 payload is clipped to the largest 4-aligned prefix that decodes within the 100 KB raw cap *before* decoding (defence in depth; unreachable via the dispatcher's smaller 128 KB envelope).
+
+### Fixed
+
+- **`set_label` custom subtitles now stick.** A subtitle installed via `PtySession::set_label` survives the activity-driven subtitle refresh instead of being stomped on every state transition (closes the long-standing `TODO(stage9-config)`).
+
+### Added
+
+- **`SECURITY.md`** — private vulnerability disclosure policy — and **`CONTRIBUTING.md`** — build/test gates, PR conventions, and pointers for third-party OSC 1338 implementations.
+
+### Internal
+
+- Production `Term::new`/`Term::resize` sizing now uses a local `GridSize` (`grid::Dimensions` impl) instead of importing `alacritty_terminal::term::test::TermSize`.
+- Two guarded `Option::unwrap()`s in `window.rs` rewritten as `let-else`; `proc_watch` doc comments corrected (`tpgid` is field 8 in proc(5) numbering — parsing logic was already right); CHANGELOG footer release links completed.
+
 ## [0.1.4] - 2026-06-01
 
 Daily-driver fixes from real-world use (GitHub issues #6, #7, #8, #10). The `vibeflow` app moves to `0.1.4`; `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).
@@ -129,9 +152,10 @@ Initial public release of the vibeflow terminal — a from-scratch GPU-accelerat
 
 - Splits/panes; in-buffer search; macOS/Windows builds; image protocols (kitty/sixel); plugin layer; telemetry; Python binding; headless GPU snapshot tests; binary signing/notarization; `.deb`/Homebrew/AUR packaging.
 
-[Unreleased]: https://github.com/bjhengen/vibeflow/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/bjhengen/vibeflow/compare/v0.1.5...HEAD
 [0.1.0]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.0
 [0.1.1]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.1
 [0.1.2]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.2
 [0.1.3]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.3
 [0.1.4]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.4
+[0.1.5]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.5
