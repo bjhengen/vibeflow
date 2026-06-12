@@ -191,11 +191,24 @@ mod tests {
 /// simple ("PTY never sees the marker via paste").
 #[must_use]
 pub fn sanitise_paste(input: &str) -> String {
-    const MARKER: &str = "\x1b[201~";
-    if !input.contains(MARKER) {
+    // Both encodings of the paste-end marker: 7-bit `ESC [ 201~` and the
+    // single-codepoint C1 CSI form `U+009B 201~`.
+    const MARKER_7BIT: &str = "\x1b[201~";
+    const MARKER_C1: &str = "\u{9b}201~";
+    if !input.contains(MARKER_7BIT) && !input.contains(MARKER_C1) {
         return input.to_string();
     }
-    input.replace(MARKER, "")
+    // Loop until stable: removing a marker can splice the surrounding bytes
+    // into a fresh marker (e.g. `ESC[2` + marker + `01~`). Each pass shrinks
+    // the string, so this terminates.
+    let mut out = input.to_string();
+    loop {
+        let before = out.len();
+        out = out.replace(MARKER_7BIT, "").replace(MARKER_C1, "");
+        if out.len() == before {
+            return out;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -227,5 +240,29 @@ mod sanitise_paste_tests {
         // out of scope for this defence (deferred per spec §2.4).
         let s = "\x1b[200~start\x1b[?1004hmid";
         assert_eq!(sanitise_paste(s), s);
+    }
+
+    #[test]
+    fn removes_c1_paste_end_marker() {
+        // U+009B is the single-codepoint C1 CSI; followed by `201~` it is the
+        // 8-bit form of the paste-end marker.
+        let injected = "a\u{9b}201~b";
+        assert_eq!(sanitise_paste(injected), "ab");
+    }
+
+    #[test]
+    fn removes_marker_spliced_together_by_removal() {
+        // Removing an inner marker must not splice the surrounding bytes into
+        // a fresh marker: `ESC[2` + marker + `01~` reassembles to a marker
+        // after one removal pass.
+        let injected = "a\x1b[2\x1b[201~01~b";
+        assert_eq!(sanitise_paste(injected), "ab");
+    }
+
+    #[test]
+    fn removes_c1_marker_spliced_together_by_7bit_removal() {
+        // Cross-form splice: removing the 7-bit marker assembles the C1 form.
+        let injected = "a\u{9b}2\x1b[201~01~b";
+        assert_eq!(sanitise_paste(injected), "ab");
     }
 }
