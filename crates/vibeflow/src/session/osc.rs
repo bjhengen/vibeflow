@@ -144,6 +144,21 @@ fn parse_52_body(body: &str) -> Osc52ParseOutcome {
     }
 
     use base64::Engine;
+    // Bound the decode allocation BEFORE decoding: 4 base64 chars decode to
+    // 3 bytes, so cap the input at the largest 4-aligned prefix that decodes
+    // to at most MAX_OSC52_RAW_BYTES. (Unreachable via the dispatcher — the
+    // MAX_OSC_LEN envelope is smaller — but keeps this function safe to call
+    // with arbitrary payloads.) `get`, not slicing: a cap landing inside a
+    // multi-byte char means non-ASCII input, which is invalid base64 anyway.
+    const MAX_B64_CHARS: usize = MAX_OSC52_RAW_BYTES / 3 * 4;
+    let (payload, clipped) = if payload.len() > MAX_B64_CHARS {
+        match payload.get(..MAX_B64_CHARS) {
+            Some(prefix) => (prefix, true),
+            None => return Osc52ParseOutcome::Malformed,
+        }
+    } else {
+        (payload, false)
+    };
     let decoded = match base64::engine::general_purpose::STANDARD.decode(payload) {
         Ok(d) => d,
         Err(_) => return Osc52ParseOutcome::Malformed,
@@ -152,7 +167,7 @@ fn parse_52_body(body: &str) -> Osc52ParseOutcome {
     let (text_bytes, truncated) = if decoded.len() > MAX_OSC52_RAW_BYTES {
         (&decoded[..MAX_OSC52_RAW_BYTES], true)
     } else {
-        (&decoded[..], false)
+        (&decoded[..], clipped)
     };
 
     let text = String::from_utf8_lossy(text_bytes).into_owned();
@@ -348,6 +363,19 @@ enum OscOutcome {
     Forward,
 }
 
+/// True for characters that must never land in a tab title: C0/C1 controls
+/// and DEL (`char::is_control`), plus Unicode bidi formatting codepoints
+/// (overrides, embeddings, isolates, and direction marks) that can visually
+/// reorder adjacent text — letting a guest program spoof the tab's apparent
+/// name or state in the tab bar.
+fn title_char_disallowed(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{61C}'
+        )
+}
+
 fn handle_osc(body: &[u8]) -> OscOutcome {
     let Some(body_str) = std::str::from_utf8(body).ok() else {
         // Non-UTF-8 body. We don't own this OSC; let the terminal try.
@@ -359,12 +387,15 @@ fn handle_osc(body: &[u8]) -> OscOutcome {
             // OSC 0 sets both window + icon title; OSC 2 sets only window
             // title. We don't distinguish icon from title — both update
             // `TabLabel.title` via DispatchEvent::SetTitle. xterm caps title
-            // length at ~1024 chars; we follow that convention.
-            let title: String = if params.chars().count() > 1024 {
-                params.chars().take(1024).collect()
-            } else {
-                params.to_string()
-            };
+            // length at ~1024 chars; we follow that convention. Control
+            // characters and bidi formatting codepoints are stripped first —
+            // the title is attacker-controlled (anything `cat`-ed or ssh-ed
+            // into the tab) and rendered verbatim in the tab bar.
+            let title: String = params
+                .chars()
+                .filter(|c| !title_char_disallowed(*c))
+                .take(1024)
+                .collect();
             OscOutcome::Event(DispatchEvent::SetTitle(title))
         }
         "1" => OscOutcome::Drop, // icon name only — silently ignore
@@ -718,6 +749,31 @@ mod tests {
     }
 
     #[test]
+    fn osc_0_title_strips_control_characters() {
+        let mut d = OscDispatcher::new();
+        // C0 controls, DEL, and a C1 control (U+009B, UTF-8 `C2 9B`) must
+        // never reach the rendered tab title.
+        let events = d.feed(b"\x1b]0;a\x01b\x08c\x7fd\xc2\x9be\x07");
+        match &events[0] {
+            DispatchEvent::SetTitle(s) => assert_eq!(s, "abcde"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn osc_0_title_strips_bidi_override_characters() {
+        let mut d = OscDispatcher::new();
+        // RTL override / isolate / mark codepoints can visually reorder
+        // neighbouring text (tab-label spoofing) and must be stripped.
+        let input = "\x1b]0;gnikrow\u{202e}live\u{2066}x\u{2069}\u{200f}\u{61c}\x07";
+        let events = d.feed(input.as_bytes());
+        match &events[0] {
+            DispatchEvent::SetTitle(s) => assert_eq!(s, "gnikrowlivex"),
+            other => panic!("expected SetTitle, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn osc_1_is_silently_ignored() {
         let mut d = OscDispatcher::new();
         let events = d.feed(b"\x1b]1;icon\x07");
@@ -882,7 +938,11 @@ mod tests {
             Osc52ParseOutcome::Write {
                 text, truncated, ..
             } => {
-                assert_eq!(text.len(), 100 * 1024);
+                // Contract: clipped to (close under) the cap, flag set. The
+                // exact boundary is an implementation detail of the 4-aligned
+                // pre-decode clip.
+                assert!(text.len() <= 100 * 1024, "len {} over cap", text.len());
+                assert!(text.len() > 99 * 1024, "len {} clipped too far", text.len());
                 assert!(truncated);
             }
             _ => panic!("expected truncated Write, got {:?}", outcome),
