@@ -74,7 +74,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/bjhengen/vibeflow"
 homepage = "https://github.com/bjhengen/vibeflow"
-authors = ["Brian Hengen <brian@friendly-robots.com>"]
+authors = ["Brian Hengen <bhengen@gmail.com>"]
 rust-version = "1.75"
 
 [workspace.lints.rust]
@@ -1361,7 +1361,7 @@ Create `bindings/npm/package.json`:
   "version": "0.1.0",
   "description": "OSC 1338 protocol — open standard for AI-tool state signalling in terminals (TypeScript binding)",
   "license": "MIT OR Apache-2.0",
-  "author": "Brian Hengen <brian@friendly-robots.com>",
+  "author": "Brian Hengen <bhengen@gmail.com>",
   "homepage": "https://github.com/bjhengen/vibeflow",
   "repository": {
     "type": "git",

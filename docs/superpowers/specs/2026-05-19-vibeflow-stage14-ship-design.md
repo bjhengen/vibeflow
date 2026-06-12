@@ -41,11 +41,11 @@ is release engineering, docs, and the logo.
 7. **GitHub repo metadata** — description, topics, homepage (§6).
 8. **`v0.1.0` annotated tag** — semver, distinct from the `stageNN-…-complete`
    internal-milestone pattern (§5).
-9. **Personal-identity attribution** — published metadata must not carry the
-   `friendly-robots.com` (LLC) domain (§4). Project ships as a personal
-   open-source work under "Brian Hengen", no LLC affiliation, no warranty
+9. **Personal-identity attribution** — published metadata must not carry a
+   business-domain email (§4). Project ships as a personal
+   open-source work under "Brian Hengen", no business affiliation, no warranty
    (existing dual MIT/Apache disclaimers). Deliberate: the goal is a useful
-   free tool + personal AI credentials, not LLC revenue.
+   free tool + personal AI credentials.
 
 **Non-goals (v0.1)**
 
@@ -202,7 +202,7 @@ README must not claim it.
 **Personal-identity attribution correction (no LLC in public metadata):**
 
 - `Cargo.toml` workspace `authors` and `bindings/npm/package.json` `author`:
-  `Brian Hengen <brian@friendly-robots.com>` → `Brian Hengen <bhengen@gmail.com>`
+  business-domain email → `Brian Hengen <bhengen@gmail.com>`
   (own name, personal email, matching the git author identity
   `bjhengen <bhengen@gmail.com>` and the npm publish account). The `vibeflow`
   and `vibeflow-protocol` crates inherit via `authors.workspace = true` — one
