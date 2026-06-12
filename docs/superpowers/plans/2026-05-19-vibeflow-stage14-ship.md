@@ -410,7 +410,7 @@ Edit `Cargo.toml` line 12 (workspace `[workspace.package]`):
 authors = ["Brian Hengen <bhengen@gmail.com>"]
 ```
 
-(Previous value: `"Brian Hengen <brian@friendly-robots.com>"` — the only LLC-domain leakage in the workspace per the spec amendment.)
+(Previous value used a business-domain email — the only such leakage in the workspace per the spec amendment.)
 
 - [ ] **Step 4.2: Update `crates/vibeflow/Cargo.toml`**
 
@@ -808,7 +808,7 @@ Edit `bindings/npm/package.json` — change exactly two lines:
 ```json
 "author": "Brian Hengen <bhengen@gmail.com>",
 ```
-(was `"author": "Brian Hengen <brian@friendly-robots.com>"`.)
+(was the business-domain author email.)
 
 Leave **everything else unchanged** — version, files, scripts, deps, keywords, etc.
 
