@@ -121,6 +121,11 @@ pub struct Renderer {
     /// Stage 9: configurable indicator-stripe palette. Order: [active_done, working, waiting, inactive_idle].
     /// `TabState::Active` always renders transparent (hardcoded).
     indicator_colors: [[f32; 4]; 4],
+    /// #19: when `true` (default), a `Waiting` indicator pulses; when `false`
+    /// it renders steady (no per-frame alpha change → no flicker-inducing
+    /// full-surface repaint under VNC). Set by `apply_config` from `[ui]
+    /// indicator_pulse`.
+    indicator_pulse: bool,
     /// Stage 10: context-menu color palette. Written by `set_menu_colors` from hot-reload.
     /// Read by `build_rects` (Task 13). Defaults to all-zeros until `apply_config` fires.
     menu_colors: crate::render::context_menu::MenuColors,
@@ -242,6 +247,8 @@ impl Renderer {
                 defaults.colors.indicator_waiting,
                 defaults.colors.indicator_inactive,
             ],
+            // Matches Ui::default(); `apply_config` overwrites from `[ui]`.
+            indicator_pulse: true,
             menu_colors: crate::render::context_menu::MenuColors {
                 bg: defaults.colors.menu_bg,
                 border: defaults.colors.menu_border,
@@ -344,6 +351,7 @@ impl Renderer {
             (cell_w, cell_h),
             &self.cursor,
             now,
+            self.indicator_pulse,
         );
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {
@@ -863,6 +871,11 @@ impl Renderer {
     /// Update the indicator-stripe color palette (live).
     pub fn set_indicator_colors(&mut self, c: [[f32; 4]; 4]) {
         self.indicator_colors = c;
+    }
+
+    /// #19: enable/disable the `Waiting` indicator pulse animation (live).
+    pub fn set_indicator_pulse(&mut self, on: bool) {
+        self.indicator_pulse = on;
     }
 
     /// Update the cursor blink period in milliseconds (live). 0 disables blinking.

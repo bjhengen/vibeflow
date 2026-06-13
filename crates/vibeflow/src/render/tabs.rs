@@ -643,6 +643,7 @@ impl TabBarRenderer {
         cell_metrics: (u32, u32),
         cursor_blink: &crate::render::cursor::CursorBlink,
         now: Instant,
+        pulse_enabled: bool,
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
@@ -671,7 +672,12 @@ impl TabBarRenderer {
             };
             let state = session.state();
             let mut color = indicator_color(state, palette);
-            if state == TabState::Waiting {
+            // #19: pulse only when enabled; otherwise leave the indicator at
+            // its palette alpha (steady amber). A continuously-pulsing
+            // indicator changes content every frame, forcing a full-surface
+            // present that a software X server (VNC/remote) re-encodes as
+            // full-screen damage — perceived as flicker.
+            if state == TabState::Waiting && pulse_enabled {
                 color[3] = pulse; // sine-modulated alpha
             }
             // Skip if the color is fully transparent (active state).

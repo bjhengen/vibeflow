@@ -147,6 +147,10 @@ pub struct UiSection {
     /// (foreground process beyond shell, OR AI tracker in Working/Waiting).
     /// Single idle-shell tabs always close silently.
     pub confirm_on_close: Option<bool>,
+    /// When `true` (default), the `Waiting` amber indicator pulses. Set
+    /// `false` for a steady indicator (no per-frame repaint; avoids the
+    /// full-screen flicker a continuous pulse causes under VNC/remote X — #19).
+    pub indicator_pulse: Option<bool>,
 }
 
 #[cfg(test)]
