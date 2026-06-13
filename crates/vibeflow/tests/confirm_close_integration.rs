@@ -76,6 +76,7 @@ fn confirm_on_close_false_bypasses_dialog_for_any_tab_count() {
     });
     let ui = Ui {
         confirm_on_close: false,
+        ..Ui::default()
     };
     assert!(!app.close_needs_confirmation(&ui));
 }

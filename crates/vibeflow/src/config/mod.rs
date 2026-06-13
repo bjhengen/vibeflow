@@ -83,12 +83,20 @@ pub struct Bell {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ui {
     pub confirm_on_close: bool,
+    /// When `true` (default), a `Waiting` tab's amber indicator pulses (a
+    /// 1.4 s sine animation). Each pulse frame re-renders → forces a
+    /// full-surface present; under a software X server (VNC/remote) that is
+    /// re-encoded as full-screen damage and reads as flicker (#19). Set
+    /// `false` for a steady (non-animating) amber indicator with no such
+    /// repaint cost.
+    pub indicator_pulse: bool,
 }
 
 impl Default for Ui {
     fn default() -> Self {
         Self {
             confirm_on_close: true,
+            indicator_pulse: true,
         }
     }
 }
@@ -671,6 +679,9 @@ fn apply_bell(schema: schema::BellSection, resolved: &mut Bell, errors: &mut Vec
 fn apply_ui(schema: schema::UiSection, resolved: &mut Ui) {
     if let Some(v) = schema.confirm_on_close {
         resolved.confirm_on_close = v;
+    }
+    if let Some(v) = schema.indicator_pulse {
+        resolved.indicator_pulse = v;
     }
 }
 
@@ -1333,9 +1344,18 @@ snap_on_esc = false
     }
 
     #[test]
+    fn ui_default_is_indicator_pulse_true() {
+        // #19: the pulse animation is on by default (native displays); users on
+        // VNC/remote X can disable it via `[ui] indicator_pulse = false`.
+        let cfg = Ui::default();
+        assert!(cfg.indicator_pulse);
+    }
+
+    #[test]
     fn apply_ui_overrides_default_when_false() {
         let schema = crate::config::schema::UiSection {
             confirm_on_close: Some(false),
+            indicator_pulse: None,
         };
         let mut resolved = Ui::default();
         apply_ui(schema, &mut resolved);
@@ -1343,14 +1363,34 @@ snap_on_esc = false
     }
 
     #[test]
+    fn apply_ui_indicator_pulse_override_false() {
+        let schema = crate::config::schema::UiSection {
+            confirm_on_close: None,
+            indicator_pulse: Some(false),
+        };
+        let mut resolved = Ui::default();
+        apply_ui(schema, &mut resolved);
+        assert!(!resolved.indicator_pulse);
+        assert!(
+            resolved.confirm_on_close,
+            "an unrelated None must leave its default unchanged"
+        );
+    }
+
+    #[test]
     fn apply_ui_no_op_when_none() {
         let schema = crate::config::schema::UiSection {
             confirm_on_close: None,
+            indicator_pulse: None,
         };
         let mut resolved = Ui::default();
         apply_ui(schema, &mut resolved);
         assert!(
             resolved.confirm_on_close,
+            "None should leave default unchanged"
+        );
+        assert!(
+            resolved.indicator_pulse,
             "None should leave default unchanged"
         );
     }
