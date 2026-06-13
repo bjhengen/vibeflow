@@ -115,6 +115,15 @@ vibeflow --import-colors path/to/scheme.itermcolors [--overwrite]
 
 Themes land in `~/.config/vibeflow/themes/` and can be selected via the tab context menu or the `[colors] preset` config key.
 
+The `waiting`-state indicator pulses by default. Over VNC (or another remote/software X server) that continuous animation can cause full-screen flicker — each pulse frame re-presents the whole surface, which the remote re-encodes as a full-screen update. Render the indicator steady instead with:
+
+```toml
+[ui]
+indicator_pulse = false
+```
+
+Local GPU displays are unaffected and can keep the default.
+
 Keybindings (default; configurable):
 
 | Action | Shortcut |

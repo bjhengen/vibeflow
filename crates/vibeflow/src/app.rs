@@ -922,6 +922,7 @@ mod tests {
         });
         let ui = Ui {
             confirm_on_close: false,
+            ..Ui::default()
         };
         assert!(
             !app.close_needs_confirmation(&ui),
@@ -998,6 +999,7 @@ mod tests {
         });
         let ui = Ui {
             confirm_on_close: false,
+            ..Ui::default()
         };
         assert!(!app.tab_close_needs_confirmation(0, &ui));
     }
@@ -1054,6 +1056,7 @@ mod tests {
         let app = make_app_with_n_idle_tabs(5);
         let ui = Ui {
             confirm_on_close: false,
+            ..Ui::default()
         };
         assert!(!app.close_others_needs_confirmation(0, &ui));
     }
