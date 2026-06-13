@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- **`[ui] indicator_pulse` config key** (default `true`) to fix screen flicker under VNC / remote X (#19). A `Waiting` tab's amber indicator pulses via a continuous 1.4 s sine animation; each pulse frame re-renders, and with no partial/damaged present in wgpu 0.20 that forces a full-surface present every frame. On a software X server (VNC, remote X) each full present is re-encoded as full-screen damage, perceived as a lighter-grey screen flicker that worsens with the number of concurrently-`Waiting` tabs. Setting `indicator_pulse = false` renders the indicator steady (no per-frame change) and drops the Waiting-tab paint cadence back to the idle rate, eliminating the flicker. Local GPU displays are unaffected and keep the default. Hot-reloads via the existing config watcher.
+
 ## [0.1.5] - 2026-06-12
 
 Input-path hardening and repo hygiene ahead of the public launch posts (PRs #15, #16). The `vibeflow` app moves to `0.1.5`; `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).

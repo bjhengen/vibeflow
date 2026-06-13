@@ -272,6 +272,12 @@ pub struct WindowApp {
     /// resolved `Config`; it absorbs config values into primitive fields
     /// at apply time (same pattern as `bell_mode`, `snap_on_esc`, etc.).
     confirm_on_close: bool,
+    /// #19: mirror of `Config.ui.indicator_pulse`. When `false`, a `Waiting`
+    /// tab does NOT tighten `about_to_wait`'s paint cadence to the 100 ms pulse
+    /// rate (and the indicator renders steady), so a Waiting tab stops driving
+    /// full-surface presents — which a software X server (VNC) re-encodes as
+    /// full-screen flicker. Default `true` (matches `Ui::default()`).
+    indicator_pulse: bool,
     /// v0.1.3: set by confirm-close intercepts when the user picks "Close
     /// anyway" via keyboard or mouse. Drained at the top of `window_event`
     /// — that's the only call site with `ActiveEventLoop` in scope from
@@ -484,6 +490,7 @@ impl WindowApp {
         }
         let ui = crate::config::Ui {
             confirm_on_close: self.confirm_on_close,
+            ..crate::config::Ui::default()
         };
         if !self.app.tab_close_needs_confirmation(idx, &ui) {
             return false;
@@ -512,6 +519,7 @@ impl WindowApp {
         }
         let ui = crate::config::Ui {
             confirm_on_close: self.confirm_on_close,
+            ..crate::config::Ui::default()
         };
         if !self.app.close_others_needs_confirmation(keep_idx, &ui) {
             return false;
@@ -784,6 +792,7 @@ impl WindowApp {
             about_open: false,
             confirm_close: None,
             confirm_on_close: true, // matches Ui::default()
+            indicator_pulse: true,  // matches Ui::default()
             pending_exit: false,
             // Far-past epoch ensures the first about_to_wait paint fires promptly.
             last_redraw_request: Instant::now() - Duration::from_secs(3600),
@@ -1092,6 +1101,7 @@ impl WindowApp {
                 shortcut: config.colors.menu_shortcut,
                 focus_bg: config.colors.menu_focus_bg,
             });
+            r.set_indicator_pulse(config.ui.indicator_pulse);
         }
         // Rebuild the shortcut table from the bindings.
         self.shortcut_table = build_shortcut_table(&config.shortcuts);
@@ -1152,6 +1162,8 @@ impl WindowApp {
 
         // v0.1.3 [ui] section absorption.
         self.confirm_on_close = config.ui.confirm_on_close;
+        // #19: gate the Waiting-tab pulse cadence (about_to_wait).
+        self.indicator_pulse = config.ui.indicator_pulse;
 
         // Stage 13: theme preset. Reload the registry FIRST (so freshly
         // imported themes resolve), set the app default for new/restarted
@@ -1481,6 +1493,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // the bool — cheaper than threading a borrow through everything.
                 let ui = crate::config::Ui {
                     confirm_on_close: self.confirm_on_close,
+                    ..crate::config::Ui::default()
                 };
                 if !self.app.close_needs_confirmation(&ui) {
                     tracing::info!("close requested; no confirmation needed; exiting");
@@ -2260,7 +2273,11 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         //   about_to_wait — felt as ~250 ms typing lag on a quiet X11
         //   display (e.g. VNC without other input traffic).
         // - Otherwise → same as the paint deadline (no wasted wakes).
-        let pulse_interval = if any_waiting {
+        // #19: only tighten to the 100 ms (10 FPS) pulse cadence when the
+        // indicator pulse is enabled. With it off, a Waiting tab paints at the
+        // idle 500 ms cadence and renders steady — so it stops forcing the
+        // per-frame full-surface presents that flicker under VNC/remote X.
+        let pulse_interval = if any_waiting && self.indicator_pulse {
             Duration::from_millis(100)
         } else {
             Duration::from_millis(500)
