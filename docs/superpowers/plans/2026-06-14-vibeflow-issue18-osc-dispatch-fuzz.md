@@ -22,6 +22,7 @@
 - Create: `crates/vibeflow/fuzz/.gitignore`
 - Create: `crates/vibeflow/fuzz/Cargo.toml`
 - Create: `crates/vibeflow/fuzz/fuzz_targets/osc_dispatch.rs`
+- Modify: `Cargo.toml` (repo root — add the fuzz crate to `workspace.exclude`)
 
 This task is TDD red→green: write the target with a *naive* equality assert (no coalescing), run the fuzzer and watch it FAIL almost immediately on a benign `PassThrough`-chunking difference (proving the harness actually detects whole-vs-split differences), then add `coalesce_passthrough` and watch a full 60s run pass.
 
@@ -53,7 +54,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-arbitrary = { version = "1", features = ["derive"] }
+arbitrary = "1"
 
 [dependencies.vibeflow]
 path = ".."
@@ -67,6 +68,17 @@ bench = false
 ```
 
 (The empty `[workspace]` detaches this crate from the root workspace — exactly like `crates/vibeflow-protocol/fuzz/Cargo.toml` — so `cargo build/test --workspace` at the repo root never includes it.)
+
+- [ ] **Step 2b: Exclude the fuzz crate from the root workspace**
+
+The root `Cargo.toml` uses an explicit `members` list and already excludes the protocol fuzz crate. Mirror that for the new one (hygiene + defends against a future glob). In `/home/bhengen/dev/vibeflow/Cargo.toml`, change:
+```toml
+exclude = ["crates/vibeflow-protocol/fuzz"]
+```
+to:
+```toml
+exclude = ["crates/vibeflow-protocol/fuzz", "crates/vibeflow/fuzz"]
+```
 
 - [ ] **Step 3: Create the target with a NAIVE assert (the red version)**
 
@@ -178,12 +190,12 @@ Run: `cd /home/bhengen/dev/vibeflow && cargo build --workspace 2>&1 | tail -3`
 Expected: builds the normal workspace WITHOUT mentioning `vibeflow-fuzz` (the fuzz crate's own `[workspace]` excludes it).
 
 Run: `git -C /home/bhengen/dev/vibeflow status --short`
-Expected: shows ONLY `crates/vibeflow/fuzz/.gitignore`, `crates/vibeflow/fuzz/Cargo.toml`, `crates/vibeflow/fuzz/fuzz_targets/osc_dispatch.rs` as new (plus the pre-existing untracked `.claude/`, `drafts/`). The fuzz crate's `target/`, `corpus/`, `artifacts/`, `Cargo.lock` must NOT appear (they're gitignored). If `Cargo.lock` or `target/` show up, the `.gitignore` is wrong — fix before committing.
+Expected: the three new `crates/vibeflow/fuzz/` files (`.gitignore`, `Cargo.toml`, `fuzz_targets/osc_dispatch.rs`) plus the modified root ` M Cargo.toml` (the exclude edit), plus the pre-existing untracked `.claude/`, `drafts/`. The fuzz crate's `target/`, `corpus/`, `artifacts/`, `Cargo.lock` must NOT appear (they're gitignored). If `Cargo.lock` or `target/` show up, the `.gitignore` is wrong — fix before committing.
 
 Commit:
 ```bash
 cd /home/bhengen/dev/vibeflow
-git add crates/vibeflow/fuzz/.gitignore crates/vibeflow/fuzz/Cargo.toml crates/vibeflow/fuzz/fuzz_targets/osc_dispatch.rs
+git add Cargo.toml crates/vibeflow/fuzz/.gitignore crates/vibeflow/fuzz/Cargo.toml crates/vibeflow/fuzz/fuzz_targets/osc_dispatch.rs
 git commit -m "$(cat <<'MSG'
 test(#18): add osc_dispatch fuzz target (split-vs-whole differential)
 
@@ -267,4 +279,4 @@ git commit -m "ci(#18): run osc_dispatch fuzzer 60s in CI; changelog"
 - **Spec coverage:** §1 crate structure → Task 1 Steps 1–2 (+ rejected-alternatives are design rationale, no task). §2 the target (arbitrary `Vec<Vec<u8>>`, whole vs split, assert) → Task 1 Steps 3–7. §3 soundness / overflow verification + "don't normalise away real bugs" → Task 1 Step 7's stop-condition. §4 CI (cache workspace + run step) → Task 2 Steps 1–3. Testing/validation (build, 60s run, root workspace unaffected) → Task 1 Steps 4,7,8. CHANGELOG note → Task 2 Step 4. `.gitignore`/no-Cargo.lock convention → Task 1 Steps 1, 8. All covered.
 - **Placeholder scan:** none — every file body and command is concrete.
 - **Type/name consistency:** crate `vibeflow-fuzz`; target `osc_dispatch`; import `vibeflow::session::osc::{DispatchEvent, OscDispatcher}`; helper `coalesce_passthrough`; input `Vec<Vec<u8>>` named `segments`. Consistent across tasks. `DispatchEvent::PassThrough(Vec<u8>)` matches `osc.rs`. The naive red version (Step 3) imports only `OscDispatcher`; the green version (Step 6) adds `DispatchEvent` — intentional, called out.
-- **Note on `arbitrary` dep:** included as a direct dep for safety; libfuzzer-sys's `fuzz_target!` typed-input macro may resolve `arbitrary` via its own re-export, in which case the direct dep is unused-but-harmless in this detached fuzz crate (no `-D warnings` runs there). The senior plan review should confirm whether it's required or trimmable.
+- **Senior review (2026-06-14, Sonnet) applied — verdict READY:** differential confirmed SOUND against `feed()` source (overflow / malformed-OSC / unterminated / unknown-OSC-forward paths all collapse to `PassThrough` chunking, which `coalesce_passthrough` normalises — no false-positive path). Folded in two nits: trimmed `arbitrary` to `"1"` (the `derive` feature is unused; `Vec<Vec<u8>>` uses libfuzzer-sys's re-exported `Arbitrary` blanket impls — direct dep kept as the common typed-input pattern, version-unifies with libfuzzer-sys's own `arbitrary` 1.x so no duplicate), and added `crates/vibeflow/fuzz` to the root `workspace.exclude` (Step 2b). Confirmed: `vibeflow` has an explicit `[lib]`, the `pub` chain reaches `OscDispatcher`/`DispatchEvent`, `PassThrough(Vec<u8>)` is a tuple variant, the `coalesce` accumulator borrow compiles, root `members` is explicit (no glob), Swatinem multiline `workspaces:` is valid.
