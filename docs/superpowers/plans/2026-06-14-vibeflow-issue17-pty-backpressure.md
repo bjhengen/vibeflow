@@ -15,8 +15,8 @@
 ### Task 1: Bound the channel and make teardown deadlock-free
 
 **Files:**
-- Modify: `crates/vibeflow/src/session/session.rs` (capacity const; `spawn` channel + `rx` init; `rx` struct field; `poll` access; `Drop`)
-- Test: `crates/vibeflow/src/session/session.rs` (new test in the existing `#[cfg(test)] mod tests`)
+- Modify: `crates/vibeflow/src/session/session.rs` (capacity const; `spawn` channel + `rx` init; `rx` struct field → `Option`; `poll` access; `Drop`; two existing tests that read `rx` directly)
+- Test: `crates/vibeflow/src/session/session.rs` (new regression test in the existing `#[cfg(test)] mod tests`)
 
 This task is TDD red→green within one commit: steps 1–3 introduce the bounded channel and a regression test that **fails** (teardown deadlocks), steps 4–5 apply the teardown fix that makes it **pass**. Commit only once green (step 7) — no broken commit lands.
 
@@ -134,6 +134,14 @@ impl Drop for PtySession {
 }
 ```
 
+(e) Fix the two EXISTING tests that read the `rx` field directly — they call `recv_timeout` on the bare `Receiver` and won't compile once it's an `Option`. Both sites are the identical line `match s.rx.recv_timeout(Duration::from_millis(100)) {` (currently `crates/vibeflow/src/session/session.rs:1011` in `send_input_round_trips_bytes_through_pty`, and `:1133` in `session_reader_thread_pumps_bytes_to_channel`). Change **both** to:
+
+```rust
+            match s.rx.as_ref().unwrap().recv_timeout(Duration::from_millis(100)) {
+```
+
+(`unwrap()` is sound in these tests — `rx` is only `None` during `Drop`, never during the test body.)
+
 - [ ] **Step 5: Run the test and verify it PASSES**
 
 Run: `cargo test -p vibeflow --lib drop_does_not_hang_when_reader_blocked_on_full_channel -- --test-threads=1`
@@ -184,9 +192,8 @@ MSG
 
 - [ ] **Step 1: Re-validate steady-state throughput**
 
-Run the existing throughput probe (it prints MB/s; it is not an assertion):
-`cargo test -p vibeflow --lib perf_probe_parse_drain_throughput -- --test-threads=1 --nocapture`
-(If it is marked `#[ignore]`, add `--ignored`.)
+Run the existing throughput probe (it prints MB/s; it is not an assertion). It is `#[ignore = "perf probe"]`, so `--ignored` is required:
+`cargo test -p vibeflow --lib perf_probe_parse_drain_throughput -- --ignored --test-threads=1 --nocapture`
 Expected: the printed `=> ~N MB/s` is not materially below the ~9 MB/s baseline (capacity 512 ≫ the 16-chunk poll budget, so the reader never starves a drain). Record the number in the commit message. If it *is* materially lower, stop — the capacity/teardown interaction needs review before proceeding.
 
 - [ ] **Step 2: Add the CHANGELOG entry**
@@ -213,3 +220,4 @@ git commit -m "docs(#17): changelog entry for bounded PTY reader channel"
 - **Spec coverage:** §1 bounded channel → Task 1 steps 1, 7. §2 deadlock-free teardown (rx→Option, drop-before-join) → Task 1 step 4. §3 throughput → Task 2 step 1. Testing (deadlock regression + perf revalidation) → Task 1 steps 2–5, Task 2 step 1. CHANGELOG/app-only release note → Task 2. All covered.
 - **Placeholder scan:** none — every code/diff/command is concrete.
 - **Type consistency:** `READER_CHANNEL_CAPACITY` (const), `rx: Option<Receiver<Vec<u8>>>`, `self.rx.as_ref()` in `poll`, `self.rx = None` in `Drop`, `rx: Some(rx)` in `spawn`, test name `drop_does_not_hang_when_reader_blocked_on_full_channel` — consistent across tasks. `mpsc::sync_channel` returns `(SyncSender, Receiver)`; `tx.send` and `try_recv` call sites unchanged.
+- **Senior review (2026-06-14, Sonnet) applied:** caught one compile blocker — two existing tests (`send_input_round_trips_bytes_through_pty`, `session_reader_thread_pumps_bytes_to_channel`) read `s.rx.recv_timeout(...)` on the bare `Receiver`; now updated in Step 4(e) to `s.rx.as_ref().unwrap().recv_timeout(...)`. Verified there are no other `rx` field accesses. All other claims (borrow-checker safety of the per-iteration `as_ref()`, `sync_channel`/`SyncSender::send`/`JoinHandle::is_finished` API, line numbers, TDD red genuinely deadlocks, `perf_probe` is `#[ignore]`) confirmed against source.
