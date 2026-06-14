@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-06-14
+
+Daily-driver hardening cycle from real use ahead of the launch posts (PRs #20–#22): a VNC/remote-X screen-flicker fix with an opt-out, PTY-firehose backpressure, and a differential fuzzer for the streaming OSC dispatcher. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).
+
 ### Added
 
 - **`[ui] indicator_pulse` config key** (default `true`) to fix screen flicker under VNC / remote X (#19). A `Waiting` tab's amber indicator pulses via a continuous 1.4 s sine animation; each pulse frame re-renders, and with no partial/damaged present in wgpu 0.20 that forces a full-surface present every frame. On a software X server (VNC, remote X) each full present is re-encoded as full-screen damage, perceived as a lighter-grey screen flicker that worsens with the number of concurrently-`Waiting` tabs. Setting `indicator_pulse = false` renders the indicator steady (no per-frame change) and drops the Waiting-tab paint cadence back to the idle rate, eliminating the flicker. Local GPU displays are unaffected and keep the default. Hot-reloads via the existing config watcher.
@@ -164,7 +168,8 @@ Initial public release of the vibeflow terminal — a from-scratch GPU-accelerat
 
 - Splits/panes; in-buffer search; macOS/Windows builds; image protocols (kitty/sixel); plugin layer; telemetry; Python binding; headless GPU snapshot tests; binary signing/notarization; `.deb`/Homebrew/AUR packaging.
 
-[Unreleased]: https://github.com/bjhengen/vibeflow/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/bjhengen/vibeflow/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.6
 [0.1.0]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.0
 [0.1.1]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.1
 [0.1.2]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.2
