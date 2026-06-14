@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/vibeflow", "crates/vibeflow-protocol"]
-exclude = ["crates/vibeflow-protocol/fuzz"]
+exclude = ["crates/vibeflow-protocol/fuzz", "crates/vibeflow/fuzz"]
 
 [workspace.package]
 version = "0.1.3"

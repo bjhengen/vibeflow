@@ -1,0 +1,24 @@
+[workspace]
+
+[package]
+name = "vibeflow-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = "1"
+
+[dependencies.vibeflow]
+path = ".."
+
+[[bin]]
+name = "osc_dispatch"
+path = "fuzz_targets/osc_dispatch.rs"
+test = false
+doc = false
+bench = false

@@ -12,6 +12,10 @@ All notable changes to this project are documented in this file. The format foll
 
 - **PTY reader channel is now bounded (#17).** The reader thread → main-loop channel was an unbounded `mpsc::channel`; a sustained output firehose (`cat /dev/zero`, `yes`, a runaway agent dumping gigabytes) could buffer unbounded heap between polls (reader produces at hundreds of MB/s, parser drains at ~9 MB/s). It is now a `sync_channel(512)` (~2 MiB/tab): the reader blocks on a full queue, the PTY kernel buffer fills, and the child's writes block — backpressure, no bytes dropped. Teardown drops the receiver before joining the reader thread so closing a tab mid-firehose can't deadlock. Steady-state throughput is unchanged.
 
+### Internal
+
+- **Fuzz target for the streaming OSC dispatcher (#18).** New `crates/vibeflow/fuzz` crate with an `osc_dispatch` libfuzzer target: it feeds arbitrary input through `OscDispatcher::feed` as random segments and asserts the resulting event stream matches feeding the input whole (after coalescing `PassThrough` runs) — a differential check targeting split-frame reassembly — plus the no-panic property. Runs 60s in the CI fuzz smoke alongside the protocol `parse` fuzzer.
+
 ## [0.1.5] - 2026-06-12
 
 Input-path hardening and repo hygiene ahead of the public launch posts (PRs #15, #16). The `vibeflow` app moves to `0.1.5`; `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).

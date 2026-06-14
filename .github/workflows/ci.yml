@@ -58,7 +58,9 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
         with:
-          workspaces: "crates/vibeflow-protocol/fuzz"
+          workspaces: |
+            crates/vibeflow-protocol/fuzz
+            crates/vibeflow/fuzz
 
       - name: Install cargo-fuzz
         # NOT --locked: cargo-fuzz 0.13.x's bundled Cargo.lock pins
@@ -70,6 +72,10 @@ jobs:
       - name: Run parse fuzzer for 60s
         working-directory: crates/vibeflow-protocol
         run: cargo +nightly fuzz run parse -- -max_total_time=60
+
+      - name: Run osc_dispatch fuzzer for 60s
+        working-directory: crates/vibeflow
+        run: cargo +nightly fuzz run osc_dispatch -- -max_total_time=60
 
   npm:
     name: npm (vibeflow-protocol)
