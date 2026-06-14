@@ -31,6 +31,15 @@ const DEFAULT_COLS: u16 = 80;
 /// which the window layer schedules immediately (see `output_pending`).
 const MAX_POLL_BYTES: usize = 64 * 1024;
 
+/// #17: bounded reader→main-loop channel capacity, measured in chunks (each an
+/// up-to-4 KiB PTY read). The reader thread blocks on `send` once this many
+/// chunks are queued, applying backpressure (the PTY kernel buffer fills, the
+/// child's writes block) instead of buffering a firehose as unbounded heap.
+/// 512 × up-to-4 KiB ≈ up to 2 MiB/tab — 32× the `MAX_POLL_BYTES` drain budget
+/// in the full-read worst case; typical interactive output (short reads) buffers
+/// far less before backpressure fires, so steady-state throughput is unchanged.
+const READER_CHANNEL_CAPACITY: usize = 512;
+
 /// Viewport size handed to `Term::new` / `Term::resize` (both are generic
 /// over [`Dimensions`]). `total_lines == screen_lines`: scrollback history is
 /// configured separately via `TermConfig::scrolling_history`, and the grid
@@ -134,7 +143,10 @@ pub enum SessionEvent {
 /// One terminal tab's per-session machinery.
 pub struct PtySession {
     /// Drains here when the reader thread sends bytes from the PTY master.
-    rx: Receiver<Vec<u8>>,
+    /// `Option` so `Drop` can drop the receiver before joining the reader
+    /// thread — a reader blocked on a full `sync_channel` send only wakes when
+    /// the receiver goes away (#17).
+    rx: Option<Receiver<Vec<u8>>>,
     /// Used by [`Self::send_input`] to write keystrokes to the PTY master.
     writer: Box<dyn Write + Send>,
     /// The PTY master. Kept alive on the main thread; the reader thread holds a
@@ -240,7 +252,7 @@ impl PtySession {
             child,
             master,
         } = spawn_pty(argv)?;
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(READER_CHANNEL_CAPACITY);
         let mut reader = reader;
         let reader_thread = thread::Builder::new()
             .name("vibeflow-pty-reader".into())
@@ -270,7 +282,7 @@ impl PtySession {
         let label = TabLabel::default_for(argv[0], TabState::default());
 
         Ok(Self {
-            rx,
+            rx: Some(rx),
             writer,
             master,
             child,
@@ -364,7 +376,13 @@ impl PtySession {
                 self.output_pending = true;
                 break;
             }
-            match self.rx.try_recv() {
+            let recv = match self.rx.as_ref() {
+                Some(rx) => rx.try_recv(),
+                // Unreachable in live code (Drop and poll share the main thread,
+                // and Drop is the only thing that takes rx); defensive guard.
+                None => break,
+            };
+            match recv {
                 Ok(chunk) => {
                     consumed += chunk.len();
                     for ev in self.dispatcher.feed(&chunk) {
@@ -761,8 +779,9 @@ impl PtySession {
         let _ = self.child.kill();
         // Capture the current PTY size before we drop the old master.
         let size = self.master.get_size().ok();
-        // The reader thread sees its tx invalidated when the new spawn
-        // replaces self; we don't need to join it explicitly.
+        // `*self = new_session` (below) runs Drop on the old PtySession, which
+        // kills the old child, drops its receiver — unblocking any reader stuck
+        // in a full-channel send (#17) — and joins the old reader thread.
         let argv = std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string());
         let mut new_session = PtySession::spawn(
             &[argv.as_str()],
@@ -795,6 +814,11 @@ impl PtySession {
 impl Drop for PtySession {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        // #17: drop the receiver BEFORE join. A reader blocked on a full
+        // sync_channel send() only wakes when the receiver is gone (send →
+        // Err); kill() alone can't unblock it. Without this, closing a tab
+        // mid-firehose deadlocks here on join().
+        self.rx = None;
         if let Some(handle) = self.reader_thread.take() {
             let _ = handle.join();
         }
@@ -1008,7 +1032,12 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut buf = Vec::new();
         while Instant::now() < deadline && !buf.windows(5).any(|w| w == b"hello") {
-            match s.rx.recv_timeout(Duration::from_millis(100)) {
+            match s
+                .rx
+                .as_ref()
+                .unwrap()
+                .recv_timeout(Duration::from_millis(100))
+            {
                 Ok(chunk) => buf.extend_from_slice(&chunk),
                 Err(_) => continue,
             }
@@ -1130,7 +1159,12 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut buf = Vec::new();
         while Instant::now() < deadline && buf.len() < 5 {
-            match s.rx.recv_timeout(Duration::from_millis(100)) {
+            match s
+                .rx
+                .as_ref()
+                .unwrap()
+                .recv_timeout(Duration::from_millis(100))
+            {
                 Ok(chunk) => buf.extend_from_slice(&chunk),
                 Err(_) => continue,
             }
@@ -2087,5 +2121,31 @@ mod tests {
             "[#10 parse_drain] ~16.9MB consumed in {dur:?} over {polls} tight polls (no render) => ~{:.0} MB/s",
             16.9 / dur.as_secs_f64()
         );
+    }
+
+    #[test]
+    fn drop_does_not_hang_when_reader_blocked_on_full_channel() {
+        // #17: with the bounded channel the reader thread can be blocked in
+        // send() (queue full) rather than read(). Drop must drop the receiver
+        // before join() so the blocked send returns Err and the thread exits —
+        // otherwise closing a tab mid-firehose deadlocks on join().
+        let s = PtySession::spawn(
+            &["/bin/sh", "-c", "cat /dev/zero"],
+            TrackerConfig::default(),
+            10000,
+        )
+        .unwrap();
+        // Do NOT poll: let the reader fill the 512-chunk channel (up to ~2 MiB,
+        // fills in milliseconds from /dev/zero) and block on send().
+        std::thread::sleep(Duration::from_millis(300));
+        // Drop on a worker thread; the main thread asserts it completes promptly.
+        let dropper = std::thread::spawn(move || drop(s));
+        let finished = wait_until(Duration::from_secs(5), || dropper.is_finished());
+        assert!(
+            finished,
+            "PtySession::drop() hung — a reader blocked on a full channel was \
+             not unblocked at teardown (#17 regression)"
+        );
+        dropper.join().unwrap();
     }
 }
