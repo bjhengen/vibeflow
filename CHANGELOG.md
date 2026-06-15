@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+Pre-launch audit-hardening pass ahead of the public posts: a multi-dimension review (security, stability, performance, quality, packaging) of the whole codebase, with the confirmed findings fixed here. No known-vulnerable dependencies, all `unsafe` still forbidden, the terminal-injection surface re-verified clean. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 wire format is unchanged; the only protocol-crate change is documentation).
+
+### Security
+
+- **OSC 52 clipboard *write* is now gateable** via `[clipboard] allow_osc52_write` (default `true`). OSC 52 write was honored unconditionally, so any terminal output — including a remote SSH session — could silently overwrite the system clipboard. It was the one untrusted-output sink not already gated (OSC titles honor `respect_osc_title`; OSC 52 *read* is always dropped). The flag is checked at the untrusted-input boundary in `poll()`, so a disabled write never reaches the clipboard. Default preserves the `vim "+y` / tmux / remote-copy workflow. Documented in `SECURITY.md` and the README, alongside a note that non-bracketed-paste newline forwarding is intentional (industry-standard; bracketed paste defends it).
+
+### Fixed
+
+- **Edge-drag selection no longer crashes the app.** Dragging a selection into the window's right/bottom partial-cell strip (window size is almost never an exact multiple of the cell pitch) produced a grid `Point` one past the last valid column/line; alacritty's raw `Vec` grid index panics in release, and the Linux mouse-up PRIMARY auto-copy then indexed the grid — taking down the whole process and every tab. The pixel→grid conversion now clamps to the live grid bounds at its single boundary. Regression-tested.
+- **No more startup panic shortly after boot.** The redraw/activity sentinels were initialized with `Instant::now() - Duration::from_secs(3600)`, which panics on underflow; because `Instant` is boot-anchored on Linux, launching vibeflow within an hour of boot crashed before the window opened. Now a saturating subtraction that degrades to "just now" in that window (at most one missed pulse interval).
+
+### Internal
+
+- **Panic hook for crash diagnosis.** vibeflow runs the event loop, VTE processor, and render/selection code on one thread with no per-tab isolation, so a panic unwound the process silently. A `std::panic::set_hook` now records the panic message + location through `tracing` (chained to the default hook) so it lands in the rotated file log before exit.
+- **Render prefers the Fifo (vsync) present mode** instead of `present_modes[0]` (adapter-ordered, not guaranteed Fifo) — caps a mostly-static terminal at the refresh rate and avoids tearing; falls back to index 0 if Fifo is unavailable.
+- **`vibeflow-protocol`'s `Frame` fields are now documented** and the crate enables `#![warn(missing_docs)]`, so CI's `-D warnings` catches any future undocumented public item in the published library.
+- **The config-watcher debounce/Remove-cancel decision is unit-tested.** Extracted into a pure `decide()` function and covered for all three transitions (the Remove-cancels-pending-reload branch had a documented past bug and no test); removed an empty `#[ignore]` test that referenced a non-existent integration file.
+- **Shipped Claude Code integration ships the full five-hook set.** `integrations/claude-code-hooks.json` had only two hooks — exactly the configuration the README warns causes indicator flicker on multi-tool-call turns. Now matches the README's five-hook set; `integrations/README.md` updated accordingly.
+- **Dev-environment identifiers scrubbed** from tracked docs and source (absolute home path, internal hostname in PS1 examples / the finale checklist) ahead of the repo going public.
+
 ## [0.1.6] - 2026-06-14
 
 Daily-driver hardening cycle from real use ahead of the launch posts (PRs #20–#22): a VNC/remote-X screen-flicker fix with an opt-out, PTY-firehose backpressure, and a differential fuzzer for the streaming OSC dispatcher. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 protocol is unchanged this cycle).
