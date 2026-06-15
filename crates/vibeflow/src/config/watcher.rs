@@ -52,12 +52,14 @@ pub fn spawn(path: PathBuf, proxy: EventLoopProxy<AppUserEvent>) -> notify::Resu
                 match rx.recv_timeout(timeout) {
                     Ok(Ok(event)) => {
                         if event_concerns(&event, &path) {
-                            if matches!(event.kind, EventKind::Remove(_)) {
-                                // File removed — fire the error banner immediately
-                                // and CANCEL any pending debounced reload (which
-                                // would otherwise read defaults + empty errors
-                                // and clear the banner we just raised).
-                                deadline = None;
+                            // Pure decision (see `decide`): Remove cancels any
+                            // pending debounced reload (which would otherwise
+                            // read defaults + empty errors and clear the banner
+                            // we're about to raise); Create/Modify (re)arms the
+                            // debounce and lets the timeout branch fire it.
+                            let (action, new_deadline) = decide(&event.kind, Instant::now());
+                            deadline = new_deadline;
+                            if action == WatchAction::RaiseRemovedError {
                                 let err = ConfigError::IoError(format!(
                                     "{} removed at runtime",
                                     path.display()
@@ -65,10 +67,6 @@ pub fn spawn(path: PathBuf, proxy: EventLoopProxy<AppUserEvent>) -> notify::Resu
                                 if proxy.send_event(AppUserEvent::ConfigError(err)).is_err() {
                                     return; // event loop dropped → exit thread
                                 }
-                            } else {
-                                // Create / Modify — bump the debounce deadline
-                                // and let the timeout branch fire the reload.
-                                deadline = Some(Instant::now() + DEBOUNCE);
                             }
                         }
                     }
@@ -98,6 +96,29 @@ pub fn spawn(path: PathBuf, proxy: EventLoopProxy<AppUserEvent>) -> notify::Resu
             }
         })?;
     Ok(handle)
+}
+
+/// What the watcher loop should do for a concerning fs event.
+#[derive(Debug, PartialEq, Eq)]
+enum WatchAction {
+    /// File removed: raise the error banner now (and cancel any pending reload).
+    RaiseRemovedError,
+    /// Create/Modify: (re)arm the debounce; no reload fires yet.
+    ArmDebounce,
+}
+
+/// Decide what a *concerning* fs event means for the debounce state machine,
+/// and what the new debounce deadline should be. Pure and unit-testable — the
+/// I/O (`send_event`, `Config::load`) stays in `spawn`. Crucially, a `Remove`
+/// returns `None` for the deadline, cancelling any pending debounced reload so
+/// it can't clear a just-raised "file removed" banner (the documented bug this
+/// state machine exists to avoid).
+fn decide(kind: &EventKind, now: Instant) -> (WatchAction, Option<Instant>) {
+    if matches!(kind, EventKind::Remove(_)) {
+        (WatchAction::RaiseRemovedError, None)
+    } else {
+        (WatchAction::ArmDebounce, Some(now + DEBOUNCE))
+    }
 }
 
 /// Does this notify event concern our config file?
@@ -155,14 +176,33 @@ mod tests {
         assert!(!event_concerns(&ev, &target));
     }
 
-    // End-to-end test: write file → modify → assert reload event via a
-    // local mpsc (not winit's proxy, since we can't construct one in unit
-    // tests). #[ignore] because it touches the filesystem and depends on
-    // OS-level inotify timing.
+    // The debounce / Remove-cancel decision is the one watcher path with a
+    // documented past bug (a Remove must cancel a pending reload, or the
+    // post-debounce reload reads defaults + empty errors and clears the
+    // just-raised banner). It's extracted into the pure `decide` fn so the
+    // transitions can be tested without a real EventLoop or inotify timing.
+
     #[test]
-    #[ignore = "filesystem-timing-sensitive; depends on OS inotify backend"]
-    fn watcher_emits_reload_after_modify() {
-        // The full integration test (which uses a real EventLoop) lives at
-        // crates/vibeflow/tests/config_reload.rs — added in Task 14.
+    fn decide_remove_cancels_pending_reload() {
+        let now = Instant::now();
+        let (action, deadline) = decide(&EventKind::Remove(notify::event::RemoveKind::Any), now);
+        assert_eq!(action, WatchAction::RaiseRemovedError);
+        assert_eq!(deadline, None, "Remove must clear the debounce deadline");
+    }
+
+    #[test]
+    fn decide_modify_arms_debounce() {
+        let now = Instant::now();
+        let (action, deadline) = decide(&EventKind::Modify(notify::event::ModifyKind::Any), now);
+        assert_eq!(action, WatchAction::ArmDebounce);
+        assert_eq!(deadline, Some(now + DEBOUNCE));
+    }
+
+    #[test]
+    fn decide_create_arms_debounce() {
+        let now = Instant::now();
+        let (action, deadline) = decide(&EventKind::Create(notify::event::CreateKind::Any), now);
+        assert_eq!(action, WatchAction::ArmDebounce);
+        assert_eq!(deadline, Some(now + DEBOUNCE));
     }
 }
