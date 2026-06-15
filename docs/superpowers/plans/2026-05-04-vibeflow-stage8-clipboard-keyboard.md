@@ -16,8 +16,8 @@
 - Use `#[allow(clippy::too_many_arguments)]` for functions with > 7 parameters (precedent: `QuadInstance::new`, `build_cell_instances`).
 - `pub fn` items don't trigger `dead_code` warnings. Don't reintroduce `#[allow(dead_code)]`.
 - WGSL bugs surface only at runtime; smoke is the validation gate. Stage 8 doesn't change WGSL, so this is informational.
-- VNC display is available on slmbeast (port 5901). GUI smoke runs are runnable.
-- `cargo` invoked from outside `/home/bhengen/dev/vibeflow` may pick up another `Cargo.toml`. Always prefix `cd /home/bhengen/dev/vibeflow &&` or use absolute paths.
+- VNC display is available on host (port 5901). GUI smoke runs are runnable.
+- `cargo` invoked from outside `/path/to/vibeflow` may pick up another `Cargo.toml`. Always prefix `cd /path/to/vibeflow &&` or use absolute paths.
 
 ---
 
@@ -58,7 +58,7 @@ This task adds the `arboard` dep and creates empty module stubs so later tasks h
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git checkout main
 git pull --ff-only || true
 git checkout -b stage8-clipboard-keyboard
@@ -85,7 +85,7 @@ bytemuck = { version = "1.16", features = ["derive"] }
 - [ ] **Step 3: Create empty module stubs**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 touch crates/vibeflow/src/clipboard.rs
 touch crates/vibeflow/src/keymap.rs
 touch crates/vibeflow/src/render/selection.rs
@@ -142,7 +142,7 @@ Place alphabetically.
 - [ ] **Step 6: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -158,7 +158,7 @@ If you see warnings like `module ... is never used`, that's because the new modu
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/Cargo.toml \
         crates/vibeflow/Cargo.lock \
         crates/vibeflow/src/lib.rs \
@@ -424,7 +424,7 @@ mod tests {
 - [ ] **Step 2: Verify the tests pass and existing tests don't change**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib keymap 2>&1 | tail -10
 ```
 
@@ -450,7 +450,7 @@ If clippy complains about `module_name_repetitions` or similar pedantic lint, th
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/keymap.rs
 git commit -m "feat(keymap): Shortcut enum + match_shortcut dispatch table (TDD)"
 ```
@@ -651,7 +651,7 @@ mod tests {
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib mouse_encoder 2>&1 | tail -10
 ```
 
@@ -673,7 +673,7 @@ Both clean.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mouse_encoder.rs
 git commit -m "feat(render): mouse_encoder — SGR + X10 encoding for mouse-mode passthrough (TDD)"
 ```
@@ -758,7 +758,7 @@ mod tests {
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -767,19 +767,19 @@ cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 
 Expected: 160 default tests + 13 ignored (the new ignored clipboard test).
 
-LOCAL ONLY — verify the ignored test on slmbeast:
+LOCAL ONLY — verify the ignored test on host:
 
 ```bash
 cargo test -p vibeflow --lib clipboard -- --ignored 2>&1 | tail -10
 ```
 
-Expected on slmbeast (which has X11): 1 passed.
+Expected on host (which has X11): 1 passed.
 On a CI runner without DISPLAY: `Clipboard::new()` returns `Err` — `expect("clipboard available")` panics, the test is *expected* to fail in that env. That's why it's `#[ignore]`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/clipboard.rs
 git commit -m "feat(clipboard): arboard wrapper for system CLIPBOARD selector"
 ```
@@ -1309,7 +1309,7 @@ mod tests {
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib selection 2>&1 | tail -20
 ```
 
@@ -1328,7 +1328,7 @@ cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 
 Both clean.
 
-NOTE: If `Term::grid()` returns a `Grid<Cell>` that doesn't implement `Index<Point>` directly, you may need `&term.grid()[p.line][p.column]` instead of `&term.grid()[p]`. Check the alacritty_terminal API at `/home/bhengen/.cargo/registry/src/.../alacritty_terminal-0.24.2/src/grid/mod.rs` if this fails.
+NOTE: If `Term::grid()` returns a `Grid<Cell>` that doesn't implement `Index<Point>` directly, you may need `&term.grid()[p.line][p.column]` instead of `&term.grid()[p]`. Check the alacritty_terminal API at `~/.cargo/registry/src/.../alacritty_terminal-0.24.2/src/grid/mod.rs` if this fails.
 
 If `TermSize` isn't in scope, the import path is `alacritty_terminal::term::test::TermSize` (it's gated on `cfg(test)` in some versions; if so, copy the simple `TermSize` impl from session.rs which has a runtime helper).
 
@@ -1352,7 +1352,7 @@ fn make_term(cols: usize, lines: usize) -> Term<VoidListener> {
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/selection.rs
 git commit -m "feat(render): SelectionTracker state machine + multi-click + word/line snap (TDD)"
 ```
@@ -1532,7 +1532,7 @@ NOTE: This test spawns three real `sleep 30` processes via PTY. They get cleaned
 - [ ] **Step 6: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -1552,7 +1552,7 @@ before the `assert!(s.is_alive())`.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs \
         crates/vibeflow/src/session/tracker.rs \
         crates/vibeflow/src/app.rs
@@ -1706,7 +1706,7 @@ NOTE: `App::close_tab` is `pub fn close_tab(&mut self, idx: usize)` (no Result) 
 - [ ] **Step 5: Verify build green**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -1720,7 +1720,7 @@ Smoke run is for Task 9.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): keyboard shortcut dispatch + copy/paste/restart handlers"
 ```
@@ -1907,7 +1907,7 @@ The keystroke-clears-selection logic was added in Task 6 Step 3 already.
 - [ ] **Step 6: Verify build green**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -1923,7 +1923,7 @@ If clippy complains about `too_many_lines` in `window_event`, that's because the
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): mouse event routing — selection + mouse-mode passthrough"
 ```
@@ -2097,7 +2097,7 @@ If `TermSize::new` is gated and inaccessible from this module, mark the whole bl
 - [ ] **Step 5: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -2106,10 +2106,10 @@ cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 
 Expected: build green. Test count = ~176 default + 13-14 ignored.
 
-Smoke run on slmbeast:
+Smoke run on host:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow &
 ```
 
@@ -2123,7 +2123,7 @@ If selection rendering shows weird artifacts (extra cells, wrong color), check t
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs
 git commit -m "feat(render): selection rect rendering — overlay highlight in unified rect buffer"
 ```
@@ -2143,7 +2143,7 @@ After the Stage 7.5 section, append:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -2170,7 +2170,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 
 ### Clipboard
 
-- [ ] Drag-select "(base) bhengen", press `Ctrl+Shift+C`. Paste into another GUI app on slmbeast (e.g., Firefox URL bar) — should arrive as text.
+- [ ] Drag-select "(base) bhengen", press `Ctrl+Shift+C`. Paste into another GUI app on host (e.g., Firefox URL bar) — should arrive as text.
 - [ ] In Firefox, copy "hello world" with `Ctrl+C`. Switch back to vibeflow. Press `Ctrl+Shift+V` → "hello world" appears at the prompt.
 - [ ] Copy a multi-line `for` loop:
    ```bash
@@ -2220,7 +2220,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] **Step 2: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -2240,7 +2240,7 @@ If any test fails, STOP and report.
 - [ ] **Step 3: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -2266,12 +2266,12 @@ review's output as advisory unless flagged Critical or Important. If anything su
 
 - [ ] **Step 5: Manual smoke walkthrough**
 
-Walk the Stage 8 section of `docs/TESTING.md` (Step 1 above). Brian will exercise this on slmbeast via VNC.
+Walk the Stage 8 section of `docs/TESTING.md` (Step 1 above). Brian will exercise this on host via VNC.
 
 - [ ] **Step 6: Commit + tag**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 8 manual smoke checklist"
 git tag -a stage8-clipboard-keyboard-complete \

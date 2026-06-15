@@ -73,6 +73,9 @@ pub struct App {
     /// `PtySession` at spawn time so freshly-opened tabs honor the current
     /// config without WindowApp having to re-walk after each spawn.
     default_respect_osc_title: bool,
+    /// Mirror of `Config.clipboard.allow_osc52_write`. Applied to every new
+    /// `PtySession` at spawn time, same lifecycle as `default_respect_osc_title`.
+    default_allow_osc52_write: bool,
     /// Mirror of `Config.tabs.title_strip_prefix`. Same lifecycle as
     /// `default_respect_osc_title`.
     default_title_strip_prefix: String,
@@ -104,6 +107,7 @@ impl App {
             active: 0,
             tracker_config: default_tracker_config(),
             default_respect_osc_title: true,
+            default_allow_osc52_write: true,
             default_title_strip_prefix: String::new(),
             default_tools_list: Vec::new(),
             default_proc_check_interval: std::time::Duration::from_millis(250),
@@ -117,6 +121,12 @@ impl App {
     /// `WindowApp::apply_config` calls this whenever the TOML config reloads.
     pub fn set_default_respect_osc_title(&mut self, respect: bool) {
         self.default_respect_osc_title = respect;
+    }
+
+    /// Update the default OSC 52 clipboard-write policy applied to
+    /// subsequently-spawned tabs. `WindowApp::apply_config` calls this on reload.
+    pub fn set_default_allow_osc52_write(&mut self, allow: bool) {
+        self.default_allow_osc52_write = allow;
     }
 
     /// Update the default OSC-title prefix-strip applied to subsequently-spawned tabs.
@@ -170,6 +180,7 @@ impl App {
             self.default_history_lines as usize,
         )?;
         session.respect_osc_title = self.default_respect_osc_title;
+        session.allow_osc52_write = self.default_allow_osc52_write;
         session.title_strip_prefix = self.default_title_strip_prefix.clone();
         session.tools_list = self.default_tools_list.clone();
         session.proc_check_interval = self.default_proc_check_interval;

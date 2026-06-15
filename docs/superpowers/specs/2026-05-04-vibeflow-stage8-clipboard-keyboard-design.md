@@ -464,7 +464,7 @@ Workspace `cargo fmt`, `clippy --workspace --all-targets -- -D warnings`,
    X11 backend uses an event loop that competes with winit's. If sync drops,
    `clipboard.copy()` returns `Ok(())` but the Mac side never sees the text.
    *Mitigation:* the smoke checklist explicitly tests "copy in vibeflow on
-   slmbeast → paste into a Mac app". If it's flaky, Stage 9 can add a small
+   host → paste into a Mac app". If it's flaky, Stage 9 can add a small
    X11 selection-handler thread.
 2. **WM Super-key grabs** — `Super+T` may be grabbed by GNOME / KDE / i3 / sway
    and never reach vibeflow. *Mitigation:* `Ctrl+Shift+T` is the primary

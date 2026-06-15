@@ -155,6 +155,10 @@ pub struct FontsConfig {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipboardConfig {
     pub primary: bool,
+    /// When false, OSC 52 clipboard-write requests from terminal output are
+    /// ignored so untrusted output cannot overwrite the system clipboard.
+    /// Default `true`. OSC 52 *read* is never implemented regardless.
+    pub allow_osc52_write: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,7 +253,10 @@ impl Config {
                     "DejaVu Sans Mono".to_string(),
                 ],
             },
-            clipboard: ClipboardConfig { primary: true },
+            clipboard: ClipboardConfig {
+                primary: true,
+                allow_osc52_write: true,
+            },
             tabs: TabsConfig {
                 respect_osc_title: true,
                 title_strip_prefix: String::new(),
@@ -342,6 +349,9 @@ impl Config {
         if let Some(cb) = file.clipboard {
             if let Some(p) = cb.primary {
                 defaults.clipboard.primary = p;
+            }
+            if let Some(a) = cb.allow_osc52_write {
+                defaults.clipboard.allow_osc52_write = a;
             }
         }
         if let Some(t) = file.tabs {
@@ -951,17 +961,29 @@ blink_ms = 250
     }
 
     #[test]
+    fn default_clipboard_allow_osc52_write_is_true() {
+        let cfg = Config::default_values();
+        assert!(cfg.clipboard.allow_osc52_write);
+    }
+
+    #[test]
+    fn load_clipboard_allow_osc52_write_false_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[clipboard]\nallow_osc52_write = false\n").unwrap();
+        let (cfg, errs) = Config::load(&path);
+        assert!(errs.is_empty(), "errors: {errs:?}");
+        assert!(!cfg.clipboard.allow_osc52_write);
+    }
+
+    #[test]
     fn load_tabs_title_strip_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "[tabs]\ntitle_strip_prefix = \"bhengen@SLMBeast: \"\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[tabs]\ntitle_strip_prefix = \"user@host: \"\n").unwrap();
         let (cfg, errs) = Config::load(&path);
         assert!(errs.is_empty(), "errors: {errs:?}");
-        assert_eq!(cfg.tabs.title_strip_prefix, "bhengen@SLMBeast: ");
+        assert_eq!(cfg.tabs.title_strip_prefix, "user@host: ");
     }
 
     #[test]

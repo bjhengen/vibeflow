@@ -299,9 +299,9 @@ For `OpenConfig` and `OpenRepoUrl`, errors (e.g., xdg-open not installed) are lo
 - Right-click → menu open → ArrowDown → ArrowDown → Enter on Paste → assert PTY received the clipboard bytes.
 - Right-click on tab → Enter on Rename → keystroke 'x' → Enter → tab title contains 'x'.
 
-### Manual smoke walk (slmbeast VNC)
+### Manual smoke walk (host VNC)
 
-Per the project's `feedback_vnc_display` lesson, GUI smoke runs are runnable on slmbeast.
+Per the project's `feedback_vnc_display` lesson, GUI smoke runs are runnable on host.
 
 1. Right-click in grid → menu appears at cursor; verify positioning, hover focus tracking, item enabled states.
 2. Up/Down keyboard nav with no mouse motion; verify focus highlight moves and skips separators.

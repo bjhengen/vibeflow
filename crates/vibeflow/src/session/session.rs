@@ -193,6 +193,12 @@ pub struct PtySession {
     /// the shell is silently dropped regardless of `user_renamed`. WindowApp
     /// keeps this in sync via apply_config + new-tab spawn.
     pub respect_osc_title: bool,
+    /// Mirror of `Config.clipboard.allow_osc52_write`. When false, OSC 52
+    /// clipboard-write requests from terminal output are silently dropped, so
+    /// untrusted output (e.g. a remote SSH session) cannot overwrite the user's
+    /// system clipboard. Default true to preserve the `vim "+y` / tmux / SSH
+    /// copy workflow. OSC 52 *read* is always ignored regardless of this flag.
+    pub allow_osc52_write: bool,
     /// Mirror of `Config.tabs.title_strip_prefix`. If non-empty, this
     /// prefix is stripped from the front of every accepted OSC 0/2 title
     /// before it lands on `label.title`.
@@ -299,6 +305,7 @@ impl PtySession {
             selection: crate::render::selection::SelectionTracker::new(),
             user_renamed: false,
             respect_osc_title: true,
+            allow_osc52_write: true,
             title_strip_prefix: String::new(),
             tools_list: Vec::new(),
             proc_check_interval: std::time::Duration::from_millis(250),
@@ -348,7 +355,7 @@ impl PtySession {
     /// rename via [`Self::set_title`] overrides only the title, never the
     /// subtitle — see its doc). The previous `!title.contains(' ')` heuristic
     /// wrongly froze the subtitle once any spaced OSC/PS1 title arrived (e.g.
-    /// bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`), and re-deriving via
+    /// bash PS1 `user@host: ~/dev/vibeflow`), and re-deriving via
     /// `default_for` here also clobbered OSC-set titles — both fixed by only
     /// touching `subtitle`.
     pub fn refresh_default_subtitle(&mut self) {
@@ -424,7 +431,20 @@ impl PtySession {
                                 // titles, or user-renamed wins.
                             }
                             DispatchEvent::Osc52Write { selection, text } => {
-                                events.push(SessionEvent::Osc52ClipboardWrite { selection, text });
+                                if self.allow_osc52_write {
+                                    events.push(SessionEvent::Osc52ClipboardWrite {
+                                        selection,
+                                        text,
+                                    });
+                                } else {
+                                    // Config disabled OSC 52 clipboard writes:
+                                    // drop silently so untrusted output cannot
+                                    // overwrite the system clipboard.
+                                    tracing::debug!(
+                                        bytes = text.len(),
+                                        "OSC 52 clipboard write dropped (allow_osc52_write = false)"
+                                    );
+                                }
                             }
                             DispatchEvent::PassThrough(bytes) => {
                                 // Issue #7 (v0.1.4): OutputObserved can drive a
@@ -796,6 +816,7 @@ impl PtySession {
         // override shouldn't be wiped just because the user hit Ctrl+Shift+R).
         // user_renamed is intentionally NOT preserved — the new shell is fresh.
         new_session.respect_osc_title = self.respect_osc_title;
+        new_session.allow_osc52_write = self.allow_osc52_write;
         new_session.title_strip_prefix = std::mem::take(&mut self.title_strip_prefix);
         // Stage 13: transfer theme/theme_colors to the new session so this
         // method is self-consistent if called standalone. NOTE: in the normal
@@ -1779,7 +1800,7 @@ mod tests {
     // ── Q2 regression tests ──────────────────────────────────────────────────
 
     /// Regression for the spaced-title subtitle freeze: once an OSC/PS1 title
-    /// with a space lands (e.g. bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`),
+    /// with a space lands (e.g. bash PS1 `user@host: ~/dev/vibeflow`),
     /// `refresh_default_subtitle` must still update the subtitle on state
     /// changes AND must NOT clobber the title back to a basename.
     #[test]
@@ -1934,6 +1955,48 @@ mod tests {
         let (selection, text) = observed.expect("Osc52ClipboardWrite within 3s");
         assert_eq!(selection, Osc52Selection::Clipboard);
         assert_eq!(text, "Hello");
+    }
+
+    #[test]
+    fn poll_drops_osc52write_when_allow_osc52_write_false() {
+        // Pre-launch audit: untrusted terminal output must not be able to
+        // overwrite the system clipboard when the user has opted out via
+        // `[clipboard] allow_osc52_write = false`. Emit the same OSC 52 write
+        // as the test above plus a trailing visible byte, and assert poll()
+        // surfaces normal output but NEVER an Osc52ClipboardWrite.
+        use crate::session::tracker::TrackerConfig;
+        use std::time::{Duration, Instant};
+
+        let mut s = PtySession::spawn(
+            &[
+                "python3",
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'\\x1b]52;c;SGVsbG8=\\x07X'); sys.stdout.flush()",
+            ],
+            TrackerConfig::default(),
+            10_000,
+        )
+        .expect("PtySession::spawn");
+        s.allow_osc52_write = false;
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut saw_output = false;
+        while Instant::now() < deadline {
+            for ev in s.poll(Instant::now()) {
+                assert!(
+                    !matches!(ev, SessionEvent::Osc52ClipboardWrite { .. }),
+                    "OSC 52 write must be dropped when allow_osc52_write = false"
+                );
+                if matches!(ev, SessionEvent::TermUpdated) {
+                    saw_output = true;
+                }
+            }
+            if saw_output {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(saw_output, "the trailing visible byte should still render");
     }
 
     // ---------------- v0.1.3 confirm-on-close ----------------

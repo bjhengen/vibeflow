@@ -46,7 +46,7 @@ Both modules are pure functions of inputs, with zero I/O and no async. Stage 3 w
 
 - [ ] **Step 1: Add the new crate to the workspace**
 
-Edit `/home/bhengen/dev/vibeflow/Cargo.toml`. Find the line:
+Edit `/path/to/vibeflow/Cargo.toml`. Find the line:
 
 ```toml
 members = ["crates/vibeflow-protocol"]
@@ -124,7 +124,7 @@ pub mod tracker;
 - [ ] **Step 5: Verify the workspace builds**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 ```
 
@@ -157,7 +157,7 @@ Write `crates/vibeflow/src/session/tracker.rs`:
 - [ ] **Step 7: Re-verify the workspace builds clean**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -166,7 +166,7 @@ Expected: `Finished` with no errors and no clippy warnings.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add Cargo.toml crates/vibeflow/Cargo.toml crates/vibeflow/src/lib.rs crates/vibeflow/src/session/mod.rs crates/vibeflow/src/session/osc.rs crates/vibeflow/src/session/tracker.rs Cargo.lock
 git commit -m "chore(vibeflow): bootstrap library crate with session module skeleton"
 ```
@@ -283,7 +283,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -320,7 +320,7 @@ fn parse_133_body(body: &str) -> Option<PromptMarker> {
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -329,7 +329,7 @@ Expected: `test result: ok. 8 passed; 0 failed`.
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -341,7 +341,7 @@ If `cargo fmt --check` fails, run `cargo fmt --all` to apply the formatting and 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs
 git commit -m "feat(session): add PromptMarker and OSC 133 body parser"
 ```
@@ -391,7 +391,7 @@ Append to the `mod tests` block in `crates/vibeflow/src/session/osc.rs`:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -518,7 +518,7 @@ impl Default for OscDispatcher {
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -527,7 +527,7 @@ Expected: `test result: ok. 11 passed; 0 failed`. (8 from Task 1 + 3 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -536,7 +536,7 @@ Expected: silent, exit 0. If fmt fails, run `cargo fmt --all` then re-verify.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs
 git commit -m "feat(session): add OscDispatcher skeleton and DispatchEvent type"
 ```
@@ -627,7 +627,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -772,7 +772,7 @@ fn handle_osc(body: &[u8]) -> Option<DispatchEvent> {
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -781,7 +781,7 @@ Expected: `test result: ok. 16 passed; 0 failed`. (11 from Task 2 + 5 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -790,7 +790,7 @@ Expected: silent. If fmt fails, run `cargo fmt --all` and re-verify.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs
 git commit -m "feat(session): OscDispatcher recognises OSC 1338 frames"
 ```
@@ -849,7 +849,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -891,7 +891,7 @@ Delete it. The function is now called from `handle_osc` (lib code), so the allow
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -900,7 +900,7 @@ Expected: `test result: ok. 20 passed; 0 failed`. (16 from Task 3 + 4 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -909,7 +909,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs
 git commit -m "feat(session): OscDispatcher recognises OSC 133 prompt markers"
 ```
@@ -1006,7 +1006,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1104,7 +1104,7 @@ Then replace `fn finish_osc` to handle the new tri-state outcome and reconstruct
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1113,7 +1113,7 @@ Expected: `test result: ok. 25 passed; 0 failed`. (20 from Task 4 + 5 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1122,7 +1122,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs
 git commit -m "feat(session): unknown-OSC pass-through, oversize drop, multi-call buffering"
 ```
@@ -1177,7 +1177,7 @@ Append to the `mod tests` block:
 - [ ] **Step 2: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1188,7 +1188,7 @@ If proptest finds a panicking input, it shrinks to a minimal counter-example and
 - [ ] **Step 3: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1197,7 +1197,7 @@ Expected: silent.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs
 git commit -m "test(session): proptest — OscDispatcher never panics on arbitrary input"
 ```
@@ -1309,7 +1309,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1318,7 +1318,7 @@ Expected: 3 new tests pass (no implementation needed; this task only introduces 
 - [ ] **Step 2: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1327,7 +1327,7 @@ Expected: silent.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/tracker.rs
 git commit -m "feat(session): add TabState, TrackerConfig, and State conversion"
 ```
@@ -1415,7 +1415,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1537,7 +1537,7 @@ impl AiStateTracker {
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1546,7 +1546,7 @@ Expected: `test result: ok. 34 passed; 0 failed`. (29 from Task 7 + 5 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1555,7 +1555,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/tracker.rs
 git commit -m "feat(session): AiStateTracker skeleton with AiFrame transitions"
 ```
@@ -1641,7 +1641,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1666,7 +1666,7 @@ In `fn on_input`, replace the `TrackerInput::Prompt(marker) => …` arm with:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1675,7 +1675,7 @@ Expected: `test result: ok. 38 passed; 0 failed`. (34 from Task 8 + 4 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1684,7 +1684,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/tracker.rs
 git commit -m "feat(session): tracker derives Idle/Working from OSC 133 prompts"
 ```
@@ -1764,7 +1764,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1797,7 +1797,7 @@ Replace `fn transition_to` with:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1806,7 +1806,7 @@ Expected: `test result: ok. 41 passed; 0 failed`. (38 from Task 9 + 3 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1815,7 +1815,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/tracker.rs
 git commit -m "feat(session): tracker debounces flapping transitions"
 ```
@@ -1896,7 +1896,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1930,7 +1930,7 @@ Then remove the `#[allow(dead_code)] // first lib-level caller arrives in Task 1
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1939,7 +1939,7 @@ Expected: `test result: ok. 45 passed; 0 failed`. (41 from Task 10 + 4 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1948,7 +1948,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/tracker.rs
 git commit -m "feat(session): tracker stale-state timeout resets to Active"
 ```
@@ -2042,7 +2042,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -2094,7 +2094,7 @@ Then remove the `#[allow(dead_code)] // first lib-level caller is in the App in 
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -2103,7 +2103,7 @@ Expected: `test result: ok. 49 passed; 0 failed`. (45 from Task 11 + 4 new.)
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -2112,7 +2112,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/tracker.rs
 git commit -m "feat(session): tracker heuristic-silence timeout infers Waiting"
 ```
@@ -2285,7 +2285,7 @@ fn dispatcher_marker_smoke_check() {
 - [ ] **Step 2: Run the integration tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --test integration
 ```
 
@@ -2294,7 +2294,7 @@ Expected: `test result: ok. 3 passed; 0 failed`.
 - [ ] **Step 3: Run the full test suite**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -2303,7 +2303,7 @@ Expected: `test result: ok. 49 passed; 0 failed` (unit) plus `test result: ok. 3
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -2312,7 +2312,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/tests/integration.rs
 git commit -m "test(session): integration — dispatcher + tracker on realistic stream"
 ```
@@ -2326,7 +2326,7 @@ git commit -m "test(session): integration — dispatcher + tracker on realistic 
 - [ ] **Step 1: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -2343,7 +2343,7 @@ Expected: trailing line is `ALL GREEN`. Anything else: stop, fix, re-run.
 Stage 1's fuzz target still applies — verify it still survives clean after Stage 2's workspace changes.
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -2352,7 +2352,7 @@ Expected: "Done NN runs in 60 second(s)" with no crash output.
 - [ ] **Step 3: Tag the milestone**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git tag -a stage2-dispatcher-tracker-complete -m "OscDispatcher and AiStateTracker complete (Stage 2 of v0.1)"
 git tag --list
 ```
