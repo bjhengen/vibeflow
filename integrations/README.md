@@ -4,21 +4,30 @@ This directory ships drop-in integration files for popular AI coding tools.
 
 ## Claude Code (`claude-code-hooks.json`)
 
-Two hooks that emit OSC 1338 frames so vibeflow's tab indicator pulses
-correctly through `working → waiting` cycles:
+The **five-hook** set that emits OSC 1338 frames so vibeflow's tab indicator
+tracks Claude Code through `working → waiting` cycles:
 
 - `UserPromptSubmit` → `working` (Claude is processing your prompt)
+- `PreToolUse` → `working` (a tool call is starting)
+- `PostToolUse` → `working` (the tool returned; Claude is still working)
 - `Stop` → `waiting` (Claude finished and is waiting for your next prompt)
+- `Notification` → `waiting` (Claude is asking for input)
+
+> All five matter. With fewer (e.g. only `UserPromptSubmit` + `Stop`), nothing
+> re-emits `working` after a tool round, so the tab shows a spurious `waiting`
+> (amber) flicker mid-turn while Claude is actually working. This is a Claude
+> Code hook-coverage semantic, not a vibeflow bug.
 
 ### Prerequisites
 
-`vibeflow-emit` must be on your `$PATH`. From a checkout of this repo:
+`vibeflow-emit` must be on your `$PATH`. From crates.io:
 
 ```bash
-cargo install --path crates/vibeflow-protocol
+cargo install vibeflow-protocol
 ```
 
-That installs `vibeflow-emit` to `~/.cargo/bin/vibeflow-emit`. Verify:
+(Or, from a checkout of this repo: `cargo install --path crates/vibeflow-protocol`.)
+Either installs `vibeflow-emit` to `~/.cargo/bin/vibeflow-emit`. Verify:
 
 ```bash
 which vibeflow-emit
