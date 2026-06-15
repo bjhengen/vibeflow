@@ -81,6 +81,12 @@ pub struct FontsSection {
 #[serde(default, deny_unknown_fields)]
 pub struct ClipboardSection {
     pub primary: Option<bool>,
+    /// When false, OSC 52 clipboard-write requests from terminal output are
+    /// ignored, so untrusted output (e.g. a remote SSH session) cannot
+    /// overwrite the system clipboard. Default true (preserves the
+    /// `vim "+y` / tmux / remote-copy workflow). OSC 52 *read* is never
+    /// implemented regardless of this setting.
+    pub allow_osc52_write: Option<bool>,
 }
 
 /// `[tabs]` table. Stage 9 polish: control whether shell-emitted
