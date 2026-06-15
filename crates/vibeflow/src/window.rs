@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alacritty_terminal::grid::Dimensions; // brings `columns()` / `screen_lines()` into scope
 use anyhow::{Context, Result};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -38,6 +39,10 @@ fn pixels_to_grid(width_px: u32, height_px: u32, cell_w: u32, cell_h: u32) -> (u
 /// This is a SEPARATE helper from `pixels_to_grid`. That function returns
 /// `(u16, u16)` for PTY resize; this one returns `Point` for mouse routing.
 /// They have different semantics and must not be consolidated.
+// Coordinate-conversion seam: it inherently needs the cell pitch, the tab-bar
+// offset, the pixel position, the scroll offset, and the grid bounds to clamp
+// against — passing those as discrete values is clearer here than a bag struct.
+#[allow(clippy::too_many_arguments)]
 fn pixel_to_grid_point(
     cell_w: u32,
     cell_h: u32,
@@ -45,6 +50,8 @@ fn pixel_to_grid_point(
     px: u32,
     py: u32,
     display_offset: usize,
+    cols: usize,
+    screen_lines: usize,
 ) -> Option<alacritty_terminal::index::Point> {
     use alacritty_terminal::index::{Column, Line, Point};
     if cell_w == 0 || cell_h == 0 {
@@ -54,11 +61,24 @@ fn pixel_to_grid_point(
         return None; // tab bar — selection is grid-only
     }
     let py_local = py - bar_height_px;
-    let col = (px / cell_w) as usize;
+    // Clamp to the grid's real bounds. The window's pixel size is almost never
+    // an exact multiple of the cell pitch (`pixels_to_grid` floor-divides), so a
+    // cursor in the trailing partial-cell strip on the right/bottom edge would
+    // otherwise yield `col == cols` or `line == screen_lines` — one past the
+    // last valid index. alacritty's `Grid`/`Row` index ops are raw `Vec`
+    // indexes that panic in release on an out-of-range `Point`, and the
+    // mouse-up PRIMARY auto-copy indexes the grid with this `Point`, so an
+    // unclamped edge drag would crash the whole process (all tabs). Cap the
+    // column and the bottom visible line here, at the one boundary where pixels
+    // become grid coordinates. Negative lines (scrollback) stay valid because
+    // `display_offset` is bounded by the history size, so only the upper edge
+    // can overflow.
+    let col = ((px / cell_w) as usize).min(cols.saturating_sub(1));
     // Stage 12 lesson: the input path is the third parallel offset path — render adds
     // display_offset, input subtracts it, so the grid Point lands on the scrolled-up
     // row the user actually sees.
-    let line = (py_local / cell_h) as i32 - display_offset as i32;
+    let max_line = screen_lines.saturating_sub(1) as i32;
+    let line = ((py_local / cell_h) as i32 - display_offset as i32).min(max_line);
     Some(Point::new(Line(line), Column(col)))
 }
 
@@ -764,6 +784,17 @@ impl WindowApp {
         // `resumed`) re-applies once the renderer exists; renderer-dependent
         // settings (colors, blink, fonts) wait for that.
         let shortcut_table = build_shortcut_table(&initial_config.shortcuts);
+        // A timestamp far enough in the past that the time-based deadlines
+        // (indicator pulse, activity window) read as "already elapsed" at
+        // startup, so the first `about_to_wait` paint fires promptly.
+        // NB: `Instant - Duration` PANICS on underflow, and on Linux `Instant`
+        // is anchored at boot — so a plain `Instant::now() - 1h` crashes when
+        // vibeflow is launched within an hour of boot. Subtract with a
+        // saturating fallback to `now`; degrading to "just now" in that window
+        // costs at most one pulse interval and never panics.
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(Instant::now);
         Self {
             window: None,
             renderer: None,
@@ -795,8 +826,8 @@ impl WindowApp {
             indicator_pulse: true,  // matches Ui::default()
             pending_exit: false,
             // Far-past epoch ensures the first about_to_wait paint fires promptly.
-            last_redraw_request: Instant::now() - Duration::from_secs(3600),
-            last_activity_at: Instant::now() - Duration::from_secs(3600),
+            last_redraw_request: long_ago,
+            last_activity_at: long_ago,
         }
     }
 
@@ -1865,15 +1896,22 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // and before pixel_to_grid_point — so selection lands on the scrolled-up row.
                 // Do not move this down next to tabs_mut().
                 let active = self.app.active();
-                let display_offset = self
+                let (display_offset, grid_cols, grid_lines) = self
                     .app
                     .tabs()
                     .get(active)
-                    .map(|s| s.display_offset())
-                    .unwrap_or(0);
-                let Some(point) =
-                    pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, display_offset)
-                else {
+                    .map(|s| (s.display_offset(), s.term().columns(), s.term().screen_lines()))
+                    .unwrap_or((0, 1, 1));
+                let Some(point) = pixel_to_grid_point(
+                    cell_w,
+                    cell_h,
+                    bar_h,
+                    px,
+                    py,
+                    display_offset,
+                    grid_cols,
+                    grid_lines,
+                ) else {
                     return;
                 };
                 let shift = self.current_modifiers.shift_key();
@@ -2049,15 +2087,22 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // and before pixel_to_grid_point — so selection lands on the scrolled-up row.
                 // Do not move this down next to tabs_mut().
                 let active = self.app.active();
-                let display_offset = self
+                let (display_offset, grid_cols, grid_lines) = self
                     .app
                     .tabs()
                     .get(active)
-                    .map(|s| s.display_offset())
-                    .unwrap_or(0);
-                let Some(point) =
-                    pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, display_offset)
-                else {
+                    .map(|s| (s.display_offset(), s.term().columns(), s.term().screen_lines()))
+                    .unwrap_or((0, 1, 1));
+                let Some(point) = pixel_to_grid_point(
+                    cell_w,
+                    cell_h,
+                    bar_h,
+                    px,
+                    py,
+                    display_offset,
+                    grid_cols,
+                    grid_lines,
+                ) else {
                     return;
                 };
                 let pressed = state == ElementState::Pressed;
@@ -2175,6 +2220,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 );
                 if mouse_mode {
                     // Compute cursor point in grid coordinates.
+                    let (grid_cols, grid_lines) = (s.term().columns(), s.term().screen_lines());
                     let cursor_point = self
                         .cursor_pos
                         .and_then(|(px, py)| {
@@ -2184,7 +2230,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                                 .map(|r| r.cell_pitch())
                                 .unwrap_or((8, 16));
                             let bar_h = crate::render::tabs::tab_bar_height_px(cell_h);
-                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, 0 /* mouse-report: cursor coords must be viewport-relative (the TUI defines row 0); the vibeflow scrollback offset is intentionally not reported to the app */)
+                            pixel_to_grid_point(cell_w, cell_h, bar_h, px, py, 0 /* mouse-report: cursor coords must be viewport-relative (the TUI defines row 0); the vibeflow scrollback offset is intentionally not reported to the app */, grid_cols, grid_lines)
                         })
                         .unwrap_or_else(|| {
                             alacritty_terminal::index::Point::new(
@@ -3020,20 +3066,44 @@ mod tests {
     #[test]
     fn pixel_to_grid_point_subtracts_scrollback_offset() {
         use alacritty_terminal::index::{Column, Line, Point};
-        // cell 10x20, bar 30. Click at py=30+2*20=70 -> screen row 2.
+        // cell 10x20, bar 30, grid 80x24. Click at py=30+2*20=70 -> screen row 2.
         // offset 0 -> Line(2); offset 5 -> Line(2-5) = Line(-3) (scrollback).
         assert_eq!(
-            super::pixel_to_grid_point(10, 20, 30, 5, 70, 0),
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 0, 80, 24),
             Some(Point::new(Line(2), Column(0)))
         );
         assert_eq!(
-            super::pixel_to_grid_point(10, 20, 30, 5, 70, 1),
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 1, 80, 24),
             Some(Point::new(Line(1), Column(0)))
         );
         assert_eq!(
-            super::pixel_to_grid_point(10, 20, 30, 5, 70, 5),
+            super::pixel_to_grid_point(10, 20, 30, 5, 70, 5, 80, 24),
             Some(Point::new(Line(-3), Column(0)))
         );
+    }
+
+    #[test]
+    fn pixel_to_grid_point_clamps_to_grid_edges() {
+        // Regression (pre-launch audit): a window width/height that is not an
+        // exact multiple of the cell pitch leaves a trailing partial-cell strip
+        // on the right/bottom edge. A cursor there must NOT produce a Point one
+        // past the last valid column/line — alacritty indexes the grid with a
+        // raw Vec index that panics in release, and the mouse-up auto-copy then
+        // crashes the whole process. cell 10x20, bar 30, grid 80x24.
+        use alacritty_terminal::index::{Column, Line};
+        // px=805 is in the right-edge strip (80*10=800 <= 805): unclamped col 80.
+        let right = super::pixel_to_grid_point(10, 20, 30, 805, 70, 0, 80, 24).unwrap();
+        assert_eq!(right.column, Column(79), "column capped at cols-1");
+        // py just into the bottom strip with no scroll: unclamped line 24.
+        let bottom = super::pixel_to_grid_point(10, 20, 30, 5, 30 + 20 * 24, 0, 80, 24).unwrap();
+        assert_eq!(bottom.line, Line(23), "line capped at screen_lines-1");
+        // Both edges at once.
+        let corner =
+            super::pixel_to_grid_point(10, 20, 30, 805, 30 + 20 * 24, 0, 80, 24).unwrap();
+        assert_eq!((corner.line, corner.column), (Line(23), Column(79)));
+        // Degenerate 1x1 grid must not underflow saturating_sub.
+        let tiny = super::pixel_to_grid_point(10, 20, 30, 805, 30 + 20 * 24, 0, 1, 1).unwrap();
+        assert_eq!((tiny.line, tiny.column), (Line(0), Column(0)));
     }
 
     #[test]
