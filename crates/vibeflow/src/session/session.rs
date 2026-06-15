@@ -524,11 +524,17 @@ impl PtySession {
             // callers to retain their manually-set value).
             if !self.tools_list.is_empty() {
                 let pid = self.child_pid();
-                let fg_name = pid.and_then(crate::session::proc_watch::foreground_command_name);
-                // v0.1.3: preserve the matched name so the confirm-on-close
-                // dialog can show "claude" / "codex" instead of "shell".
-                let matched_name: Option<String> =
-                    fg_name.filter(|name| self.tools_list.iter().any(|t| t == name));
+                // Candidates = the foreground group leader's comm, plus (for an
+                // interpreter launcher like `node /usr/bin/codex`) the resolved
+                // tool name. Match the FIRST candidate that's in the tools list,
+                // so a wrapper-installed CLI is detected by its real name and
+                // the confirm-on-close dialog shows "codex", not "node".
+                let candidates = pid
+                    .map(crate::session::proc_watch::foreground_command_candidates)
+                    .unwrap_or_default();
+                let matched_name: Option<String> = candidates
+                    .into_iter()
+                    .find(|name| self.tools_list.iter().any(|t| t == name));
                 let matched = matched_name.is_some();
                 self.detected_ai_tool = matched_name;
                 let was_armed = self.heuristic_was_active;

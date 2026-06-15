@@ -7,6 +7,15 @@
 //!
 //! Pure logic where possible: `parse_tpgid` is exposed for testing without I/O.
 
+/// Generic language runtimes whose own `comm` does NOT name the tool they run
+/// — the tool is a script/argument (e.g. `node /usr/bin/codex`, whose
+/// foreground `comm` is "node"). For these we additionally consider the
+/// launcher's argument basenames as candidate tool names (see
+/// [`candidate_names`]), so wrapper-installed CLIs resolve to their real name.
+const INTERPRETER_COMMS: &[&str] = &[
+    "node", "deno", "bun", "python", "python2", "python3", "ruby", "perl", "php",
+];
+
 /// Read /proc/<child_pid>/stat → tpgid → /proc/<tpgid>/comm. Returns the
 /// trimmed command name (no parens, no trailing newline) or None on any
 /// I/O error or if there's no foreground process group.
@@ -31,6 +40,70 @@ pub fn foreground_command_name(child_pid: i32) -> Option<String> {
         let _ = child_pid;
         None
     }
+}
+
+/// Tier-3 candidate tool names for the foreground process: always the
+/// process-group leader's `comm`, plus — when that leader is a generic
+/// interpreter (node/python/…) — the interpreter-resolved launcher names from
+/// its command line. This lets a wrapper-installed CLI such as `codex` (run as
+/// `node /usr/bin/codex`, leader `comm` = "node") be detected by its real name
+/// without ever matching a bare `node` process: the caller still only matches
+/// these candidates against the user's configured `[ai] tools` list.
+///
+/// Returns an empty `Vec` on non-Linux or when there's no foreground group.
+pub fn foreground_command_candidates(child_pid: i32) -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(tpgid) = foreground_pgid(child_pid).filter(|t| *t > 0) else {
+            return Vec::new();
+        };
+        let Ok(comm) = std::fs::read_to_string(format!("/proc/{tpgid}/comm")) else {
+            return Vec::new();
+        };
+        let comm = comm.trim();
+        // The cmdline read is only needed to resolve an interpreter's script
+        // name, so skip it (one fewer /proc read per tick) for the common case
+        // of a native foreground binary.
+        if INTERPRETER_COMMS.contains(&comm) {
+            let cmdline =
+                std::fs::read_to_string(format!("/proc/{tpgid}/cmdline")).unwrap_or_default();
+            candidate_names(comm, &cmdline)
+        } else {
+            vec![comm.to_owned()]
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = child_pid;
+        Vec::new()
+    }
+}
+
+/// Pure core of [`foreground_command_candidates`]: given a foreground process's
+/// `comm` and its raw NUL-separated `/proc/<pid>/cmdline`, return the candidate
+/// tool names. Always yields `comm` first. When `comm` is a known interpreter,
+/// also yields the extension-stripped basenames of its non-flag arguments
+/// (arg0 — the interpreter itself — is skipped). A plain `node server.js`
+/// therefore yields `["node", "server"]`, which matches the AI-tools list only
+/// if the user explicitly listed `node` or `server`.
+fn candidate_names(comm: &str, cmdline_nul: &str) -> Vec<String> {
+    let mut out = vec![comm.to_owned()];
+    if INTERPRETER_COMMS.contains(&comm) {
+        for arg in cmdline_nul.split('\0').skip(1) {
+            if arg.is_empty() || arg.starts_with('-') {
+                continue; // trailing empty token, or a flag like `--inspect`
+            }
+            if let Some(stem) = std::path::Path::new(arg)
+                .file_stem()
+                .and_then(|s| s.to_str())
+            {
+                if !stem.is_empty() && !out.iter().any(|c| c == stem) {
+                    out.push(stem.to_owned());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Read `/proc/<child_pid>/stat` and return field 8 (`tpgid`: the foreground
@@ -113,6 +186,54 @@ mod tests {
     fn parse_tpgid_returns_none_when_field_not_int() {
         let line = "1234 (bash) S 1000 1234 1234 34816 abc 4194304";
         assert_eq!(parse_tpgid(line), None);
+    }
+
+    #[test]
+    fn candidate_names_native_binary_is_just_comm() {
+        // A native foreground binary: comm names the tool, cmdline ignored.
+        assert_eq!(candidate_names("codex", ""), vec!["codex"]);
+        assert_eq!(candidate_names("opencode", "opencode\0"), vec!["opencode"]);
+        assert_eq!(candidate_names("grok", "grok\0"), vec!["grok"]);
+    }
+
+    #[test]
+    fn candidate_names_non_interpreter_ignores_cmdline() {
+        // bash is not an interpreter in our set; its args must NOT be mined.
+        assert_eq!(
+            candidate_names("bash", "bash\0/usr/bin/codex\0"),
+            vec!["bash"]
+        );
+    }
+
+    #[test]
+    fn candidate_names_node_wrapper_resolves_script() {
+        // The real codex case: `node /usr/bin/codex`, comm "node".
+        assert_eq!(
+            candidate_names("node", "node\0/usr/bin/codex\0"),
+            vec!["node".to_string(), "codex".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidate_names_python_wrapper_resolves_script() {
+        assert_eq!(
+            candidate_names("python3", "python3\0/home/u/.local/bin/aider\0"),
+            vec!["python3".to_string(), "aider".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidate_names_skips_flags_and_strips_extension() {
+        // `node --inspect server.js` → flag skipped, `.js` stripped.
+        assert_eq!(
+            candidate_names("node", "node\0--inspect\0server.js\0"),
+            vec!["node".to_string(), "server".to_string()]
+        );
+    }
+
+    #[test]
+    fn candidate_names_interpreter_with_no_script_is_just_comm() {
+        assert_eq!(candidate_names("node", "node\0"), vec!["node"]);
     }
 
     #[test]
