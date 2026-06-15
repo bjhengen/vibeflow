@@ -1903,7 +1903,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     .app
                     .tabs()
                     .get(active)
-                    .map(|s| (s.display_offset(), s.term().columns(), s.term().screen_lines()))
+                    .map(|s| {
+                        (
+                            s.display_offset(),
+                            s.term().columns(),
+                            s.term().screen_lines(),
+                        )
+                    })
                     .unwrap_or((0, 1, 1));
                 let Some(point) = pixel_to_grid_point(
                     cell_w,
@@ -2094,7 +2100,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     .app
                     .tabs()
                     .get(active)
-                    .map(|s| (s.display_offset(), s.term().columns(), s.term().screen_lines()))
+                    .map(|s| {
+                        (
+                            s.display_offset(),
+                            s.term().columns(),
+                            s.term().screen_lines(),
+                        )
+                    })
                     .unwrap_or((0, 1, 1));
                 let Some(point) = pixel_to_grid_point(
                     cell_w,
@@ -3101,8 +3113,7 @@ mod tests {
         let bottom = super::pixel_to_grid_point(10, 20, 30, 5, 30 + 20 * 24, 0, 80, 24).unwrap();
         assert_eq!(bottom.line, Line(23), "line capped at screen_lines-1");
         // Both edges at once.
-        let corner =
-            super::pixel_to_grid_point(10, 20, 30, 805, 30 + 20 * 24, 0, 80, 24).unwrap();
+        let corner = super::pixel_to_grid_point(10, 20, 30, 805, 30 + 20 * 24, 0, 80, 24).unwrap();
         assert_eq!((corner.line, corner.column), (Line(23), Column(79)));
         // Degenerate 1x1 grid must not underflow saturating_sub.
         let tiny = super::pixel_to_grid_point(10, 20, 30, 805, 30 + 20 * 24, 0, 1, 1).unwrap();

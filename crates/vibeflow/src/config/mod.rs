@@ -980,11 +980,7 @@ blink_ms = 250
     fn load_tabs_title_strip_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "[tabs]\ntitle_strip_prefix = \"user@host: \"\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[tabs]\ntitle_strip_prefix = \"user@host: \"\n").unwrap();
         let (cfg, errs) = Config::load(&path);
         assert!(errs.is_empty(), "errors: {errs:?}");
         assert_eq!(cfg.tabs.title_strip_prefix, "user@host: ");

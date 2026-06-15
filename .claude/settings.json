@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-memory__search_lessons",
+      "mcp__claude-memory__read_journal",
+      "mcp__claude-memory__search",
+      "mcp__claude-memory__get_consolidation_stats",
+      "mcp__claude-memory__list_projects"
+    ]
+  }
+}
