@@ -198,12 +198,24 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
 
+        // Prefer Fifo (vsync): it is the only present mode WebGPU/wgpu
+        // guarantees is always supported, it caps us at the display refresh
+        // (no wasted GPU/power for a mostly-static terminal), and it never
+        // tears. `present_modes[0]` is adapter-ordered, not guaranteed Fifo,
+        // so select it explicitly and fall back to whatever index 0 offers.
+        let present_mode = surface_caps
+            .present_modes
+            .iter()
+            .copied()
+            .find(|m| *m == wgpu::PresentMode::Fifo)
+            .unwrap_or(surface_caps.present_modes[0]);
+
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width,
             height,
-            present_mode: surface_caps.present_modes[0],
+            present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
