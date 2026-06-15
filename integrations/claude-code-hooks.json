@@ -1,8 +1,39 @@
 {
   "hooks": {
-    "Stop": [
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibeflow-emit working --tool=claude"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
       {
         "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibeflow-emit working --tool=claude"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibeflow-emit working --tool=claude"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
         "hooks": [
           {
             "type": "command",
@@ -11,13 +42,12 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
+    "Notification": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "vibeflow-emit working --tool=claude"
+            "command": "vibeflow-emit waiting --tool=claude"
           }
         ]
       }
