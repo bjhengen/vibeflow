@@ -465,7 +465,7 @@ fn tier_3_does_not_arm_for_unlisted_tool() {
 }
 ```
 
-### Manual smoke walk on slmbeast VNC
+### Manual smoke walk on host VNC
 
 1. Build release; install `vibeflow-emit` (`cargo install --path crates/vibeflow-protocol`); verify `which vibeflow-emit`.
 2. Merge `integrations/claude-code-hooks.json` into `~/.claude/settings.json` (use `jq` one-liner per the README).

@@ -14,8 +14,8 @@
 - Pre-execution senior review catches API-mismatch claims (e.g. trait imports, accessor names) that compile-blockers depend on. Run it.
 - Implementers will sometimes use refactor tasks to rewrite UNRELATED tests with fabricated justifications. Compare test-name lists before/after every multi-file refactor.
 - Selection-clears-on-typed-input must gate on `key_to_bytes` returning `Some`, NOT every Pressed event. (Stage 8 smoke caught this.)
-- `cargo` invoked from outside `/home/bhengen/dev/vibeflow` may pick up another `Cargo.toml`. Always prefix `cd /home/bhengen/dev/vibeflow &&` or use absolute paths.
-- VNC display is available on slmbeast (port 5901, `DISPLAY=:1.0`). GUI smoke runs are runnable.
+- `cargo` invoked from outside `/path/to/vibeflow` may pick up another `Cargo.toml`. Always prefix `cd /path/to/vibeflow &&` or use absolute paths.
+- VNC display is available on host (port 5901, `DISPLAY=:1.0`). GUI smoke runs are runnable.
 
 ---
 
@@ -61,7 +61,7 @@ This task adds deps + creates empty module stubs so later tasks have a place to 
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git checkout main
 git pull --ff-only || true
 git checkout -b stage9-config
@@ -83,7 +83,7 @@ Don't reorder unrelated deps. `arboard`, `alacritty_terminal`, `anyhow`, `bytemu
 - [ ] **Step 3: Create module stubs**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 mkdir -p crates/vibeflow/src/config
 touch crates/vibeflow/src/config/mod.rs
 touch crates/vibeflow/src/config/schema.rs
@@ -133,7 +133,7 @@ Open `crates/vibeflow/src/lib.rs`. Add `pub mod config;` alphabetically among th
 - [ ] **Step 5: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -149,7 +149,7 @@ If `notify`/`serde`/`toml`/`dirs` fail to resolve, verify Cargo.toml edit is syn
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/Cargo.toml \
         crates/vibeflow/Cargo.lock \
         crates/vibeflow/src/lib.rs \
@@ -355,7 +355,7 @@ mod tests {
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/config/schema.rs
 cargo test -p vibeflow --lib config::schema 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -368,7 +368,7 @@ Expected: 6 new schema tests pass. 176 + 6 = 182 default + 13 ignored. fmt/clipp
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/config/schema.rs
 git commit -m "feat(config): TOML schema types (ConfigFile + sections, TDD)"
 ```
@@ -990,7 +990,7 @@ Don't disturb existing dev-deps.
 - [ ] **Step 3: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/config/mod.rs
 cargo test -p vibeflow --lib config:: 2>&1 | tail -25
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -1009,7 +1009,7 @@ If clippy warns about `cast_precision_loss` on the `f32::EPSILON` comparisons in
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/config/mod.rs crates/vibeflow/Cargo.toml
 git commit -m "feat(config): Config + per-key tolerant load + color/shortcut parsers (TDD)"
 ```
@@ -1131,7 +1131,7 @@ The exact lines to change depend on the current `main.rs` layout — read it fir
 - [ ] **Step 5: Verify build**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/config/mod.rs crates/vibeflow/src/window.rs crates/vibeflow/src/main.rs
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -1150,7 +1150,7 @@ If the trait `ApplicationHandler` requires the user-event type as a generic para
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/config/mod.rs \
         crates/vibeflow/src/window.rs \
         crates/vibeflow/src/main.rs
@@ -1569,7 +1569,7 @@ This keeps Task 4 self-contained — no need to wait for Task 13 to compile.
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/keymap.rs
 cargo test -p vibeflow --lib keymap 2>&1 | tail -25
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -1593,7 +1593,7 @@ If clippy complains about `OnceLock` not being available in your Rust version, t
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/keymap.rs
 git commit -m "refactor(keymap): ShortcutTable + add Shortcut::RenameTab (preserves Stage 8 behavior)"
 ```
@@ -1753,7 +1753,7 @@ mod tests {
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/config/error_banner.rs
 cargo test -p vibeflow --lib config::error_banner 2>&1 | tail -15
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -1766,7 +1766,7 @@ Expected: 8 new banner tests pass. 202 + 8 = 210 default + 13 ignored. fmt/clipp
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/config/error_banner.rs
 git commit -m "feat(config): ErrorBannerState — pure logic + format (TDD)"
 ```
@@ -1953,7 +1953,7 @@ mod tests {
 - [ ] **Step 2: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/config/watcher.rs
 cargo test -p vibeflow --lib config::watcher 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -1970,7 +1970,7 @@ If `notify::Watcher` trait imports differ, the canonical 6.x API is `notify::rec
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/config/watcher.rs
 git commit -m "feat(config): notify-based file-watcher thread with 250ms debounce"
 ```
@@ -2246,7 +2246,7 @@ Apply this fix to Task 4's keymap.rs replacement BEFORE the file's final form. U
 - [ ] **Step 5: Verify build green**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/window.rs crates/vibeflow/src/keymap.rs
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -2277,7 +2277,7 @@ Similarly for `Clipboard::set_primary_enabled` — stub here, fill in Task 10.
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs \
         crates/vibeflow/src/keymap.rs \
         crates/vibeflow/src/render/mod.rs \
@@ -2456,7 +2456,7 @@ For indicator colors: find the tab-bar render path (Stage 4 + 7) that picks dot 
 - [ ] **Step 4: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/render/
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -2473,7 +2473,7 @@ If `text_engine.font_system` replacement breaks the atlas (texture corruption), 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/
 git commit -m "feat(render): config-driven setters for selection/indicators/cursor-blink/fonts"
 ```
@@ -2660,7 +2660,7 @@ Place this guard EARLY in the KeyboardInput arm so banner-Esc takes precedence o
 - [ ] **Step 7: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -2674,7 +2674,7 @@ If the offset math becomes ungainly, factor into a helper `compute_rect_offsets(
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs crates/vibeflow/src/window.rs
 git commit -m "feat(render): config error banner rendering + Esc dismiss"
 ```
@@ -2908,7 +2908,7 @@ If mouse-mode is ON, middle-click should still go to the PTY's mouse encoder per
 - [ ] **Step 4: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/clipboard.rs crates/vibeflow/src/window.rs
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -2917,14 +2917,14 @@ cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings 2>&1 | tail -3
 ```
 
-Expected: 214 default + 1 new (`primary_disabled_returns_none`) + 14 + 1 ignored = 215 default + 15 ignored. fmt/clippy clean. The `--ignored` clipboard tests should pass on slmbeast (X11 available).
+Expected: 214 default + 1 new (`primary_disabled_returns_none`) + 14 + 1 ignored = 215 default + 15 ignored. fmt/clippy clean. The `--ignored` clipboard tests should pass on host (X11 available).
 
 If `arboard::SetExtLinux::clipboard().text()` returns a builder type that needs explicit `.set()` / `.execute()` to commit, adapt — read the arboard source.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/clipboard.rs crates/vibeflow/src/window.rs
 git commit -m "feat(clipboard): PRIMARY selector + auto-copy on select + middle-click paste"
 ```
@@ -3178,7 +3178,7 @@ NOTE: Test calls assume `s.dispatcher` is accessible from tests; it's `pub(crate
 - [ ] **Step 6: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/session/
 cargo test -p vibeflow --lib session 2>&1 | tail -25
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -3200,7 +3200,7 @@ If MISSING, STOP and report BLOCKED.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/osc.rs crates/vibeflow/src/session/session.rs
 git commit -m "feat(session): OSC 0/2 SetTitle + PtySession.user_renamed sticky flag"
 ```
@@ -3220,7 +3220,7 @@ Ten new arms in `key_to_bytes` for Up/Down/Left/Right/Home/End/PageUp/PageDown/I
 - [ ] **Step 1: Find the existing `key_to_bytes` function**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 grep -n 'fn key_to_bytes' crates/vibeflow/src/window.rs
 ```
 
@@ -3355,7 +3355,7 @@ Append to the existing `mod tests` in `window.rs`:
 - [ ] **Step 4: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/window.rs
 cargo test -p vibeflow --lib key_to_bytes 2>&1 | tail -20
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -3375,7 +3375,7 @@ done
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): arrow + navigation keys → xterm ANSI sequences (TDD)"
 ```
@@ -3748,7 +3748,7 @@ The exact rendering math depends on the existing tab-text layout. Keep it simple
 - [ ] **Step 7: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt -p vibeflow -- crates/vibeflow/src/window.rs crates/vibeflow/src/render/tabs.rs crates/vibeflow/src/session/session.rs
 cargo build -p vibeflow 2>&1 | tail -10
 cargo test -p vibeflow --lib 2>&1 | tail -3
@@ -3846,7 +3846,7 @@ Expected: 6 new tests pass. 234 + 6 = 240 default + 15 ignored.
 - [ ] **Step 9: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs \
         crates/vibeflow/src/render/tabs.rs \
         crates/vibeflow/src/session/session.rs \
@@ -3869,7 +3869,7 @@ After the Stage 8 section, append:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -3960,7 +3960,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] **Step 2: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -3979,7 +3979,7 @@ If anything fails, STOP and report.
 - [ ] **Step 3: 60-second fuzz**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -4011,12 +4011,12 @@ Subagent dispatch: `general-purpose` with `model: sonnet`. Treat output as advis
 
 - [ ] **Step 5: Manual smoke walkthrough**
 
-Walk the Stage 9 section of `docs/TESTING.md` (Step 1 above) on slmbeast via VNC.
+Walk the Stage 9 section of `docs/TESTING.md` (Step 1 above) on host via VNC.
 
 - [ ] **Step 6: Commit + tag**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 9 manual smoke checklist"
 git tag -a stage9-config-complete \

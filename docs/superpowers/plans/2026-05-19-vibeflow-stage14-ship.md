@@ -20,7 +20,7 @@ These come from the project's hard-won lessons (`lesson_subagent_amend_drift`,
 `lesson_review_subagent_destructive`, `feedback_implementer_safety`,
 `feedback_senior_review_plans`). Re-state in every dispatched implementer prompt.
 
-1. **Never run `cargo` from outside the workspace root** (`/home/bhengen/dev/vibeflow`). All cargo commands run from there.
+1. **Never run `cargo` from outside the workspace root** (`/path/to/vibeflow`). All cargo commands run from there.
 2. **Never use `git commit --amend` to fix things** — the failed-amend pattern silently corrupts subsequent diffs. Make a new commit. Controller will run `git status` after every task; any unexpected unstaged drift = stop, do not proceed.
 3. **Never delete tests or comment out failures** to make a build green. If a test fails, fix the cause.
 4. **Reviewer subagents are READ-ONLY**: no `git checkout`, no `rm`, no `git reset`, no file edits, no shell-state mutation. A reviewer that destructively touches the repo is a critical incident.
@@ -79,7 +79,7 @@ These come from the project's hard-won lessons (`lesson_subagent_amend_drift`,
 - [ ] **Step 0.1: Branch off main**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git checkout main
 git pull --ff-only origin main
 git status --short  # expect: only the untracked .claude/ and vibeflow_logo_exports.zip
@@ -592,7 +592,7 @@ crates/vibeflow/Cargo.toml so cargo publish picks it up."
 
 - [ ] **Step 6.1: Replace `README.md` with the v0.1 front door**
 
-Replace `/home/bhengen/dev/vibeflow/README.md` with the following content **verbatim** (the 5-hook snippet and the OSC 133 caveat are normative and must not be paraphrased):
+Replace `/path/to/vibeflow/README.md` with the following content **verbatim** (the 5-hook snippet and the OSC 133 caveat are normative and must not be paraphrased):
 
 ````markdown
 <p align="center">
@@ -1280,8 +1280,8 @@ Create `docs/release/v0.1.0-finale-checklist.md`:
 - [ ] `git checkout main && git pull --ff-only` — on green `main`.
 - [ ] `cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` — green.
 - [ ] CI status on `main` is green on GitHub (check `actions/workflows/ci.yml`).
-- [ ] `npm login` on slmbeast — `npm whoami` returns `bjhengen`.
-- [ ] `cargo login <token>` on slmbeast — `~/.cargo/credentials.toml` exists.
+- [ ] `npm login` on host — `npm whoami` returns `bjhengen`.
+- [ ] `cargo login <token>` on host — `~/.cargo/credentials.toml` exists.
 - [ ] (Optional but recommended) Employment-agreement legal review complete per project_identity_positioning.
 
 ## 1. Publish `vibeflow-protocol` to crates.io (if not already published)

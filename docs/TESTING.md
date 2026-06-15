@@ -9,7 +9,7 @@ walking through the relevant section here before tagging a stage as complete.
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -47,7 +47,7 @@ read `wgpu::util::backend_bits_from_env()` and set `WGPU_BACKEND=gl`.
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -79,7 +79,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -128,7 +128,7 @@ If any step fails, capture the failure and a screenshot before fixing.
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -176,7 +176,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -219,7 +219,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -246,7 +246,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 
 ### Clipboard
 
-- [ ] Drag-select "(base) bhengen", press `Ctrl+Shift+C`. Paste into another GUI app on slmbeast (e.g., Firefox URL bar) — should arrive as text.
+- [ ] Drag-select "(base) bhengen", press `Ctrl+Shift+C`. Paste into another GUI app on host (e.g., Firefox URL bar) — should arrive as text.
 - [ ] In Firefox, copy "hello world" with `Ctrl+C`. Switch back to vibeflow. Press `Ctrl+Shift+V` → "hello world" appears at the prompt.
 - [ ] Copy a multi-line `for` loop:
    ```bash
@@ -297,7 +297,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
