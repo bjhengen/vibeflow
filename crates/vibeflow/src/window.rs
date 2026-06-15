@@ -1143,12 +1143,15 @@ impl WindowApp {
         // tabs and remember them so future `App::new_tab` spawns inherit.
         let respect = config.tabs.respect_osc_title;
         let prefix = config.tabs.title_strip_prefix.clone();
+        let allow_osc52_write = config.clipboard.allow_osc52_write;
         for s in self.app.tabs_mut().iter_mut() {
             s.respect_osc_title = respect;
             s.title_strip_prefix = prefix.clone();
+            s.allow_osc52_write = allow_osc52_write;
         }
         self.app.set_default_respect_osc_title(respect);
         self.app.set_default_title_strip_prefix(prefix);
+        self.app.set_default_allow_osc52_write(allow_osc52_write);
 
         // Stage 11: [ai] section.
         let ai = &config.ai;

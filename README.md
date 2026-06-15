@@ -124,6 +124,18 @@ indicator_pulse = false
 
 Local GPU displays are unaffected and can keep the default.
 
+OSC 52 clipboard *write* (used by `vim "+y`, tmux, remote-SSH copy) is honored
+by default, which means terminal output can set your system clipboard. To stop
+untrusted output from doing that, opt out:
+
+```toml
+[clipboard]
+allow_osc52_write = false
+```
+
+OSC 52 clipboard *read* is never implemented (a clipboard-exfiltration vector),
+regardless of this setting.
+
 Keybindings (default; configurable):
 
 | Action | Shortcut |
