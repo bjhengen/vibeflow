@@ -45,3 +45,7 @@ credentials.json
 # Other tool state that may contain personal config
 .aider*
 .direnv/
+
+# Local Claude Code config/state and WIP blog drafts — never track (committed in error 2026-06-15)
+/.claude/
+/drafts/
