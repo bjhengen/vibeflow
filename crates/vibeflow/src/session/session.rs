@@ -355,7 +355,7 @@ impl PtySession {
     /// rename via [`Self::set_title`] overrides only the title, never the
     /// subtitle — see its doc). The previous `!title.contains(' ')` heuristic
     /// wrongly froze the subtitle once any spaced OSC/PS1 title arrived (e.g.
-    /// bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`), and re-deriving via
+    /// bash PS1 `user@host: ~/dev/vibeflow`), and re-deriving via
     /// `default_for` here also clobbered OSC-set titles — both fixed by only
     /// touching `subtitle`.
     pub fn refresh_default_subtitle(&mut self) {
@@ -1800,7 +1800,7 @@ mod tests {
     // ── Q2 regression tests ──────────────────────────────────────────────────
 
     /// Regression for the spaced-title subtitle freeze: once an OSC/PS1 title
-    /// with a space lands (e.g. bash PS1 `bhengen@SLMBeast: ~/dev/vibeflow`),
+    /// with a space lands (e.g. bash PS1 `user@host: ~/dev/vibeflow`),
     /// `refresh_default_subtitle` must still update the subtitle on state
     /// changes AND must NOT clobber the title back to a basename.
     #[test]

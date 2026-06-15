@@ -24,7 +24,7 @@ Cheap implementers (Haiku) plow through these silently if they aren't pinned at 
    ```
    Any disappearing test names → BLOCKED.
 2. **Report deviations honestly.** Even tiny ones — variable renames, removed `use` lines, weakened assertions.
-3. **Cargo runs from the repo root** (`/home/bhengen/dev/vibeflow`). Do not `cd` into crate dirs.
+3. **Cargo runs from the repo root** (`/path/to/vibeflow`). Do not `cd` into crate dirs.
 4. **Quality gate per task:** `cargo fmt --all`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`. All four must pass before commit.
 
 ## Pre-execution senior review (workflow step, not a task)
@@ -1082,10 +1082,10 @@ git commit -m "feat(stage11): apply_config wires [ai] into App + per-session upd
 - [ ] **Step 1: Create `integrations/claude-code-hooks.json` with this exact content.**
 
 ```bash
-mkdir -p /home/bhengen/dev/vibeflow/integrations
+mkdir -p /path/to/vibeflow/integrations
 ```
 
-Write file `/home/bhengen/dev/vibeflow/integrations/claude-code-hooks.json`:
+Write file `/path/to/vibeflow/integrations/claude-code-hooks.json`:
 
 ```json
 {
@@ -1199,7 +1199,7 @@ protocol specification if you want to wire other tools yourself.
 - [ ] **Step 3: Validate the JSON parses and verify `vibeflow-emit` is buildable.**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 python3 -c "import json; json.load(open('integrations/claude-code-hooks.json'))" && echo "JSON valid"
 cargo build --release --bin vibeflow-emit 2>&1 | tail -3
 ```
@@ -1222,8 +1222,8 @@ git commit -m "feat(stage11): Tier 1 — claude-code-hooks.json + integrations/R
 - [ ] **Step 1: Read existing integration test patterns.**
 
 ```bash
-ls /home/bhengen/dev/vibeflow/crates/vibeflow/tests/
-head -60 /home/bhengen/dev/vibeflow/crates/vibeflow/tests/pty_integration.rs
+ls /path/to/vibeflow/crates/vibeflow/tests/
+head -60 /path/to/vibeflow/crates/vibeflow/tests/pty_integration.rs
 ```
 
 Match the existing preamble: `App::new()` + `new_tab()` + a `drive_until` loop that calls `app.poll_all(now)` every 10 ms.
@@ -1344,7 +1344,7 @@ git commit -m "test(stage11): integration tests for Tier 3 against real PTY"
 
 ## Manual smoke walk (after Task 10 passes)
 
-Run on slmbeast VNC. Background-launch vibeflow:
+Run on host VNC. Background-launch vibeflow:
 
 ```bash
 cargo build --release

@@ -131,7 +131,7 @@ The `pub mod text;` line is removed because Step 3 renames it. The deletes for `
 - [ ] **Step 3: Rename `text.{rs,wgsl}` → `quad.{rs,wgsl}`**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git mv crates/vibeflow/src/render/text.rs crates/vibeflow/src/render/quad.rs
 git mv crates/vibeflow/src/render/text.wgsl crates/vibeflow/src/render/quad.wgsl
 ```
@@ -200,7 +200,7 @@ Create `crates/vibeflow/src/render/bell.rs`:
 - [ ] **Step 5: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
@@ -211,7 +211,7 @@ Expected: clean build (`fontdue` and `cosmic-text` both pulled in, no callers of
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/Cargo.toml crates/vibeflow/Cargo.lock \
         crates/vibeflow/src/render/mod.rs \
         crates/vibeflow/src/render/quad.rs \
@@ -461,7 +461,7 @@ mod tests {
 - [ ] **Step 3: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::text_engine
 cargo test -p vibeflow
 cargo fmt --all -- --check
@@ -475,7 +475,7 @@ If `cosmic-text 0.12` produced a different API than this plan assumes, STOP and 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/text_engine.rs
 git commit -m "feat(render): TextEngine — cosmic-text wrapper, cell metrics, glyph rasterize (TDD)"
 ```
@@ -913,7 +913,7 @@ LIBGL_ALWAYS_SOFTWARE=1 cargo test -p vibeflow --lib render::text_engine -- --ig
 - [ ] **Step 5: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::text_engine
 cargo test -p vibeflow
 cargo fmt --all -- --check
@@ -931,7 +931,7 @@ LIBGL_ALWAYS_SOFTWARE=1 cargo test -p vibeflow --lib render::text_engine -- --ig
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/text_engine.rs crates/vibeflow/Cargo.toml crates/vibeflow/Cargo.lock
 git commit -m "feat(render): TextEngine — dynamic R8 atlas + shelf packer + glyph_for cache (TDD)"
 ```
@@ -1333,7 +1333,7 @@ This file goes from ~250 lines (Stage 6) to ~250 lines but with a totally differ
 - [ ] **Step 3: Verify build (no test changes — pipeline is GPU-validated by smoke run later)**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
@@ -1346,7 +1346,7 @@ If clippy errors on deprecation warnings (`-D deprecated`), narrow the rejection
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/quad.rs crates/vibeflow/src/render/quad.wgsl
 git commit -m "feat(render): unified QuadPipeline (rewrites text→quad with screen+atlas rects)"
 ```
@@ -1810,7 +1810,7 @@ The two-quads-per-cell trick (background quad + glyph quad) keeps the shader sim
 First confirm there are no remaining references in the rest of the tree:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 grep -rnE 'render::atlas|render::grid|GlyphAtlas|GridPipeline|CellInstance|ATLAS_LAYOUT|glyph_index' \
   crates/vibeflow/src/ \
   | grep -vE '(atlas|grid)\.(rs|wgsl):'
@@ -1849,7 +1849,7 @@ In `crates/vibeflow/Cargo.toml`, delete the `fontdue = "0.9.3"` line. `Cargo.loc
 - [ ] **Step 6: Verify build (cell rendering should now work end-to-end via `QuadPipeline`)**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check
@@ -1865,7 +1865,7 @@ The `cell_pitch_with_real_jbm_metrics` test in `window.rs` (Task 1 of Stage 6) i
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add -A
 git commit -m "feat(render): migrate cell grid to QuadPipeline + delete fontdue/atlas/grid"
 ```
@@ -1969,7 +1969,7 @@ If `Renderer` still has `text_pipeline: TextPipeline` (the deprecated alias type
 - [ ] **Step 5: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check
@@ -1991,7 +1991,7 @@ If glyphs still render at wrong positions despite the `baseline_y - bearing_y` f
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/tabs.rs crates/vibeflow/src/render/quad.rs crates/vibeflow/src/render/mod.rs
 git commit -m "feat(render): migrate tabs.rs to text_engine.glyph_for + drop deprecation aliases"
 ```
@@ -2087,7 +2087,7 @@ Append to the existing `mod tests` in `tabs.rs`:
 - [ ] **Step 4: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::tabs
 cargo test -p vibeflow
 cargo fmt --all -- --check
@@ -2101,7 +2101,7 @@ Smoke: open vibeflow, emit `printf '\033]1338;state=working\007'`. The subtitle 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/tabs.rs
 git commit -m "feat(render): subtitle text tinted by tracker state (per-state color)"
 ```
@@ -2239,7 +2239,7 @@ If profiling later shows 10 Hz idle redraws are too costly (battery), Stage 9's 
 - [ ] **Step 3: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::cursor
 cargo test -p vibeflow
 cargo fmt --all -- --check
@@ -2253,7 +2253,7 @@ Smoke: open vibeflow, look at the cursor. It blinks (visible / invisible) once p
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/cursor.rs crates/vibeflow/src/window.rs
 git commit -m "feat(render): 1 Hz cursor blink + tick redraws to keep blink visible"
 ```
@@ -2469,7 +2469,7 @@ SessionEvent::Bell => {
 - [ ] **Step 5: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check
 cargo clippy -p vibeflow --all-targets -- -D warnings
@@ -2482,7 +2482,7 @@ Smoke: open vibeflow, run `printf '\007'`. The window briefly tints white. Run a
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/bell.rs \
         crates/vibeflow/src/render/mod.rs \
         crates/vibeflow/src/session/session.rs \
@@ -2503,7 +2503,7 @@ git commit -m "feat(render): bell visual flash on BEL (0x07) — 200ms white tin
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -2548,7 +2548,7 @@ Append to `docs/TESTING.md` after the Stage 6 section.
 - [ ] **Step 2: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -2570,7 +2570,7 @@ Net: 14 new lib tests run by default + 3 ignored = 17 tests added → default `c
 - [ ] **Step 3: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -2581,7 +2581,7 @@ Re-walk `docs/TESTING.md`'s Stage 7 section.
 - [ ] **Step 5: Commit + tag**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 7 manual smoke checklist"
 git tag -a stage7-text-shaping-complete \

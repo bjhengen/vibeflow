@@ -6,7 +6,7 @@
 
 **Architecture:** All changes are additive and confined. T1 reuses the existing `active_theme_colors` in `render/mod.rs`. T2 follows the established `[ai]` config-field pattern (schema → resolved `Ai` → `TrackerConfig` → hot-reload). T3 adds one timestamp field + a pre-check in `tracker.rs::tick()` ahead of the Q1 early-return. T4 adds a one-shot guarded reconcile in the first `RedrawRequested`, mirroring the existing `Resized` resize path.
 
-**Tech Stack:** Rust, wgpu, winit 0.30, alacritty_terminal 0.24. `unsafe_code = "forbid"` (workspace). Cargo from `/home/bhengen/dev/vibeflow` (workspace root) — never `cd` into a crate.
+**Tech Stack:** Rust, wgpu, winit 0.30, alacritty_terminal 0.24. `unsafe_code = "forbid"` (workspace). Cargo from `/path/to/vibeflow` (workspace root) — never `cd` into a crate.
 
 **Spec:** `docs/superpowers/specs/2026-05-18-vibeflow-post-stage13-polish-design.md`
 
@@ -522,12 +522,12 @@ git commit -m "fix(window): one-shot first-redraw grid-size reconcile"
 
 ---
 
-## Manual smoke walk (after T4 passes, on slmbeast VNC)
+## Manual smoke walk (after T4 passes, on host VNC)
 
 ```bash
 cargo build --release
 pkill -f 'target/release/vibeflow' 2>/dev/null
-DISPLAY=:1 RUST_LOG=vibeflow=info,warn setsid /home/bhengen/dev/vibeflow/target/release/vibeflow >/tmp/vf.log 2>&1 & disown
+DISPLAY=:1 RUST_LOG=vibeflow=info,warn setsid /path/to/vibeflow/target/release/vibeflow >/tmp/vf.log 2>&1 & disown
 ```
 
 1. **Theme bg covers the window:** import + `[colors] preset` a non-default theme; open vibeflow at a large/maximized VNC window. The terminal background fills the whole area from the FIRST frame (no large default-colored region; no thin mismatched bottom/right strip) — without needing a manual resize. (T1 + T4 together.)

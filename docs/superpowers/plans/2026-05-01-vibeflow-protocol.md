@@ -16,7 +16,7 @@
 
 ## File Structure
 
-Workspace root (`/home/bhengen/dev/vibeflow/`) — files created by this plan:
+Workspace root (`/path/to/vibeflow/`) — files created by this plan:
 
 | Path | Responsibility |
 |---|---|
@@ -43,24 +43,24 @@ Workspace root (`/home/bhengen/dev/vibeflow/`) — files created by this plan:
 ## Task 0: Workspace bootstrap
 
 **Files:**
-- Create: `/home/bhengen/dev/vibeflow/Cargo.toml`
-- Create: `/home/bhengen/dev/vibeflow/.gitignore`
-- Create: `/home/bhengen/dev/vibeflow/LICENSE-MIT`
-- Create: `/home/bhengen/dev/vibeflow/LICENSE-APACHE`
-- Create: `/home/bhengen/dev/vibeflow/README.md`
-- Delete: `/home/bhengen/dev/vibeflow/ai_term/` (empty, leftover)
+- Create: `/path/to/vibeflow/Cargo.toml`
+- Create: `/path/to/vibeflow/.gitignore`
+- Create: `/path/to/vibeflow/LICENSE-MIT`
+- Create: `/path/to/vibeflow/LICENSE-APACHE`
+- Create: `/path/to/vibeflow/README.md`
+- Delete: `/path/to/vibeflow/ai_term/` (empty, leftover)
 
 - [ ] **Step 1: Remove the empty leftover directory**
 
 ```bash
-rmdir /home/bhengen/dev/vibeflow/ai_term
+rmdir /path/to/vibeflow/ai_term
 ```
 
 Expected: succeeds silently. (If the directory has been touched and is non-empty, stop and inspect — don't `rm -rf`.)
 
 - [ ] **Step 2: Create the workspace manifest**
 
-Write `/home/bhengen/dev/vibeflow/Cargo.toml`:
+Write `/path/to/vibeflow/Cargo.toml`:
 
 ```toml
 [workspace]
@@ -93,7 +93,7 @@ all = { level = "warn", priority = -1 }
 
 - [ ] **Step 3: Create `.gitignore`**
 
-Write `/home/bhengen/dev/vibeflow/.gitignore`:
+Write `/path/to/vibeflow/.gitignore`:
 
 ```gitignore
 # Rust
@@ -134,7 +134,7 @@ dist/
 
 - [ ] **Step 4: Add license files**
 
-Write `/home/bhengen/dev/vibeflow/LICENSE-MIT` (embedded — MIT is short and we don't want to depend on a fetch):
+Write `/path/to/vibeflow/LICENSE-MIT` (embedded — MIT is short and we don't want to depend on a fetch):
 
 ```
 MIT License
@@ -163,7 +163,7 @@ SOFTWARE.
 For Apache-2.0 (the full text is 200+ lines — fetch from the canonical source):
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 curl -sSLo LICENSE-APACHE https://www.apache.org/licenses/LICENSE-2.0.txt
 head -3 LICENSE-APACHE
 ```
@@ -172,7 +172,7 @@ Expected: the file begins with `                                 Apache License`
 
 - [ ] **Step 5: Write the top-level `README.md`**
 
-Write `/home/bhengen/dev/vibeflow/README.md`:
+Write `/path/to/vibeflow/README.md`:
 
 ```markdown
 # vibeflow
@@ -204,7 +204,7 @@ at your option.
 The protocol crate doesn't exist yet (it lands in Task 1), so `cargo build` will fail. All we want here is "did Cargo accept the workspace manifest?":
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo metadata --no-deps --format-version 1 2>&1 | head -5
 ```
 
@@ -213,7 +213,7 @@ Expected: either `metadata` JSON output, or an error like `failed to load manife
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add Cargo.toml .gitignore LICENSE-MIT LICENSE-APACHE README.md
 # ai_term/ removal is a tracked deletion if it was tracked; if not, it just disappears.
 git status   # confirm staging looks right
@@ -274,7 +274,7 @@ Write `crates/vibeflow-protocol/src/lib.rs`:
 - [ ] **Step 3: Verify it builds**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow-protocol --lib
 ```
 
@@ -408,7 +408,7 @@ Expected: `test result: ok. 2 passed; 0 failed`.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow-protocol/Cargo.toml crates/vibeflow-protocol/src/lib.rs
 git commit -m "feat(protocol): add State enum and ParseError"
 ```
@@ -1216,7 +1216,7 @@ path = "src/bin/vibeflow-emit.rs"
 - [ ] **Step 3: Build and run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow-protocol --bin vibeflow-emit
 ./target/debug/vibeflow-emit waiting --tool=claude | xxd | head
 ```
@@ -1325,7 +1325,7 @@ coverage/
 - [ ] **Step 4: Run the fuzzer for 60 seconds**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -1334,7 +1334,7 @@ Expected: many iterations, "Done 60 seconds: ..." line, no crashes / no panics. 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow-protocol/fuzz/Cargo.toml crates/vibeflow-protocol/fuzz/fuzz_targets/parse.rs crates/vibeflow-protocol/fuzz/.gitignore
 git commit -m "test(protocol): add cargo-fuzz harness for parse"
 ```
@@ -1491,7 +1491,7 @@ TypeScript binding for the OSC 1338 protocol — vibeflow's open standard for AI
 - [ ] **Step 6: Install + build to verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/bindings/npm
+cd /path/to/vibeflow/bindings/npm
 npm install
 npm run build
 ls -la dist/src/
@@ -1502,7 +1502,7 @@ Expected: `dist/src/` contains `index.js`, `index.d.ts`, `index.js.map`, `index.
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add bindings/npm/package.json bindings/npm/tsconfig.json bindings/npm/src/index.ts bindings/npm/.gitignore bindings/npm/.npmignore bindings/npm/README.md
 # package-lock.json IS committed for libraries with binaries / scripts:
 git add bindings/npm/package-lock.json
@@ -1554,7 +1554,7 @@ test("toBytes: percent-encodes non-ASCII as UTF-8 bytes", () => {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow/bindings/npm
+cd /path/to/vibeflow/bindings/npm
 npm test
 ```
 
@@ -1656,7 +1656,7 @@ Expected: `tests 4`, `pass 4`, `fail 0`.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add bindings/npm/src/index.ts bindings/npm/test/index.test.ts
 git commit -m "feat(npm): add toBytes, emit, emitState"
 ```
@@ -1847,7 +1847,7 @@ Expected: `pass 15` total (4 from Task 11 plus 11 here).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add bindings/npm/src/index.ts bindings/npm/test/index.test.ts
 git commit -m "feat(npm): add parse for OSC 1338 frames"
 ```
@@ -1930,7 +1930,7 @@ git commit -m "docs(npm): write full README for @vibeflow/protocol"
 
 - [ ] **Step 1: Write the spec document**
 
-Create `/home/bhengen/dev/vibeflow/docs/protocol.md`:
+Create `/path/to/vibeflow/docs/protocol.md`:
 
 ````markdown
 # OSC 1338 — vibeflow's AI-tool state signalling protocol
@@ -2097,7 +2097,7 @@ git commit -m "docs(protocol): write crates.io README"
 
 - [ ] **Step 1: Write the workflow**
 
-Create `/home/bhengen/dev/vibeflow/.github/workflows/ci.yml`:
+Create `/path/to/vibeflow/.github/workflows/ci.yml`:
 
 ```yaml
 name: CI
@@ -2189,7 +2189,7 @@ jobs:
 - [ ] **Step 2: Verify locally that all the steps the CI runs actually pass**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 
 # Rust job equivalents:
 cargo fmt --all -- --check
@@ -2225,7 +2225,7 @@ Now that `docs/protocol.md` exists, make sure all three READMEs link to it corre
 - [ ] **Step 1: Open all three READMEs side-by-side and verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 grep -nH "protocol.md" README.md bindings/npm/README.md crates/vibeflow-protocol/README.md
 grep -nH "github.com/bjhengen/vibeflow" README.md bindings/npm/README.md crates/vibeflow-protocol/README.md
 ```
@@ -2234,7 +2234,7 @@ Expected: every link is well-formed and points to either an in-repo path or `git
 
 - [ ] **Step 2: Update the workspace root README to link to the artefacts**
 
-Edit `/home/bhengen/dev/vibeflow/README.md`. Replace the existing **Repository layout** section with:
+Edit `/path/to/vibeflow/README.md`. Replace the existing **Repository layout** section with:
 
 ```markdown
 ## Repository layout
@@ -2298,7 +2298,7 @@ Append to the `mod tests` block in `crates/vibeflow-protocol/src/lib.rs`:
 - [ ] **Step 2: Run the tests — pass**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow-protocol
 ```
 
@@ -2309,7 +2309,7 @@ Expected: all tests pass, including the two new fixture tests.
 The package is CJS (Task 10 Step 1), and `tsc` outputs the entry at `dist/src/index.js`, so we use a plain `require` from a synchronous Node one-liner. Make sure `npm run build` has been run first so `dist/src/index.js` exists.
 
 ```bash
-cd /home/bhengen/dev/vibeflow/bindings/npm
+cd /path/to/vibeflow/bindings/npm
 npm run build
 node -e "
   const m = require('./dist/src/index.js');
@@ -2331,7 +2331,7 @@ If the hex is a single byte off, you have a real format-divergence bug between t
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow-protocol/src/lib.rs
 git commit -m "test(protocol): cross-binding byte-for-byte compatibility fixtures"
 ```
@@ -2345,7 +2345,7 @@ git commit -m "test(protocol): cross-binding byte-for-byte compatibility fixture
 - [ ] **Step 1: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -2360,7 +2360,7 @@ Expected: trailing line is `ALL GREEN`. Anything else: stop, fix, re-run.
 - [ ] **Step 2: 60-second fuzz**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -2369,7 +2369,7 @@ Expected: no crashes, no panics.
 - [ ] **Step 3: Tag the milestone**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git tag -a stage1-protocol-complete -m "vibeflow-protocol foundation complete (Stage 1 of v0.1)"
 git tag --list   # confirm
 ```

@@ -131,7 +131,7 @@ Write `crates/vibeflow/src/window.rs`:
 - [ ] **Step 4: Verify the workspace builds**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -141,7 +141,7 @@ Expected: clean build (the new modules are stubs but valid). Clippy silent. `Car
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add Cargo.toml crates/vibeflow/Cargo.toml crates/vibeflow/src/lib.rs crates/vibeflow/src/render/mod.rs crates/vibeflow/src/window.rs Cargo.lock
 git commit -m "chore(vibeflow): add winit/wgpu deps and module stubs for Stage 4"
 ```
@@ -180,7 +180,7 @@ Append to the existing `mod tests` block in `crates/vibeflow/src/session/session
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -290,7 +290,7 @@ Note that `resize` takes `&self` not `&mut self` because `MasterPty::resize` tak
 - [ ] **Step 4: Run the test**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -315,7 +315,7 @@ Append to the existing `mod tests` block in `crates/vibeflow/src/app.rs`:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -355,7 +355,7 @@ Add the following to `impl App`, after `send_input`:
 - [ ] **Step 7: Verify all tests + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -365,7 +365,7 @@ Expected: all prior tests + 2 new pass; fmt + clippy silent.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs crates/vibeflow/src/app.rs
 git commit -m "feat(session,app): PtySession::resize and App::resize_all"
 ```
@@ -561,7 +561,7 @@ impl Renderer {
 - [ ] **Step 2: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -571,7 +571,7 @@ Expected: clean build. Clippy may emit no-op lints because `Renderer` has no cal
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs
 git commit -m "feat(render): wgpu Renderer with clear-color frame and resize"
 ```
@@ -729,7 +729,7 @@ impl ApplicationHandler for WindowApp {
 - [ ] **Step 2: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -739,7 +739,7 @@ Expected: clean build. The `Renderer` `dead_code` allow from Task 2 should now d
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs crates/vibeflow/src/render/mod.rs
 git commit -m "feat(window): WindowApp with winit ApplicationHandler skeleton"
 ```
@@ -793,7 +793,7 @@ fn main() -> Result<()> {
 - [ ] **Step 2: Build the binary**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 ```
 
@@ -802,7 +802,7 @@ Expected: clean build. The binary is now a real GUI app — running it will open
 - [ ] **Step 3: Smoke-run (manual)**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
 
@@ -818,14 +818,14 @@ If the window doesn't open: check `$DISPLAY` / `$WAYLAND_DISPLAY` — winit need
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/main.rs
 git commit -m "feat(vibeflow): winit EventLoop entry + tracing-subscriber init"
 ```
@@ -912,7 +912,7 @@ Outside the trait impl (i.e. in `impl WindowApp`), add the helper method that ha
 - [ ] **Step 2: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -920,7 +920,7 @@ cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warni
 - [ ] **Step 3: Smoke-run (manual)**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
 
@@ -935,7 +935,7 @@ If the shell doesn't emit OSC 133 (default zsh/bash without our PS1 hook), no st
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): drive App::poll_all and App::tick_all from about_to_wait"
 ```
@@ -984,7 +984,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib window
 ```
 
@@ -1033,7 +1033,7 @@ In the `window_event` match arm, add a `Resized` arm above the catch-all `_ => {
 - [ ] **Step 3: Run the unit tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib window
 ```
 
@@ -1042,7 +1042,7 @@ Expected: 3 unit tests pass.
 - [ ] **Step 4: Verify fmt + clippy + smoke**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
@@ -1053,7 +1053,7 @@ Manually drag the window edge to resize. Expected: no panics, no errors in stder
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): propagate WindowEvent::Resized to wgpu surface and PTY"
 ```
@@ -1180,7 +1180,7 @@ Append to the existing `mod tests` block in `crates/vibeflow/src/window.rs`:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib window
 ```
 
@@ -1263,7 +1263,7 @@ Finally, remove the `#[allow(dead_code)]` attribute on the `current_modifiers` f
 - [ ] **Step 3: Run the unit tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib window
 ```
 
@@ -1272,7 +1272,7 @@ Expected: 11 tests pass (3 from Task 6 + 8 new from this task).
 - [ ] **Step 4: Verify fmt + clippy + smoke**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info,trace ./target/debug/vibeflow
@@ -1288,7 +1288,7 @@ In the running window, type:
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): forward keystrokes to active tab via App::send_input"
 ```
@@ -1350,7 +1350,7 @@ Replace the body with the surface-error-aware version:
 - [ ] **Step 2: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1358,7 +1358,7 @@ cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warni
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): recover from SurfaceError::Lost/Outdated/Timeout"
 ```
@@ -1375,7 +1375,7 @@ The spec calls for a `docs/TESTING.md` containing the manual smoke checklist. St
 - [ ] **Step 1: Check whether `docs/TESTING.md` exists**
 
 ```bash
-ls /home/bhengen/dev/vibeflow/docs/TESTING.md
+ls /path/to/vibeflow/docs/TESTING.md
 ```
 
 If it doesn't exist (expected for Stage 4), create it. If it does exist, this task only appends a "Stage 4" section to it.
@@ -1396,7 +1396,7 @@ walking through the relevant section here before tagging a stage as complete.
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -1439,7 +1439,7 @@ fails, note the failure mode and fix before tagging Stage 4).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 4 manual smoke checklist (TESTING.md)"
 ```
@@ -1453,7 +1453,7 @@ git commit -m "docs: Stage 4 manual smoke checklist (TESTING.md)"
 - [ ] **Step 1: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -1468,7 +1468,7 @@ Expected: `ALL GREEN`. Test count should be: every Stage 3 test + the new ones f
 - [ ] **Step 2: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -1481,7 +1481,7 @@ Re-walk `docs/TESTING.md`'s Stage 4 section to confirm nothing regressed during 
 - [ ] **Step 4: Tag the milestone**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git tag -a stage4-window-render-complete -m "winit window + wgpu clear-color render plumbing complete (Stage 4 of v0.1)"
 git tag --list
 ```

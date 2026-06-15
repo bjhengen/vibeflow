@@ -75,7 +75,7 @@ bytemuck = { version = "1", features = ["derive"] }
 JetBrains Mono v2.304 is the version used here. Download the Regular weight and the LICENSE.txt:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 mkdir -p crates/vibeflow/assets
 curl -fsSL -o crates/vibeflow/assets/JetBrainsMono-Regular.ttf \
     https://github.com/JetBrains/JetBrainsMono/raw/v2.304/fonts/ttf/JetBrainsMono-Regular.ttf
@@ -181,7 +181,7 @@ Create `crates/vibeflow/src/render/grid.wgsl`:
 - [ ] **Step 5: Verify the workspace builds**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -193,7 +193,7 @@ If the build fails because alacritty_terminal needs a system dep (uncommon — i
 - [ ] **Step 6: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/Cargo.toml \
     crates/vibeflow/assets/JetBrainsMono-Regular.ttf \
     crates/vibeflow/assets/LICENSE.JetBrainsMono.txt \
@@ -400,7 +400,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::colors
 ```
 
@@ -530,7 +530,7 @@ Note: `Colors` indexing accepts `usize` for the 256-color slots and `NamedColor`
 - [ ] **Step 3: Run the tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::colors
 ```
 
@@ -539,7 +539,7 @@ Expected: 9 tests pass.
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -548,7 +548,7 @@ If clippy fires `dead_code` on `default_palette` / `resolve_color` (both `pub`, 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/colors.rs
 git commit -m "feat(render): default ANSI palette and resolve_color"
 ```
@@ -645,7 +645,7 @@ The Stage 3 `app::tests::send_input_writes_to_active_tab` DOES reference `Sessio
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -1050,7 +1050,7 @@ New:
 - [ ] **Step 6: Verify all tests + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1062,7 +1062,7 @@ If any prior test fails because it pattern-matches on `SessionEvent::PassThrough
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs crates/vibeflow/src/app.rs crates/vibeflow/src/window.rs
 git commit -m "feat(session,app,window): integrate alacritty_terminal::Term + rename PassThrough → TermUpdated"
 ```
@@ -1185,7 +1185,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::atlas
 ```
 
@@ -1343,7 +1343,7 @@ impl GlyphAtlas {
 - [ ] **Step 3: Verify build + fmt + clippy + tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 cargo test -p vibeflow --lib render::atlas
@@ -1356,7 +1356,7 @@ If clippy complains about `dead_code` on `GlyphAtlas` (it's pub, so this would b
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/atlas.rs
 git commit -m "feat(render): GlyphAtlas pre-renders ASCII printable into a wgpu texture"
 ```
@@ -1739,7 +1739,7 @@ If clippy complains about unused imports of `DeviceExt` (we don't actually use `
 - [ ] **Step 3: Verify build + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1749,7 +1749,7 @@ Expected: clean build. The shader code is compiled at runtime by wgpu, not at `c
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/grid.rs crates/vibeflow/src/render/grid.wgsl
 git commit -m "feat(render): grid WGSL shader and GridPipeline state"
 ```
@@ -1985,7 +1985,7 @@ pub const ATLAS_LAYOUT: (u32, u32) = (ATLAS_COLS, ATLAS_ROWS);
 - [ ] **Step 4: Verify build + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1995,7 +1995,7 @@ If the build fails because Renderer's existing tests can't construct one (none s
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs crates/vibeflow/src/render/atlas.rs crates/vibeflow/src/render/grid.rs
 git commit -m "feat(render): Renderer renders cell grid via GridPipeline + GlyphAtlas"
 ```
@@ -2074,7 +2074,7 @@ fn build_cell_instances(
 - [ ] **Step 2: Verify build + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -2082,7 +2082,7 @@ cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warni
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs
 git commit -m "feat(render): block cursor rendered by inverting fg/bg on the cursor cell"
 ```
@@ -2154,7 +2154,7 @@ New (note the split borrow of `self.app` and `self.renderer`):
 - [ ] **Step 2: Verify build + fmt + clippy + tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
@@ -2165,7 +2165,7 @@ Expected: clean build; all tests pass.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): pass active Term to Renderer on every RedrawRequested"
 ```
@@ -2188,7 +2188,7 @@ The current file has the Stage 4 section. Append the Stage 5 section at the bott
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -2223,7 +2223,7 @@ Run each item against `./target/debug/vibeflow`. Mark items complete (`- [x]`) a
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 5 manual smoke checklist"
 ```
@@ -2235,7 +2235,7 @@ git commit -m "docs: Stage 5 manual smoke checklist"
 - [ ] **Step 1: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -2255,7 +2255,7 @@ Net: ~97 lib tests + 27 protocol = ~124 Rust tests + 1 proptest + 15 npm.
 - [ ] **Step 2: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -2268,7 +2268,7 @@ Re-run `docs/TESTING.md`'s Stage 5 section to confirm nothing regressed during t
 - [ ] **Step 4: Tag the milestone**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git tag -a stage5-grid-render-complete -m "alacritty_terminal grid + cell renderer complete (Stage 5 of v0.1)"
 git tag --list
 ```
