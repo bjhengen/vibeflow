@@ -143,7 +143,7 @@ fn main() {
 - [ ] **Step 4: Verify the workspace builds**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -162,7 +162,7 @@ pub use session::PtySession;  // SessionEvent re-export added in Task 2
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add Cargo.toml crates/vibeflow/Cargo.toml crates/vibeflow/src/lib.rs crates/vibeflow/src/session/mod.rs crates/vibeflow/src/session/pty.rs crates/vibeflow/src/session/session.rs crates/vibeflow/src/app.rs crates/vibeflow/src/main.rs Cargo.lock
 git commit -m "chore(vibeflow): add portable-pty dep, [[bin]] target, module stubs"
 ```
@@ -257,7 +257,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::pty
 ```
 
@@ -324,7 +324,7 @@ pub fn spawn_pty(argv: &[&str]) -> std::io::Result<PtyHandles> {
 - [ ] **Step 3: Run the test**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::pty
 ```
 
@@ -335,7 +335,7 @@ If the test hangs or times out: PTY availability on the test environment may be 
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -344,7 +344,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/pty.rs
 git commit -m "feat(session): pty::spawn_pty wrapper around portable-pty"
 ```
@@ -534,7 +534,7 @@ pub use session::{PtySession, SessionEvent};
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -545,7 +545,7 @@ If a test hangs on the channel-recv loop: the reader thread may have died early.
 - [ ] **Step 2: Verify fmt + clippy + full test suite**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 cargo test -p vibeflow
 ```
@@ -555,7 +555,7 @@ Expected: silent for the first two; full test suite reports all prior tests + th
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs crates/vibeflow/src/session/mod.rs
 git commit -m "feat(session): PtySession with reader thread and bytes channel"
 ```
@@ -614,7 +614,7 @@ Append to the `mod tests` block in `crates/vibeflow/src/session/session.rs`:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -671,7 +671,7 @@ Add the following method to `impl PtySession`, between `state` and `is_alive`:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -680,7 +680,7 @@ Expected: 3 new tests pass (the previous 2 from Task 2 + 1 new). Total in the se
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -689,7 +689,7 @@ Expected: silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs
 git commit -m "feat(session): PtySession::poll routes bytes through dispatcher and tracker"
 ```
@@ -736,7 +736,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -761,7 +761,7 @@ Add to `impl PtySession`, after `poll`:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -770,14 +770,14 @@ Expected: 4 new tests pass (3 prior + 1 new).
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs
 git commit -m "feat(session): PtySession::send_input writes keystrokes to PTY master"
 ```
@@ -857,7 +857,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -888,7 +888,7 @@ Add to `impl PtySession`, after `send_input`:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -897,14 +897,14 @@ Expected: 7 tests pass total in this module (4 prior + 3 new).
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs
 git commit -m "feat(session): PtySession::tick surfaces tracker timeout transitions"
 ```
@@ -1052,7 +1052,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -1061,7 +1061,7 @@ Expected: 5 new tests pass (and 1 of them — `_unused_session_event_silences_de
 - [ ] **Step 2: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1070,7 +1070,7 @@ Expected: silent. If clippy flags `SessionEvent::Died` as unused, the test in st
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/app.rs
 git commit -m "feat(app): App skeleton with new_tab and close_tab"
 ```
@@ -1130,7 +1130,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -1162,7 +1162,7 @@ Add to `impl App`, after `tabs`:
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -1171,14 +1171,14 @@ Expected: 6 tests pass (5 prior + 1 new).
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/app.rs
 git commit -m "feat(app): App::poll_all collects per-tab events"
 ```
@@ -1213,7 +1213,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -1245,7 +1245,7 @@ Then **delete the test** `_unused_session_event_silences_dead_code` from Task 6 
 - [ ] **Step 3: Run tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -1254,7 +1254,7 @@ Expected: 6 tests pass (the prior 5 minus the deleted test plus the 2 new — ne
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
@@ -1263,7 +1263,7 @@ If clippy still complains about `SessionEvent::Died` being unused (because the t
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/app.rs crates/vibeflow/src/session/session.rs
 git commit -m "feat(app): App::tick_all fans out tracker timeouts"
 ```
@@ -1309,7 +1309,7 @@ Append to the `mod tests` block:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 ```
 
@@ -1340,7 +1340,7 @@ Add to `impl App`, after `tick_all`:
 - [ ] **Step 3: Run tests + verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib app
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1350,7 +1350,7 @@ Expected: 7 tests pass in app module; fmt + clippy silent.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/app.rs
 git commit -m "feat(app): App::send_input routes keystrokes to active tab"
 ```
@@ -1437,7 +1437,7 @@ fn main() -> std::io::Result<()> {
 - [ ] **Step 2: Build the binary and smoke-test it**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 ./target/debug/vibeflow 2>&1
 ```
@@ -1449,14 +1449,14 @@ If the binary hangs past 10 seconds: the child's exit isn't propagating through.
 - [ ] **Step 3: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/main.rs
 git commit -m "feat(vibeflow): headless demo binary that prints SessionEvents"
 ```
@@ -1593,7 +1593,7 @@ fn child_exit_produces_died_event() {
 - [ ] **Step 2: Run the integration tests**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --test pty_integration
 ```
 
@@ -1604,7 +1604,7 @@ If any test times out: the most common cause is the printf command's escape inte
 - [ ] **Step 3: Run the full test suite**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 ```
 
@@ -1613,14 +1613,14 @@ Expected: every prior unit test plus the new integration tests, all passing.
 - [ ] **Step 4: Verify fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/tests/pty_integration.rs
 git commit -m "test(vibeflow): PTY integration — fake AI tool drives state transitions"
 ```
@@ -1634,7 +1634,7 @@ git commit -m "test(vibeflow): PTY integration — fake AI tool drives state tra
 - [ ] **Step 1: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -1649,7 +1649,7 @@ Expected: `ALL GREEN` at the end.
 - [ ] **Step 2: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -1658,7 +1658,7 @@ Expected: clean.
 - [ ] **Step 3: Smoke-run the headless demo**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 ./target/debug/vibeflow 2>&1
 ```
 
@@ -1667,7 +1667,7 @@ Expected: prints `starting...`, then `[tab 0] state -> Working`, sleeps 2s, then
 - [ ] **Step 4: Tag the milestone**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git tag -a stage3-pty-app-complete -m "PtySession + reader thread + headless App complete (Stage 3 of v0.1)"
 git tag --list
 ```

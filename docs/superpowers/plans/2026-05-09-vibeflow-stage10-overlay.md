@@ -2074,7 +2074,7 @@ If the implementer cannot find a clear extraction path for glyph-pushing logic, 
 - [ ] **Step 4: Smoke run on VNC to verify menu draws.**
 
 ```bash
-# (on slmbeast VNC)
+# (on host VNC)
 cargo build --release
 RUST_LOG=vibeflow=info ./target/release/vibeflow &
 # In a tab, right-click in the grid → menu should appear at the cursor.
@@ -2276,7 +2276,7 @@ git commit -m "test(stage10): integration tests for select_all + menu builders a
 
 ## Manual smoke walk (after Task 15 passes)
 
-Run on slmbeast VNC. Background-launch vibeflow so the loop returns:
+Run on host VNC. Background-launch vibeflow so the loop returns:
 
 ```bash
 cargo build --release

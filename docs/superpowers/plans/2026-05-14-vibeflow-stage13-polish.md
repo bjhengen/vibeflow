@@ -152,7 +152,7 @@ The plan's module-layout table says bell.rs has "No code change." That's wrong â
    diff /tmp/pre.txt /tmp/post.txt
    ```
 2. **Report deviations honestly.**
-3. **Cargo from `/home/bhengen/dev/vibeflow`.** No `cd` into crate dirs.
+3. **Cargo from `/path/to/vibeflow`.** No `cd` into crate dirs.
 4. **Quality gate per task:** `cargo fmt --all`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`. All four green before commit.
 
 ## Pre-execution senior review (workflow step, not a task)
@@ -207,7 +207,7 @@ pub const INDICATOR_STRIPE_WIDTH_PX: u32 = 6;
 - [ ] **Step 2: Quality gate.**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all
 cargo build --workspace 2>&1 | tail -3
 cargo test --workspace 2>&1 | tail -5
@@ -2087,7 +2087,7 @@ Adapt to the actual existing `main()` shape â€” the existing body's setup logic 
 - [ ] **Step 3: Smoke test the CLI manually.**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --release --bin vibeflow 2>&1 | tail -3
 ./target/release/vibeflow --import-colors crates/vibeflow/tests/fixtures/sample.itermcolors --overwrite
 ls -la ~/.config/vibeflow/themes/sample.toml
@@ -2672,7 +2672,7 @@ git commit -m "test(stage13): integration tests for theme apply + per-tab isolat
 
 ## Manual smoke walk (after Task 18 passes)
 
-Walk the spec's 15-item manual smoke walk on slmbeast VNC:
+Walk the spec's 15-item manual smoke walk on host VNC:
 
 ```bash
 cargo build --release

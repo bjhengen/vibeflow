@@ -23,7 +23,7 @@ Per the `feedback_implementer_safety` lesson, every dispatch must restate:
    diff /tmp/pre.txt /tmp/post.txt
    ```
 2. **Report deviations honestly.** Even tiny ones — renamed variables, swapped escape sequences, removed `use` lines.
-3. **Cargo runs from `/home/bhengen/dev/vibeflow`.** Do not `cd` into crate dirs.
+3. **Cargo runs from `/path/to/vibeflow`.** Do not `cd` into crate dirs.
 4. **Quality gate per task:** `cargo fmt --all`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --all-targets -- -D warnings`. All four must pass before commit.
 
 ## Pre-execution senior review (workflow step, not a task)
@@ -61,7 +61,7 @@ Apply the review's fixes inline before T1 dispatch.
 
 - [ ] **Step 1: Create the module file.**
 
-Write `/home/bhengen/dev/vibeflow/crates/vibeflow/src/render/scrollbar.rs`:
+Write `/path/to/vibeflow/crates/vibeflow/src/render/scrollbar.rs`:
 
 ```rust
 //! Stage 12: scrollbar fade-state + rect-build for the right-edge thumb.
@@ -362,7 +362,7 @@ pub(crate) mod scrollbar;
 - [ ] **Step 3: Run the tests.**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test --package vibeflow --lib render::scrollbar::tests 2>&1 | tail -15
 ```
 Expected: 9 passed (4 fade tests + 5 rects tests).

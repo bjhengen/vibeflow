@@ -170,7 +170,7 @@ returns `None`, the test is a no-op and notes the env dep in a comment.
 ## Risks
 
 1. **No color emoji font installed.** `glyph_for('🎉')` returns `None`;
-   tofu/outline is the fallback. Smoke checklist guards. slmbeast (Ubuntu 24.04)
+   tofu/outline is the fallback. Smoke checklist guards. host (Ubuntu 24.04)
    ships Noto Color Emoji by default — non-issue in dev.
 2. **swash returning straight (non-premultiplied) alpha.** Documentation says
    premultiplied. If a host font ships otherwise, emoji washes out. Mitigation:

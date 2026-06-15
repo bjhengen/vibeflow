@@ -63,6 +63,30 @@ fn run_gui() -> Result<()> {
         }
     };
 
+    // Panic containment: vibeflow runs the winit loop, the VTE processor, and
+    // all selection/render code on this one thread, with no per-tab isolation.
+    // An unhandled panic would unwind the whole process and take every tab
+    // (and any in-flight job) with it, silently. Install a hook that records
+    // the panic — message + location — through tracing first, chained to the
+    // default hook so the standard stderr backtrace still prints. This turns a
+    // silent vanish into a diagnosable crash and gets the failure into the
+    // rotated file log (the `_log_guard` above flushes it on the way down).
+    let default_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown location>".to_owned());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("<non-string panic payload>");
+        tracing::error!(target: "vibeflow", location = %location, message = %message, "vibeflow panicked");
+        default_panic_hook(info);
+    }));
+
     let event_loop = EventLoop::<vibeflow::config::AppUserEvent>::with_user_event()
         .build()
         .context("create winit EventLoop")?;

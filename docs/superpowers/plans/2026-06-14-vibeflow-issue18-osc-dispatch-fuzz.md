@@ -71,7 +71,7 @@ bench = false
 
 - [ ] **Step 2b: Exclude the fuzz crate from the root workspace**
 
-The root `Cargo.toml` uses an explicit `members` list and already excludes the protocol fuzz crate. Mirror that for the new one (hygiene + defends against a future glob). In `/home/bhengen/dev/vibeflow/Cargo.toml`, change:
+The root `Cargo.toml` uses an explicit `members` list and already excludes the protocol fuzz crate. Mirror that for the new one (hygiene + defends against a future glob). In `/path/to/vibeflow/Cargo.toml`, change:
 ```toml
 exclude = ["crates/vibeflow-protocol/fuzz"]
 ```
@@ -111,7 +111,7 @@ fuzz_target!(|segments: Vec<Vec<u8>>| {
 
 Run (from the app crate dir, which now contains `fuzz/`):
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow && cargo +nightly fuzz build osc_dispatch
+cd /path/to/vibeflow/crates/vibeflow && cargo +nightly fuzz build osc_dispatch
 ```
 Expected: compiles successfully (slow — ASAN build of the app graph). If it fails to find `OscDispatcher`, the path is `vibeflow::session::osc::OscDispatcher` — confirm the import. Paste the final lines.
 
@@ -119,7 +119,7 @@ Expected: compiles successfully (slow — ASAN build of the app graph). If it fa
 
 Run:
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow && cargo +nightly fuzz run osc_dispatch -- -max_total_time=20
+cd /path/to/vibeflow/crates/vibeflow && cargo +nightly fuzz run osc_dispatch -- -max_total_time=20
 ```
 Expected: a crash within ~a second (well before 20s) — libfuzzer prints a panic from the `assert_eq!` and writes an artifact under `fuzz/artifacts/osc_dispatch/` (gitignored). This proves the differential harness detects whole-vs-split differences. The trigger is benign: e.g. segments `[[b'x'], [b'y']]` → split yields `PassThrough([120]), PassThrough([121])` while whole yields `PassThrough([120, 121])`. Paste the crash summary.
 
@@ -178,7 +178,7 @@ fn coalesce_passthrough(events: Vec<DispatchEvent>) -> Vec<DispatchEvent> {
 
 Run:
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow && rm -rf fuzz/artifacts/osc_dispatch && cargo +nightly fuzz run osc_dispatch -- -max_total_time=60
+cd /path/to/vibeflow/crates/vibeflow && rm -rf fuzz/artifacts/osc_dispatch && cargo +nightly fuzz run osc_dispatch -- -max_total_time=60
 ```
 Expected: runs the full 60s and exits 0 (libfuzzer prints `Done ... ` with no crash). Paste the final summary line.
 
@@ -186,15 +186,15 @@ Expected: runs the full 60s and exits 0 (libfuzzer prints `Done ... ` with no cr
 
 - [ ] **Step 8: Confirm the root workspace is unaffected, then commit**
 
-Run: `cd /home/bhengen/dev/vibeflow && cargo build --workspace 2>&1 | tail -3`
+Run: `cd /path/to/vibeflow && cargo build --workspace 2>&1 | tail -3`
 Expected: builds the normal workspace WITHOUT mentioning `vibeflow-fuzz` (the fuzz crate's own `[workspace]` excludes it).
 
-Run: `git -C /home/bhengen/dev/vibeflow status --short`
+Run: `git -C /path/to/vibeflow status --short`
 Expected: the three new `crates/vibeflow/fuzz/` files (`.gitignore`, `Cargo.toml`, `fuzz_targets/osc_dispatch.rs`) plus the modified root ` M Cargo.toml` (the exclude edit), plus the pre-existing untracked `.claude/`, `drafts/`. The fuzz crate's `target/`, `corpus/`, `artifacts/`, `Cargo.lock` must NOT appear (they're gitignored). If `Cargo.lock` or `target/` show up, the `.gitignore` is wrong — fix before committing.
 
 Commit:
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add Cargo.toml crates/vibeflow/fuzz/.gitignore crates/vibeflow/fuzz/Cargo.toml crates/vibeflow/fuzz/fuzz_targets/osc_dispatch.rs
 git commit -m "$(cat <<'MSG'
 test(#18): add osc_dispatch fuzz target (split-vs-whole differential)
@@ -252,7 +252,7 @@ add:
 
 - [ ] **Step 3: Validate the workflow YAML parses**
 
-Run: `python3 -c "import yaml; yaml.safe_load(open('/home/bhengen/dev/vibeflow/.github/workflows/ci.yml')); print('YAML OK')"`
+Run: `python3 -c "import yaml; yaml.safe_load(open('/path/to/vibeflow/.github/workflows/ci.yml')); print('YAML OK')"`
 Expected: prints `YAML OK` (no exception). This catches indentation/syntax mistakes locally; the actual job behaviour is verified when CI runs on the PR.
 
 - [ ] **Step 4: Add the CHANGELOG entry**
@@ -267,7 +267,7 @@ In `CHANGELOG.md`, under `## [Unreleased]` (which already has `### Added` for #1
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add .github/workflows/ci.yml CHANGELOG.md
 git commit -m "ci(#18): run osc_dispatch fuzzer 60s in CI; changelog"
 ```

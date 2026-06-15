@@ -128,7 +128,7 @@ Create `crates/vibeflow/src/render/tabs.wgsl`:
 - [ ] **Step 3: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -138,7 +138,7 @@ Expected: clean (the new modules are doc-comment stubs but valid).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs crates/vibeflow/src/render/text.rs crates/vibeflow/src/render/text.wgsl crates/vibeflow/src/render/tabs.rs crates/vibeflow/src/render/tabs.wgsl
 git commit -m "chore(render): declare text and tabs submodules + stubs for Stage 6"
 ```
@@ -205,7 +205,7 @@ Append two new tests to the existing `mod tests` in `crates/vibeflow/src/window.
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib window
 ```
 
@@ -287,7 +287,7 @@ Find the two callsites of `pixels_to_grid`:
 - [ ] **Step 4: Run tests + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -297,7 +297,7 @@ Expected: all 102 prior + 1 new = 103 lib tests pass. Fmt + clippy silent.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs crates/vibeflow/src/render/mod.rs
 git commit -m "fix(window): read real cell pitch from atlas instead of Stage-4 placeholders"
 ```
@@ -374,7 +374,7 @@ Append to the existing `mod tests` block in `crates/vibeflow/src/session/session
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 ```
 
@@ -524,7 +524,7 @@ pub use session::{PtySession, SessionEvent, TabLabel};
 - [ ] **Step 4: Run the new tests + verify the full suite**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib session::session
 cargo test -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
@@ -537,7 +537,7 @@ If `refresh_default_subtitle`'s heuristic conflicts with any existing test (e.g.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/session/session.rs crates/vibeflow/src/session/mod.rs
 git commit -m "feat(session): TabLabel + default_label + refresh_default_subtitle"
 ```
@@ -780,7 +780,7 @@ mod tests {
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo test -p vibeflow --lib render::tabs
 ```
 
@@ -789,7 +789,7 @@ Expected: 9 tests pass.
 - [ ] **Step 2: Verify build + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -797,7 +797,7 @@ cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warni
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/tabs.rs
 git commit -m "feat(render): TabBarLayout pure-logic + hit-test (TDD)"
 ```
@@ -1158,7 +1158,7 @@ impl TextPipeline {
 - [ ] **Step 3: Verify build + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1170,7 +1170,7 @@ If clippy fires on `TextPipeline` not having callers, add `#[allow(dead_code)]` 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/text.rs crates/vibeflow/src/render/text.wgsl
 git commit -m "feat(render): TextPipeline (pixel-position textured-quad)"
 ```
@@ -1453,7 +1453,7 @@ Note: `BlendState::ALPHA_BLENDING` (not `REPLACE` like the cell pipeline) — th
 - [ ] **Step 3: Verify build + fmt + clippy**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -1461,7 +1461,7 @@ cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warni
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/tabs.rs crates/vibeflow/src/render/tabs.wgsl
 git commit -m "feat(render): TabBarPipeline (solid-color rects + alpha blending)"
 ```
@@ -1988,7 +1988,7 @@ To pass `&self.app` to render, we just need to keep the immutable borrow alive. 
 - [ ] **Step 4: Verify build + fmt + clippy + smoke**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 cargo test -p vibeflow
@@ -1999,7 +1999,7 @@ Expected: clean build, all tests pass.
 Smoke run (if you have a display):
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
 
@@ -2008,7 +2008,7 @@ You should see a tab bar at the top of the window with one tab labeled "bash · 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs crates/vibeflow/src/render/tabs.rs crates/vibeflow/src/window.rs
 git commit -m "feat(render): tab bar + indicator stripes + tab text in Renderer::render"
 ```
@@ -2087,7 +2087,7 @@ Replace with:
 - [ ] **Step 2: Verify build + smoke**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -2109,7 +2109,7 @@ The `bash · waiting` subtitle should appear, and the amber indicator stripe sho
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/window.rs
 git commit -m "feat(window): 60 Hz pulse animation cadence while any tab is Waiting"
 ```
@@ -2248,7 +2248,7 @@ Add the `handle_left_click_release` method to `impl WindowApp` (anywhere reasona
 - [ ] **Step 3: Verify build + tests + smoke**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 cargo test -p vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
@@ -2269,7 +2269,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/app.rs crates/vibeflow/src/window.rs
 git commit -m "feat(window,app): mouse-driven tab create/close/switch"
 ```
@@ -2353,7 +2353,7 @@ Place this block AFTER the tab-bar text pass but still inside the `{ ... }` scop
 - [ ] **Step 2: Verify build + smoke**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 cargo fmt --all -- --check && cargo clippy -p vibeflow --all-targets -- -D warnings
 ```
@@ -2363,7 +2363,7 @@ Smoke run: open vibeflow, type `exit` in the shell. The shell exits, the session
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs
 git commit -m "feat(render): dead-tab banner overlay when session.is_alive() == false"
 ```
@@ -2381,7 +2381,7 @@ git commit -m "feat(render): dead-tab banner overlay when session.is_alive() == 
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -2420,7 +2420,7 @@ If any step fails, capture the failure and a screenshot before fixing.
 - [ ] **Step 2: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -2441,7 +2441,7 @@ Net: 22 new lib tests → ~124 lib + 3 + 4 + 27 = 158 Rust tests + 1 proptest + 
 - [ ] **Step 3: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -2452,7 +2452,7 @@ Re-walk `docs/TESTING.md`'s Stage 6 section.
 - [ ] **Step 5: Commit + tag**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 6 manual smoke checklist"
 git tag -a stage6-tab-bar-complete -m "tab bar + Notice indicator + dead-tab banner + mouse tab interaction complete (Stage 6 of v0.1)"

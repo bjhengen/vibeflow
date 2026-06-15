@@ -2,6 +2,10 @@
 //!
 //! See `docs/protocol.md` in the workspace root for the canonical wire-format spec.
 
+// This is a published library crate; every public item must be documented.
+// CI runs with `-D warnings`, so this turns a missing doc into a build failure.
+#![warn(missing_docs)]
+
 use std::io::Write;
 
 /// `ESC` byte (start of an OSC sequence).
@@ -101,8 +105,11 @@ impl std::error::Error for ParseError {}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
+    /// The required AI-tool state this frame reports.
     pub state: State,
+    /// Optional tool identifier (e.g. `"claude"`), percent-encoded on the wire.
     pub tool: Option<String>,
+    /// Optional project/workspace name, percent-encoded on the wire.
     pub project: Option<String>,
 }
 

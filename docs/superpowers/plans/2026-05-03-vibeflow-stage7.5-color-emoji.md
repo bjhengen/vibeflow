@@ -16,7 +16,7 @@
 - Per-instance buffer growth must keep 16-byte alignment. `QuadInstance` going 64 → 80 bytes is naturally aligned (5 × 16). `QuadUniform` going 16 → 32 bytes also aligned.
 - `pub fn` items don't trigger dead_code warnings; `#[allow(dead_code)]` from earlier stages was unnecessary and was removed at end of Stage 7. Don't reintroduce it.
 - WGSL bugs only surface at runtime when `Renderer::new` calls the pipeline. Smoke run is the validation gate.
-- VNC display is available on slmbeast (port 5901). GUI smoke runs are runnable.
+- VNC display is available on host (port 5901). GUI smoke runs are runnable.
 
 ---
 
@@ -45,7 +45,7 @@ This task introduces the type machinery (`GlyphKind`) and refactors the existing
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git checkout main
 git pull --ff-only || true   # safe even if no remote / no upstream
 git checkout -b stage7.5-color-emoji
@@ -227,7 +227,7 @@ NOTE: If you find that `rasterize_ascii_letter_returns_image` does NOT use `test
 - [ ] **Step 6: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -247,7 +247,7 @@ For each construction, add `kind: crate::render::text_engine::GlyphKind::Mono,` 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/text_engine.rs crates/vibeflow/src/render/quad.rs
 git commit -m "chore(render): introduce GlyphKind, thread kind through RasterImage/GlyphRef"
 ```
@@ -699,7 +699,7 @@ NOTE: The Stage 7 test `glyph_for_caches_repeat_lookups` already exists and test
 - [ ] **Step 6: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -3
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -710,7 +710,7 @@ Expected: build clean. 128 default + 12 ignored (Stage 7's 7 + Task 0's 2 + Task
 
 NOTE: If the build fails because `Renderer::render` calls the old `texture_dirty` and the old `rebind_atlas`, those signatures still match what we have post-Task-1 — we just renamed `atlas_dirty` to `atlases_dirty` internally. The public API of `texture_dirty()` is unchanged. So `mod.rs` doesn't need to change in this task.
 
-LOCAL ONLY (verifies the GPU path on slmbeast):
+LOCAL ONLY (verifies the GPU path on host):
 ```bash
 LIBGL_ALWAYS_SOFTWARE=1 cargo test -p vibeflow --lib render::text_engine -- --ignored
 ```
@@ -718,7 +718,7 @@ LIBGL_ALWAYS_SOFTWARE=1 cargo test -p vibeflow --lib render::text_engine -- --ig
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/text_engine.rs
 git commit -m "feat(render): TextEngine — color atlas (RGBA8Unorm) + kind-routed try_atlas (TDD)"
 ```
@@ -1231,7 +1231,7 @@ Note WGSL's `select(a, b, cond)` returns `b` if `cond` is true, else `a`. The sh
 - [ ] **Step 10: Verify build (will fail at `Renderer` callers in `mod.rs` — expected)**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow 2>&1 | tail -20
 ```
 
@@ -1251,7 +1251,7 @@ Should be clean (Task 2 modifies plan-verbatim Rust + WGSL; rustfmt doesn't touc
 - [ ] **Step 11: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/quad.rs \
         crates/vibeflow/src/render/quad.wgsl \
         crates/vibeflow/src/render/tabs.rs
@@ -1335,7 +1335,7 @@ self.quad_pipeline
 - [ ] **Step 3: Verify build green**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -1357,7 +1357,7 @@ Smoke run (FIRST WORKING SMOKE for Stage 7.5):
 RUST_LOG=vibeflow=info ./target/debug/vibeflow &
 ```
 
-In the launched window, type `printf '🎉 hello'`. The 🎉 should now render in color (Noto Color Emoji on slmbeast). All Stage 7 behavior should still work.
+In the launched window, type `printf '🎉 hello'`. The 🎉 should now render in color (Noto Color Emoji on host). All Stage 7 behavior should still work.
 
 If the emoji renders but is the WRONG color (washed out, magenta-shifted, etc.), suspect the premultiplied-alpha shader formula. Try switching to non-premultiplied: `mix(in.bg.rgb, s.rgb, s.a)` in the color branch. Stage 7.5 spec calls this out as a known risk.
 
@@ -1368,7 +1368,7 @@ If the screen tears or flickers, the bind group might be holding a stale view. C
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/mod.rs
 git commit -m "feat(render): wire Renderer to dual-atlas QuadPipeline (color emoji renders)"
 ```
@@ -1562,7 +1562,7 @@ Three changes:
 - [ ] **Step 4: Verify**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build -p vibeflow
 cargo test -p vibeflow --lib 2>&1 | tail -3
 cargo fmt --all -- --check
@@ -1587,7 +1587,7 @@ If wide CJK chars now render with a 2-cell-wide bg but the glyph itself bleeds i
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add crates/vibeflow/src/render/quad.rs
 git commit -m "feat(render): wide-glyph fix (read WIDE_CHAR flags; double bg width; skip spacer)"
 ```
@@ -1607,7 +1607,7 @@ After the Stage 7 section, append:
 Run:
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo build --bin vibeflow
 RUST_LOG=vibeflow=info ./target/debug/vibeflow
 ```
@@ -1645,7 +1645,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 - [ ] **Step 2: Full local CI dry-run**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 cargo fmt --all -- --check && \
   cargo clippy --workspace --all-targets -- -D warnings && \
   cargo build --workspace --all-targets && \
@@ -1666,7 +1666,7 @@ If any test fails, STOP and report.
 - [ ] **Step 3: 60-second fuzz on the protocol parser**
 
 ```bash
-cd /home/bhengen/dev/vibeflow/crates/vibeflow-protocol
+cd /path/to/vibeflow/crates/vibeflow-protocol
 cargo +nightly fuzz run parse -- -max_total_time=60
 ```
 
@@ -1691,12 +1691,12 @@ substantive surfaces, fix before tagging.
 
 - [ ] **Step 5: Manual smoke walkthrough**
 
-Walk the Stage 7.5 section of `docs/TESTING.md` (Step 1 above). Brian will exercise this on slmbeast via VNC.
+Walk the Stage 7.5 section of `docs/TESTING.md` (Step 1 above). Brian will exercise this on host via VNC.
 
 - [ ] **Step 6: Commit + tag**
 
 ```bash
-cd /home/bhengen/dev/vibeflow
+cd /path/to/vibeflow
 git add docs/TESTING.md
 git commit -m "docs: Stage 7.5 manual smoke checklist"
 git tag -a stage7.5-color-emoji-complete \
@@ -1765,7 +1765,7 @@ Mapping Stage 7.5 spec requirements → tasks:
 2. **Wide CJK chars previously rendered correctly by accident** (the rasterized bitmap is naturally wider than `cell_w`, so it visually covers the spacer cell even though the bg quad was only 1-cell wide). Task 4's fix changes the bg to span 2 cells, which is the correct behavior, but might LOOK different (the bg under wide CJK now extends an extra cell to the right). Visual verification needed during smoke walkthrough.
 3. **`tabs.rs::push_text_glyphs` is touched by Task 4**'s instruction to read `g.kind` and pass through. Verify after implementation that tab-bar text still renders correctly (titles, subtitles, +, ×). If `glyph_for` ever returns `Color` for tab text (unlikely but possible if a session label contains an emoji), the color shader path will render correctly thanks to the per-instance `kind`.
 4. **alacritty_terminal cell.flags API stability.** `Flags::WIDE_CHAR` and `Flags::WIDE_CHAR_SPACER` are public in `alacritty_terminal-0.24`. If a future bump renames or removes them, Task 4 breaks. Pinning to 0.24 is fine for Stage 7.5; revisit if we bump.
-5. **GL test gate.** Task 1's two new ignored tests join Stage 7's existing wgpu-touching ignored tests. CI should NOT run `--ignored` (no GL on minimal runners); slmbeast dev exercises them via `LIBGL_ALWAYS_SOFTWARE=1`.
+5. **GL test gate.** Task 1's two new ignored tests join Stage 7's existing wgpu-touching ignored tests. CI should NOT run `--ignored` (no GL on minimal runners); host dev exercises them via `LIBGL_ALWAYS_SOFTWARE=1`.
 6. **First color glyph per session is slow** (cosmic-text loads emoji font on first miss; fontdb scan is heavy). Stage 7 already pays this cost at startup for system-font scan; Stage 7.5 pays it again on first emoji render. ~50–200 ms one-time hit, not a blocker.
 
 These risks are addressed by senior pre-execution review of this plan and the Stage 7.5 manual smoke walkthrough before merge.
