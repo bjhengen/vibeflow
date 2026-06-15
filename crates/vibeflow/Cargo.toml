@@ -6,7 +6,7 @@ keywords = ["terminal", "ai", "gpu", "wgpu", "vibeflow"]
 readme = "README.md"
 # Decoupled from the workspace version (which tracks the unchanged
 # `vibeflow-protocol`, still 0.1.3): the app iterates ahead of the protocol.
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-06-15
+
 Pre-launch audit-hardening pass ahead of the public posts: a multi-dimension review (security, stability, performance, quality, packaging) of the whole codebase, with the confirmed findings fixed here. No known-vulnerable dependencies, all `unsafe` still forbidden, the terminal-injection surface re-verified clean. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 wire format is unchanged; the only protocol-crate change is documentation).
 
 ### Security
