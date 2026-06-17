@@ -21,7 +21,7 @@ State arrives via the **OSC 1338 protocol**, an open standard for AI-tool state 
 
 Three tiers, in priority order:
 
-1. **Tier 1 — Native OSC 1338.** The AI tool emits a one-shot escape sequence on each state transition (`working`, `waiting`, `idle`). Used today for Claude Code via shell-hook configuration (see Quick start).
+1. **Tier 1 — Native OSC 1338.** The AI tool emits a one-shot escape sequence on each state transition (`working`, `waiting`, `done`). Used today for Claude Code via shell-hook configuration (see Quick start).
 2. **Tier 2 — Wrapper shims.** Drop-in launchers (e.g. `vibeflow-claude`) that watch the tool's output and emit OSC 1338 on its behalf — for tools that don't natively support it. *(Planned, post-v0.1.)*
 3. **Tier 3 — `/proc` heuristic.** As a fallback for tools in the configured AI list (`[ai] tools`), vibeflow infers state from foreground-process activity and output silence. It matches the foreground process by name and transparently resolves interpreter-wrapped CLIs — e.g. Codex, shipped as `node /usr/bin/codex`, is detected as `codex` rather than `node`. Lower-fidelity, but works for unknown tools.
 
