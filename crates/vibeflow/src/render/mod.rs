@@ -58,8 +58,7 @@ fn build_selection_rects(
         .collect()
 }
 
-/// Default clear color for Stage 4 — matches the dark-theme background from
-/// `docs/superpowers/specs/2026-05-01-vibeflow-design.md` (`#0e0e12`).
+/// Default clear color — the dark-theme background (`#0e0e12`).
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0x0e as f64 / 255.0,
     g: 0x0e as f64 / 255.0,

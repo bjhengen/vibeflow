@@ -49,3 +49,6 @@ credentials.json
 # Local Claude Code config/state and WIP blog drafts — never track (committed in error 2026-06-15)
 /.claude/
 /drafts/
+
+# Internal AI-assisted-dev planning/spec notes — kept local, not part of the public tree
+/docs/superpowers/
