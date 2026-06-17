@@ -11,9 +11,14 @@
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="license: MIT OR Apache-2.0"></a>
 </p>
 
+<p align="center">
+  <img src="assets/vibeflow_screenshot_states.png" alt="vibeflow tab bar: Codex working (blue stripe), Claude and OpenCode waiting on you (amber stripe)" width="800">
+</p>
+<p align="center"><sub>Three AI tools, three tabs — Codex is <strong>working</strong> (blue), Claude and OpenCode are <strong>waiting on you</strong> (amber).</sub></p>
+
 ## The idea
 
-A modern terminal renders glyphs faster, but it doesn't know what's happening inside it. vibeflow does: every tab carries a small indicator stripe showing whether the program inside is **working**, **waiting on you**, or **idle**. That awareness becomes especially valuable with AI assistants — you can glance at the tab bar and tell at a distance which conversations need you back, without alt-tabbing through them.
+A modern terminal renders glyphs faster, but it doesn't know what's happening inside it. vibeflow does: every tab carries a small indicator stripe showing whether the program inside is **working**, **waiting on you**, or **done**. That awareness becomes especially valuable with AI assistants — you can glance at the tab bar and tell at a distance which conversations need you back, without alt-tabbing through them.
 
 State arrives via the **OSC 1338 protocol**, an open standard for AI-tool state signalling in terminals — published in this repo as a [Rust crate](https://crates.io/crates/vibeflow-protocol) and a [TypeScript binding](https://www.npmjs.com/package/vibeflow-protocol).
 
@@ -38,6 +43,11 @@ Three tiers, in priority order:
 - OSC 1338 native AI-state + `/proc` heuristic fallback.
 - OSC 52 clipboard write (for `vim "+y`, tmux pass-through, remote SSH copy)
   — read intentionally not implemented for security reasons.
+
+<p align="center">
+  <img src="assets/vibeflow_screenshot_fullscreen.png" alt="A full vibeflow window running Claude Code, with three state-indicating tabs above GPU-rendered terminal content" width="760">
+</p>
+<p align="center"><sub>A full vibeflow window running Claude Code — GPU-rendered text and color, with the per-tab state indicators live above.</sub></p>
 
 ## Install
 
@@ -157,7 +167,7 @@ The OSC 1338 wire format is specified in [`docs/protocol.md`](docs/protocol.md).
 
 ## Contributing / testing
 
-See [`docs/TESTING.md`](docs/TESTING.md) for the local test matrix. CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace --all-targets`, `cargo doc`, a 60-second protocol fuzz, and the npm binding build/test.
+See [`docs/TESTING.md`](docs/TESTING.md) for the local test matrix. CI runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace --all-targets`, `cargo doc`, two 60-second fuzz runs (protocol parser + OSC dispatcher), and the npm binding build/test.
 
 ## License
 
