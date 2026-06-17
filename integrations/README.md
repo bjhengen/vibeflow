@@ -80,5 +80,5 @@ infers `Waiting`. Crude but works.
 Native integrations for Codex / Opencode are tracked for a future stage.
 Aider Python binding is deferred to v0.2.
 
-See `docs/protocol.md` (in the repo root after release) for the OSC 1338
+See [`docs/protocol.md`](../docs/protocol.md) for the OSC 1338
 protocol specification if you want to wire other tools yourself.

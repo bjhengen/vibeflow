@@ -246,7 +246,7 @@ RUST_LOG=vibeflow=info ./target/debug/vibeflow
 
 ### Clipboard
 
-- [ ] Drag-select "(base) bhengen", press `Ctrl+Shift+C`. Paste into another GUI app on host (e.g., Firefox URL bar) — should arrive as text.
+- [ ] Drag-select "(base) user@host", press `Ctrl+Shift+C`. Paste into another GUI app on host (e.g., Firefox URL bar) — should arrive as text.
 - [ ] In Firefox, copy "hello world" with `Ctrl+C`. Switch back to vibeflow. Press `Ctrl+Shift+V` → "hello world" appears at the prompt.
 - [ ] Copy a multi-line `for` loop:
    ```bash

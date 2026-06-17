@@ -39,6 +39,20 @@ function parse(input: string): Frame;       // throws on malformed input
 
 The full wire-format specification lives in [`docs/protocol.md`](https://github.com/bjhengen/vibeflow/blob/main/docs/protocol.md) in the vibeflow repository.
 
+## Emitting from a hook (captured stdout)
+
+`emit()` writes to `process.stdout`. Some hosts capture a tool's stdout — notably
+Claude Code hooks — so those bytes never reach the terminal and the indicator never
+updates. In that case, write the frame to the controlling terminal (`/dev/tty`)
+directly, the way the `vibeflow-emit` CLI does:
+
+```ts
+import { openSync, writeSync } from "node:fs";
+import { toBytes } from "vibeflow-protocol";
+
+writeSync(openSync("/dev/tty", "w"), toBytes({ state: "waiting" }));
+```
+
 ## When emitted bytes do nothing
 
 In any terminal that doesn't recognise OSC 1338, the bytes are silently consumed and produce no output. So it's safe to call `emitState` from a tool that may or may not run inside vibeflow.
