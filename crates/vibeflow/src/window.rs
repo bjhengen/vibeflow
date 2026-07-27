@@ -2435,8 +2435,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             // Stage 10: losing focus dismisses the context menu to avoid a
             // stale overlay. The Focused arm didn't exist before Stage 10 so
             // this is a new arm (not a modification of an existing handler).
-            WindowEvent::Focused(false) if self.context_menu.is_some() => {
+            WindowEvent::Focused(false)
+                if self.context_menu.is_some() || self.tab_drag.is_some() =>
+            {
                 self.context_menu = None;
+                // #9: focus loss mid-drag (grab broken by the compositor or a focus
+                // steal) would otherwise leave the drag live with a stuck grab cursor.
+                self.abandon_tab_drag();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }

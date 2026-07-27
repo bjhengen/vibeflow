@@ -155,7 +155,7 @@ impl TabBarLayout {
         }
     }
 
-    /// Hit-test a click at (px, py). Order: close button > tab body > new-tab > none.
+    /// Hit-test a click at (px, py). Order: new-tab > close button > tab body > none.
     #[must_use]
     pub fn hit_test(&self, px: u32, py: u32) -> TabBarHit {
         if py >= self.bar_height_px {
