@@ -396,6 +396,16 @@ mod tests {
         let c = subtitle_color(TabState::Active, fallback, &palette);
         assert_eq!(c, fallback);
     }
+
+    #[test]
+    fn tab_bg_dragged_beats_active_beats_inactive() {
+        // #9: the grabbed tab must read as "lifted" even while it is also
+        // the active tab; all three states must be pairwise distinct.
+        assert_ne!(tab_bg(false, true), tab_bg(true, false));
+        assert_ne!(tab_bg(true, false), tab_bg(false, false));
+        assert_ne!(tab_bg(false, true), tab_bg(false, false));
+        assert_eq!(tab_bg(true, true), tab_bg(false, true), "dragged wins");
+    }
 }
 
 /// Per-instance data for [`TabBarPipeline`]. 32 bytes.
@@ -653,6 +663,28 @@ const BG_INACTIVE: [f32; 4] = [
     1.0,
 ];
 
+/// #9: dragged-tab background — one step lighter than `BG_ACTIVE` so the
+/// grabbed tab reads as "lifted" while it snaps between slots.
+const BG_DRAGGED: [f32; 4] = [
+    0x24 as f32 / 255.0,
+    0x24 as f32 / 255.0,
+    0x2e as f32 / 255.0,
+    1.0,
+];
+
+/// Background for a tab. Pure so the drag/active precedence is testable
+/// without GPU or App scaffolding.
+#[must_use]
+pub fn tab_bg(is_active: bool, is_dragged: bool) -> [f32; 4] {
+    if is_dragged {
+        BG_DRAGGED
+    } else if is_active {
+        BG_ACTIVE
+    } else {
+        BG_INACTIVE
+    }
+}
+
 /// Title text color (slightly muted on inactive tabs).
 const FG_ACTIVE: [f32; 4] = [
     0xe5 as f32 / 255.0,
@@ -696,6 +728,7 @@ impl TabBarRenderer {
         cursor_blink: &crate::render::cursor::CursorBlink,
         now: Instant,
         pulse_enabled: bool,
+        drag_idx: Option<usize>,
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
@@ -708,7 +741,7 @@ impl TabBarRenderer {
         // Tab backgrounds first (so stripes draw on top).
         for tab in &layout.tabs {
             let is_active = tab.idx == active_idx && tab.idx < app.tabs().len();
-            let bg = if is_active { BG_ACTIVE } else { BG_INACTIVE };
+            let bg = tab_bg(is_active, drag_idx == Some(tab.idx));
             rects.push(RectInstance::new(
                 tab.body.x as f32,
                 tab.body.y as f32,

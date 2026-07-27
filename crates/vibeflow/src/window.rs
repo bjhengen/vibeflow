@@ -1694,6 +1694,8 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     &self.app,
                     &self.error_banner,
                     self.rename_state.as_ref(),
+                    self.tab_drag
+                        .and_then(|d| d.started.then_some(d.tab_idx)),
                     self.context_menu.as_ref(),
                     self.about_open,
                     self.confirm_close.as_ref(),

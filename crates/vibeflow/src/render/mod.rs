@@ -297,6 +297,7 @@ impl Renderer {
         app: &crate::app::App,
         error_banner: &crate::config::error_banner::ErrorBannerState,
         rename_state: Option<&crate::render::tabs::RenameInputState>,
+        drag_tab_idx: Option<usize>,
         context_menu: Option<&crate::render::context_menu::ContextMenuState>,
         about_open: bool,
         confirm_close: Option<&crate::render::confirm_close::ConfirmCloseState>,
@@ -363,6 +364,7 @@ impl Renderer {
             &self.cursor,
             now,
             self.indicator_pulse,
+            drag_tab_idx,
         );
         let selection_rects = if let Some(active) = app.tabs().get(app.active()) {
             if active.selection.current().is_some() {
