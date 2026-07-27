@@ -289,7 +289,10 @@ mod tests {
         // hit_test at the close button reports TabClose, but for drag
         // targeting that x still belongs to slot 0.
         let close_x = layout.tabs[0].close_button.x + 1;
-        assert_eq!(layout.hit_test(close_x, layout.tabs[0].close_button.y + 1), TabBarHit::TabClose(0));
+        assert_eq!(
+            layout.hit_test(close_x, layout.tabs[0].close_button.y + 1),
+            TabBarHit::TabClose(0)
+        );
         assert_eq!(layout.slot_at_x(close_x), Some(0));
     }
 

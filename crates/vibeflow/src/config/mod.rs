@@ -561,7 +561,11 @@ fn apply_shortcuts(
     apply(Shortcut::Copy, "copy", section.copy);
     apply(Shortcut::Paste, "paste", section.paste);
     apply(Shortcut::RenameTab, "rename_tab", section.rename_tab);
-    apply(Shortcut::MoveTabLeft, "move_tab_left", section.move_tab_left);
+    apply(
+        Shortcut::MoveTabLeft,
+        "move_tab_left",
+        section.move_tab_left,
+    );
     apply(
         Shortcut::MoveTabRight,
         "move_tab_right",
@@ -891,7 +895,11 @@ mod tests {
     fn move_tab_shortcuts_load_from_toml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[shortcuts]\nmove_tab_left = [\"ctrl+alt+pageup\"]\n").unwrap();
+        std::fs::write(
+            &path,
+            "[shortcuts]\nmove_tab_left = [\"ctrl+alt+pageup\"]\n",
+        )
+        .unwrap();
         let (cfg, errors) = Config::load(&path);
         assert!(errors.is_empty(), "{errors:?}");
         let chords = cfg.shortcuts.bindings.get(&Shortcut::MoveTabLeft).unwrap();

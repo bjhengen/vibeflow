@@ -1719,8 +1719,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     &self.app,
                     &self.error_banner,
                     self.rename_state.as_ref(),
-                    self.tab_drag
-                        .and_then(|d| d.started.then_some(d.tab_idx)),
+                    self.tab_drag.and_then(|d| d.started.then_some(d.tab_idx)),
                     self.context_menu.as_ref(),
                     self.about_open,
                     self.confirm_close.as_ref(),
@@ -2262,8 +2261,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                         if let crate::render::tabs::TabBarHit::TabBody(idx) =
                             layout.hit_test(px, py)
                         {
-                            self.tab_drag =
-                                Some(TabDragState::new(idx, px, self.app.tabs().len()));
+                            self.tab_drag = Some(TabDragState::new(idx, px, self.app.tabs().len()));
                         }
                         return;
                     }
@@ -3532,7 +3530,10 @@ mod tests {
         assert!(!d.started);
         // ...in either direction.
         let step = d.on_cursor_x(97, Some(0));
-        assert!(!step.started_now && step.moved.is_none(), "slot change must not apply pre-threshold");
+        assert!(
+            !step.started_now && step.moved.is_none(),
+            "slot change must not apply pre-threshold"
+        );
     }
 
     #[test]

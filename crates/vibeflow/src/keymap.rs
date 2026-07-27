@@ -523,7 +523,10 @@ mod tests {
     #[test]
     fn ctrl_shift_pageup_is_move_tab_left() {
         assert_eq!(
-            match_shortcut(&Key::Named(NamedKey::PageUp), mods(true, true, false, false)),
+            match_shortcut(
+                &Key::Named(NamedKey::PageUp),
+                mods(true, true, false, false)
+            ),
             Some(Shortcut::MoveTabLeft)
         );
     }
@@ -531,7 +534,10 @@ mod tests {
     #[test]
     fn ctrl_shift_pagedown_is_move_tab_right() {
         assert_eq!(
-            match_shortcut(&Key::Named(NamedKey::PageDown), mods(true, true, false, false)),
+            match_shortcut(
+                &Key::Named(NamedKey::PageDown),
+                mods(true, true, false, false)
+            ),
             Some(Shortcut::MoveTabRight)
         );
     }
@@ -541,7 +547,10 @@ mod tests {
         // Shift+PageUp belongs to scrollback (window.rs Stage 12 block); the
         // table must not shadow it.
         assert_eq!(
-            match_shortcut(&Key::Named(NamedKey::PageUp), mods(false, true, false, false)),
+            match_shortcut(
+                &Key::Named(NamedKey::PageUp),
+                mods(false, true, false, false)
+            ),
             None
         );
     }
@@ -562,12 +571,18 @@ mod tests {
         let mut table = ShortcutTable::with_default_bindings();
         table.replace_from_bindings(&ShortcutBindings { bindings });
         assert_eq!(
-            table.lookup(&Key::Named(NamedKey::PageUp), mods(true, true, false, false)),
+            table.lookup(
+                &Key::Named(NamedKey::PageUp),
+                mods(true, true, false, false)
+            ),
             None,
             "default chord replaced"
         );
         assert_eq!(
-            table.lookup(&Key::Named(NamedKey::PageUp), mods(false, false, true, false)),
+            table.lookup(
+                &Key::Named(NamedKey::PageUp),
+                mods(false, false, true, false)
+            ),
             Some(Shortcut::MoveTabLeft)
         );
     }
