@@ -20,6 +20,7 @@ use crate::session::SessionEvent;
 
 /// #9: horizontal travel from the press point before a tab drag engages.
 /// Below this, press+release is a plain click (Stage 6 contract untouched).
+#[allow(dead_code)] // wired in the mouse-handler task (#9)
 const TAB_DRAG_THRESHOLD_PX: u32 = 4;
 
 /// #9: an in-progress tab drag. Armed by a left press on a tab body; the
@@ -27,6 +28,7 @@ const TAB_DRAG_THRESHOLD_PX: u32 = 4;
 /// travel. Live-snap: every slot change is applied to `App` immediately,
 /// so `tab_idx` always names the dragged tab's REAL current slot.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // wired in the mouse-handler task (#9)
 struct TabDragState {
     /// Current slot of the dragged tab — updated after every applied move.
     tab_idx: usize,
@@ -45,6 +47,7 @@ struct TabDragState {
 /// the side effects (cancel rename, `App::move_tab`, cursor icon, redraw);
 /// keeping the decision pure makes the transitions testable headless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // wired in the mouse-handler task (#9)
 struct DragStep {
     /// The threshold was crossed on THIS update.
     started_now: bool,
@@ -52,6 +55,7 @@ struct DragStep {
     moved: Option<(usize, usize)>,
 }
 
+#[allow(dead_code)] // wired in the mouse-handler task (#9)
 impl TabDragState {
     fn new(tab_idx: usize, press_x: u32, tabs_len: usize) -> Self {
         Self {
