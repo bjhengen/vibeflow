@@ -484,7 +484,7 @@ impl WindowApp {
                 // overlay for completeness. Existing rename logic is
                 // unchanged otherwise.
                 // #9: a modal owns the mouse next — abandon any tab drag.
-                self.tab_drag = None;
+                self.abandon_tab_drag();
                 self.about_open = true;
                 self.rename_state = None;
             }
@@ -604,7 +604,7 @@ impl WindowApp {
             "single-tab close requested; showing confirm dialog"
         );
         // #9: a modal owns the mouse next — abandon any tab drag.
-        self.tab_drag = None;
+        self.abandon_tab_drag();
         self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::with_scope(
             busy,
             1,
@@ -639,7 +639,7 @@ impl WindowApp {
             "close-other-tabs requested; showing confirm dialog"
         );
         // #9: a modal owns the mouse next — abandon any tab drag.
-        self.tab_drag = None;
+        self.abandon_tab_drag();
         self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::with_scope(
             busy,
             tab_count,
@@ -1396,6 +1396,24 @@ impl WindowApp {
         }
     }
 
+    /// #9: tear down an in-progress tab drag, restoring the Grabbing cursor
+    /// if the drag had started. Every teardown path routes through here —
+    /// modal opens, invalidation, and the end-of-drag release — so the
+    /// cursor can never be stranded. Returns true when a STARTED drag was
+    /// torn down (the invalidation path uses this to consume the event).
+    fn abandon_tab_drag(&mut self) -> bool {
+        let Some(drag) = self.tab_drag.take() else {
+            return false;
+        };
+        if drag.started {
+            if let Some(window) = self.window.as_ref() {
+                window.set_cursor(winit::window::CursorIcon::Default);
+                window.request_redraw();
+            }
+        }
+        drag.started
+    }
+
     /// Open a context menu anchored at (px_x, px_y). `target_idx` is `Some` for
     /// tab menus (set to the tab the user right-clicked) and `None` for grid
     /// menus (action targets the active tab).
@@ -1630,7 +1648,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     "close requested; showing confirm dialog"
                 );
                 // #9: a modal owns the mouse next — abandon any tab drag.
-                self.tab_drag = None;
+                self.abandon_tab_drag();
                 self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::new(
                     busy, tab_count,
                 ));
@@ -1966,12 +1984,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                         // opens a tab; a dead shell does NOT remove its tab).
                         // Indices may have shifted — abandon rather than drag
                         // the wrong neighbor.
-                        self.tab_drag = None;
-                        if drag.started {
-                            if let Some(window) = self.window.as_ref() {
-                                window.set_cursor(winit::window::CursorIcon::Default);
-                                window.request_redraw();
-                            }
+                        if self.abandon_tab_drag() {
                             return;
                         }
                     } else {
@@ -2120,18 +2133,14 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // it would route to grid/menu branches with the drag live.
                 if self.tab_drag.is_some_and(|d| d.started) {
                     if button == MouseButton::Left && state == ElementState::Released {
-                        self.tab_drag = None;
-                        if let Some(window) = self.window.as_ref() {
-                            window.set_cursor(winit::window::CursorIcon::Default);
-                            window.request_redraw();
-                        }
+                        self.abandon_tab_drag();
                     }
                     return;
                 }
                 if button == MouseButton::Left && state == ElementState::Released {
                     // An armed press that never crossed the threshold is a
                     // plain click — clear it and let normal routing handle it.
-                    self.tab_drag = None;
+                    self.abandon_tab_drag();
                 }
 
                 // v0.1.3 confirm-close overlay: runs BEFORE About.
