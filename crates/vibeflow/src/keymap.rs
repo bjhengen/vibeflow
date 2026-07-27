@@ -22,6 +22,10 @@ pub enum Shortcut {
     /// Stage 10: select the entire grid buffer (including scrollback). Default
     /// binding is Ctrl+Shift+A; wired to a real handler in Task 8.
     SelectAll,
+    /// #9: move the active tab one slot left/right. Defaults
+    /// Ctrl+Shift+PageUp / Ctrl+Shift+PageDown (GNOME Terminal convention).
+    MoveTabLeft,
+    MoveTabRight,
 }
 
 /// Keyed lookup table. Constructed via `ShortcutTable::with_default_bindings()`
@@ -46,6 +50,8 @@ enum ChordKeyDisc {
     Char(char),
     Tab,
     Function(u8),
+    PageUp,
+    PageDown,
 }
 
 impl ShortcutTable {
@@ -140,6 +146,20 @@ impl ShortcutTable {
                     ChordKeyDisc::Char('a'),
                 )],
             ),
+            (
+                Shortcut::MoveTabLeft,
+                &[(
+                    ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                    ChordKeyDisc::PageUp,
+                )],
+            ),
+            (
+                Shortcut::MoveTabRight,
+                &[(
+                    ModifiersState::CONTROL.union(ModifiersState::SHIFT),
+                    ChordKeyDisc::PageDown,
+                )],
+            ),
         ];
         let mut by_chord = HashMap::new();
         for (action, chords) in pairs {
@@ -183,6 +203,8 @@ impl ShortcutTable {
             Key::Named(NamedKey::F10) => ChordKeyDisc::Function(10),
             Key::Named(NamedKey::F11) => ChordKeyDisc::Function(11),
             Key::Named(NamedKey::F12) => ChordKeyDisc::Function(12),
+            Key::Named(NamedKey::PageUp) => ChordKeyDisc::PageUp,
+            Key::Named(NamedKey::PageDown) => ChordKeyDisc::PageDown,
             _ => return None,
         };
         // Use ALL FOUR modifier bits (Ctrl, Shift, Alt, Super). Default
@@ -219,6 +241,8 @@ impl ShortcutTable {
                     KeyMatch::Char(c) => ChordKeyDisc::Char(c.to_ascii_lowercase()),
                     KeyMatch::Tab => ChordKeyDisc::Tab,
                     KeyMatch::Function(n) => ChordKeyDisc::Function(*n),
+                    KeyMatch::PageUp => ChordKeyDisc::PageUp,
+                    KeyMatch::PageDown => ChordKeyDisc::PageDown,
                 };
                 self.by_chord.insert(
                     ChordKey {
@@ -436,8 +460,9 @@ mod tests {
     fn shortcut_table_default_has_all_actions() {
         let t = ShortcutTable::with_default_bindings();
         // 8 original actions × 2 chord aliases = 16 entries,
-        // + 1 for SelectAll (Ctrl+Shift+A only) = 17.
-        assert_eq!(t.by_chord.len(), 17);
+        // + 1 for SelectAll (Ctrl+Shift+A only)
+        // + 2 for MoveTabLeft/MoveTabRight (one chord each) = 19.
+        assert_eq!(t.by_chord.len(), 19);
     }
 
     #[test]
@@ -490,6 +515,60 @@ mod tests {
         assert_eq!(
             table.lookup(&ch("c"), mods(true, true, false, false)),
             Some(Shortcut::Copy)
+        );
+    }
+
+    // ===== #9: move-tab chords =====
+
+    #[test]
+    fn ctrl_shift_pageup_is_move_tab_left() {
+        assert_eq!(
+            match_shortcut(&Key::Named(NamedKey::PageUp), mods(true, true, false, false)),
+            Some(Shortcut::MoveTabLeft)
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_pagedown_is_move_tab_right() {
+        assert_eq!(
+            match_shortcut(&Key::Named(NamedKey::PageDown), mods(true, true, false, false)),
+            Some(Shortcut::MoveTabRight)
+        );
+    }
+
+    #[test]
+    fn shift_pageup_alone_is_none() {
+        // Shift+PageUp belongs to scrollback (window.rs Stage 12 block); the
+        // table must not shadow it.
+        assert_eq!(
+            match_shortcut(&Key::Named(NamedKey::PageUp), mods(false, true, false, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn move_tab_chords_are_rebindable() {
+        use crate::config::{KeyChord, KeyMatch, ShortcutBindings};
+        use std::collections::HashMap;
+
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            Shortcut::MoveTabLeft,
+            vec![KeyChord {
+                modifiers: ModifiersState::ALT,
+                key: KeyMatch::PageUp,
+            }],
+        );
+        let mut table = ShortcutTable::with_default_bindings();
+        table.replace_from_bindings(&ShortcutBindings { bindings });
+        assert_eq!(
+            table.lookup(&Key::Named(NamedKey::PageUp), mods(true, true, false, false)),
+            None,
+            "default chord replaced"
+        );
+        assert_eq!(
+            table.lookup(&Key::Named(NamedKey::PageUp), mods(false, false, true, false)),
+            Some(Shortcut::MoveTabLeft)
         );
     }
 }

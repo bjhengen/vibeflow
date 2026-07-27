@@ -1149,6 +1149,8 @@ impl WindowApp {
             }
             Shortcut::NextTab => self.app.cycle_active(1),
             Shortcut::PrevTab => self.app.cycle_active(-1),
+            Shortcut::MoveTabLeft => self.move_active_tab(-1),
+            Shortcut::MoveTabRight => self.move_active_tab(1),
             Shortcut::RestartTab => {
                 if let Err(e) = self.app.restart_active() {
                     tracing::warn!("restart failed: {e}");
@@ -1180,6 +1182,29 @@ impl WindowApp {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
+            }
+        }
+    }
+
+    /// #9: move the active tab one slot in `direction` (clamped at the
+    /// strip ends, no wrap). A reorder invalidates an open context menu's
+    /// stored tab index (menu dismissed) and any armed mouse drag (abandoned
+    /// via `abandon_tab_drag`, which also restores the cursor — its
+    /// `tabs_len` snapshot can't see order changes).
+    fn move_active_tab(&mut self, direction: i32) {
+        self.abandon_tab_drag();
+        let active = self.app.active();
+        let len = self.app.tabs().len();
+        let target = if direction < 0 {
+            active.saturating_sub(1)
+        } else {
+            (active + 1).min(len.saturating_sub(1))
+        };
+        if target != active {
+            self.app.move_tab(active, target);
+            self.context_menu = None;
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
             }
         }
     }

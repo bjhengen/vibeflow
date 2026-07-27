@@ -123,6 +123,10 @@ pub enum KeyMatch {
     Tab,
     /// `Key::Named(NamedKey::F1)` through `F12`. Stored as 1..=12.
     Function(u8),
+    /// `Key::Named(NamedKey::PageUp)`.
+    PageUp,
+    /// `Key::Named(NamedKey::PageDown)`.
+    PageDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -457,6 +461,18 @@ pub fn parse_shortcut(s: &str) -> Result<KeyChord, String> {
                 }
                 key = Some(KeyMatch::Tab);
             }
+            "pageup" | "pgup" => {
+                if key.is_some() {
+                    return Err(format!("multiple key tokens in \"{s}\""));
+                }
+                key = Some(KeyMatch::PageUp);
+            }
+            "pagedown" | "pgdn" => {
+                if key.is_some() {
+                    return Err(format!("multiple key tokens in \"{s}\""));
+                }
+                key = Some(KeyMatch::PageDown);
+            }
             other if other.starts_with('f') && other.len() <= 3 => {
                 let n: u8 = other[1..]
                     .parse()
@@ -496,6 +512,8 @@ fn default_shortcuts() -> ShortcutBindings {
         (Copy, &["ctrl+shift+c", "super+c"]),
         (Paste, &["ctrl+shift+v", "super+v"]),
         (RenameTab, &["ctrl+shift+e", "f2"]),
+        (MoveTabLeft, &["ctrl+shift+pageup"]),
+        (MoveTabRight, &["ctrl+shift+pagedown"]),
     ];
     let mut bindings = HashMap::new();
     for (action, specs) in entries {
@@ -543,6 +561,12 @@ fn apply_shortcuts(
     apply(Shortcut::Copy, "copy", section.copy);
     apply(Shortcut::Paste, "paste", section.paste);
     apply(Shortcut::RenameTab, "rename_tab", section.rename_tab);
+    apply(Shortcut::MoveTabLeft, "move_tab_left", section.move_tab_left);
+    apply(
+        Shortcut::MoveTabRight,
+        "move_tab_right",
+        section.move_tab_right,
+    );
     for unknown in section.extra.keys() {
         errors.push(ConfigError::UnknownAction(unknown.clone()));
     }
@@ -854,13 +878,35 @@ mod tests {
         assert!(r.is_err());
     }
 
+    #[test]
+    fn parse_shortcut_pageup_pagedown_tokens() {
+        let c = parse_shortcut("ctrl+shift+pageup").unwrap();
+        assert_eq!(c.key, KeyMatch::PageUp);
+        assert!(c.modifiers.control_key() && c.modifiers.shift_key());
+        assert_eq!(parse_shortcut("pgdn").unwrap().key, KeyMatch::PageDown);
+        assert!(parse_shortcut("pageup+tab").is_err(), "two key tokens");
+    }
+
+    #[test]
+    fn move_tab_shortcuts_load_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[shortcuts]\nmove_tab_left = [\"ctrl+alt+pageup\"]\n").unwrap();
+        let (cfg, errors) = Config::load(&path);
+        assert!(errors.is_empty(), "{errors:?}");
+        let chords = cfg.shortcuts.bindings.get(&Shortcut::MoveTabLeft).unwrap();
+        assert_eq!(chords.len(), 1);
+        assert_eq!(chords[0].key, KeyMatch::PageUp);
+    }
+
     // -- Config::default + load -------------------------------------------
 
     #[test]
-    fn default_values_have_8_shortcut_actions() {
+    fn default_values_have_10_shortcut_actions() {
         let cfg = Config::default_values();
-        // 8 actions: NewTab CloseTab NextTab PrevTab RestartTab Copy Paste RenameTab
-        assert_eq!(cfg.shortcuts.bindings.len(), 8);
+        // 10 actions: NewTab CloseTab NextTab PrevTab RestartTab Copy Paste
+        // RenameTab MoveTabLeft MoveTabRight
+        assert_eq!(cfg.shortcuts.bindings.len(), 10);
     }
 
     #[test]
