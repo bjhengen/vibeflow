@@ -18,6 +18,84 @@ use crate::render::tabs::RenameInputState;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
+/// #9: horizontal travel from the press point before a tab drag engages.
+/// Below this, press+release is a plain click (Stage 6 contract untouched).
+const TAB_DRAG_THRESHOLD_PX: u32 = 4;
+
+/// #9: an in-progress tab drag. Armed by a left press on a tab body; the
+/// drag itself only engages after `TAB_DRAG_THRESHOLD_PX` of horizontal
+/// travel. Live-snap: every slot change is applied to `App` immediately,
+/// so `tab_idx` always names the dragged tab's REAL current slot.
+#[derive(Debug, Clone, Copy)]
+struct TabDragState {
+    /// Current slot of the dragged tab — updated after every applied move.
+    tab_idx: usize,
+    /// Cursor x at mouse-down; threshold reference.
+    press_x: u32,
+    /// True once the threshold has been crossed.
+    started: bool,
+    /// Tab count at arm time. Keyboard chords still fire mid-drag
+    /// (Ctrl+Shift+W closes an idle tab with NO confirm dialog,
+    /// Ctrl+Shift+T opens one) and can shift indices under the drag —
+    /// any count change abandons it (see `invalidated_by`).
+    tabs_len: usize,
+}
+
+/// #9: what one cursor-x update means for the drag. The winit handler applies
+/// the side effects (cancel rename, `App::move_tab`, cursor icon, redraw);
+/// keeping the decision pure makes the transitions testable headless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DragStep {
+    /// The threshold was crossed on THIS update.
+    started_now: bool,
+    /// A reorder to apply: `(from, to)` for `App::move_tab`.
+    moved: Option<(usize, usize)>,
+}
+
+impl TabDragState {
+    fn new(tab_idx: usize, press_x: u32, tabs_len: usize) -> Self {
+        Self {
+            tab_idx,
+            press_x,
+            started: false,
+            tabs_len,
+        }
+    }
+
+    /// True when the tab list changed under the drag — the caller abandons
+    /// it. Count comparison, not just a bounds check: a close at a lower
+    /// index shifts every later slot while leaving `tab_idx` in range, so a
+    /// bounds check alone would silently drag the wrong neighbor. (A dead
+    /// shell does NOT remove its tab — only user actions change the count.)
+    fn invalidated_by(&self, current_len: usize) -> bool {
+        self.tab_idx >= current_len || current_len != self.tabs_len
+    }
+
+    /// Advance for a cursor at `px`, where `slot` is
+    /// `TabBarLayout::slot_at_x(px)` computed by the caller. A single event
+    /// can both start the drag and move a slot (coalesced fast flick).
+    fn on_cursor_x(&mut self, px: u32, slot: Option<usize>) -> DragStep {
+        let mut step = DragStep {
+            started_now: false,
+            moved: None,
+        };
+        if !self.started {
+            if px.abs_diff(self.press_x) < TAB_DRAG_THRESHOLD_PX {
+                return step;
+            }
+            self.started = true;
+            step.started_now = true;
+        }
+        if let Some(to) = slot {
+            if to != self.tab_idx {
+                step.moved = Some((self.tab_idx, to));
+                self.tab_idx = to;
+            }
+        }
+        step
+    }
+}
+
 /// Compute terminal grid dimensions (rows, cols) from a window's physical
 /// pixel size and per-cell pixel size. Floor-divides; clamps to at least 1×1
 /// so degenerate (0, 0) surfaces still produce a usable grid for the child.
@@ -3297,5 +3375,73 @@ mod tests {
         );
         let _ = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Tab));
         assert_eq!(app.confirm_close().unwrap().focus, FocusedButton::Cancel);
+    }
+
+    // ===== #9: TabDragState =====
+
+    #[test]
+    fn drag_below_threshold_does_nothing() {
+        let mut d = TabDragState::new(1, 100, 3);
+        let step = d.on_cursor_x(103, Some(1));
+        assert!(!step.started_now && step.moved.is_none());
+        assert!(!d.started);
+        // ...in either direction.
+        let step = d.on_cursor_x(97, Some(0));
+        assert!(!step.started_now && step.moved.is_none(), "slot change must not apply pre-threshold");
+    }
+
+    #[test]
+    fn drag_starts_at_threshold_without_slot_change() {
+        let mut d = TabDragState::new(1, 100, 3);
+        let step = d.on_cursor_x(104, Some(1));
+        assert!(step.started_now);
+        assert!(step.moved.is_none());
+        assert!(d.started);
+    }
+
+    #[test]
+    fn fast_flick_starts_and_moves_in_one_event() {
+        // Coalesced CursorMoved can jump a whole slot in one event.
+        let mut d = TabDragState::new(0, 100, 2);
+        let step = d.on_cursor_x(400, Some(1));
+        assert!(step.started_now);
+        assert_eq!(step.moved, Some((0, 1)));
+        assert_eq!(d.tab_idx, 1);
+    }
+
+    #[test]
+    fn started_drag_moves_on_each_new_slot_and_is_stable_within_one() {
+        let mut d = TabDragState::new(0, 100, 2);
+        d.on_cursor_x(200, Some(0)); // start, same slot
+        let step = d.on_cursor_x(300, Some(1));
+        assert!(!step.started_now, "started_now fires only once");
+        assert_eq!(step.moved, Some((0, 1)));
+        // Wiggle within slot 1: no further moves.
+        let step = d.on_cursor_x(310, Some(1));
+        assert_eq!(step.moved, None);
+        // Drag back home.
+        let step = d.on_cursor_x(120, Some(0));
+        assert_eq!(step.moved, Some((1, 0)));
+        assert_eq!(d.tab_idx, 0);
+    }
+
+    #[test]
+    fn none_slot_keeps_current_position() {
+        // Gutter / + button / past window edge: target stays put.
+        let mut d = TabDragState::new(2, 100, 3);
+        d.on_cursor_x(200, Some(2)); // start
+        let step = d.on_cursor_x(900, None);
+        assert!(step.moved.is_none());
+        assert_eq!(d.tab_idx, 2);
+    }
+
+    #[test]
+    fn drag_invalidated_by_tab_count_change() {
+        // Ctrl+Shift+W (idle close, no dialog) or Ctrl+Shift+T can fire
+        // mid-drag; any count change may shift indices under the drag.
+        let d = TabDragState::new(1, 100, 3);
+        assert!(!d.invalidated_by(3));
+        assert!(d.invalidated_by(2), "tab closed mid-drag");
+        assert!(d.invalidated_by(4), "tab opened mid-drag");
     }
 }
