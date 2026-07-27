@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- **Tabs can be reordered** (the reorder half of #9). Drag a tab along the
+  bar and it snaps slot-to-slot as the cursor crosses its neighbors; a plain
+  click still just switches tabs (a 4 px threshold separates the two). The
+  dragged tab is highlighted and the cursor shows a grab hand. By keyboard:
+  `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the active tab, rebindable
+  via `[shortcuts] move_tab_left` / `move_tab_right`. (These two chords
+  previously fell through to the Shift-gated scrollback half-page scroll —
+  an undocumented accident of the guard; plain `Shift+PageUp`/`PageDown`
+  scrollback is unchanged.) Detaching a tab into its own window is tracked
+  separately (multi-window architecture).
+
 ## [0.1.7] - 2026-06-15
 
 Pre-launch audit-hardening pass ahead of the public posts: a multi-dimension review (security, stability, performance, quality, packaging) of the whole codebase, with the confirmed findings fixed here. No known-vulnerable dependencies, all `unsafe` still forbidden, the terminal-injection surface re-verified clean. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 wire format is unchanged; the only protocol-crate change is documentation).
