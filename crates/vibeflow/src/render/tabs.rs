@@ -174,6 +174,23 @@ impl TabBarLayout {
         }
         TabBarHit::None
     }
+
+    /// #9: which tab slot the horizontal position `px` falls in, for drag
+    /// targeting. Unlike `hit_test`, the close-button region counts as its
+    /// tab's slot and the y coordinate is ignored — a drag tracks x only,
+    /// wherever the cursor is vertically. `None` in the right gutter and the
+    /// `+`-button region (mirrors `hit_test`'s new-tab-first priority for
+    /// the many-tabs overflow case, where min-width tabs can underlap it).
+    #[must_use]
+    pub fn slot_at_x(&self, px: u32) -> Option<usize> {
+        if self.new_tab_button.contains(px, 0) {
+            return None;
+        }
+        self.tabs
+            .iter()
+            .find(|t| px >= t.body.x && px < t.body.x + t.body.w)
+            .map(|t| t.idx)
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +271,41 @@ mod tests {
         let layout = TabBarLayout::compute(960, 22, 4);
         // 4 tabs, 928 / 4 = 232 px each (< MAX 250). x=232 is the start of tab 1.
         assert_eq!(layout.hit_test(232, 10), TabBarHit::TabBody(1));
+    }
+
+    #[test]
+    fn slot_at_x_maps_each_tab_span_to_its_slot() {
+        let layout = TabBarLayout::compute(960, 16, 3);
+        assert_eq!(layout.slot_at_x(0), Some(0));
+        assert_eq!(layout.slot_at_x(249), Some(0));
+        assert_eq!(layout.slot_at_x(250), Some(1));
+        assert_eq!(layout.slot_at_x(500), Some(2));
+        assert_eq!(layout.slot_at_x(749), Some(2));
+    }
+
+    #[test]
+    fn slot_at_x_close_button_region_counts_as_its_tab() {
+        let layout = TabBarLayout::compute(960, 16, 3);
+        // hit_test at the close button reports TabClose, but for drag
+        // targeting that x still belongs to slot 0.
+        let close_x = layout.tabs[0].close_button.x + 1;
+        assert_eq!(layout.hit_test(close_x, layout.tabs[0].close_button.y + 1), TabBarHit::TabClose(0));
+        assert_eq!(layout.slot_at_x(close_x), Some(0));
+    }
+
+    #[test]
+    fn slot_at_x_gutter_and_new_tab_button_are_none() {
+        let layout = TabBarLayout::compute(960, 16, 3);
+        assert_eq!(layout.slot_at_x(750), None); // gutter after last tab
+        assert_eq!(layout.slot_at_x(930), None); // + button region
+        assert_eq!(layout.slot_at_x(10_000), None); // far off-window
+    }
+
+    #[test]
+    fn slot_at_x_single_tab() {
+        let layout = TabBarLayout::compute(960, 16, 1);
+        assert_eq!(layout.slot_at_x(10), Some(0));
+        assert_eq!(layout.slot_at_x(251), None);
     }
 
     #[test]
