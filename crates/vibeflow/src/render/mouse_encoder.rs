@@ -218,6 +218,6 @@ mod tests {
         // Wheel up button code is 64; legacy byte is 64 + 32 = 96 = b'`'.
         // col+1+32 for col=10 is 43 = b'+'. row+1+32 for row=5 is 38 = b'&'.
         let bytes = encode_press(Button::WheelUp, pt(5, 10), false);
-        assert_eq!(bytes, b"\x1b[M`+&".to_vec(), "got: {:?}", &bytes);
+        assert_eq!(bytes, b"\x1b[M`+&".to_vec(), "got: {:?}", bytes);
     }
 }
