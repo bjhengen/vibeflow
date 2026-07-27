@@ -219,6 +219,21 @@ impl App {
         }
     }
 
+    /// #9: move the tab at `from` to position `to` (drag-reorder / keyboard
+    /// move). Out-of-bounds or `from == to` is a no-op — the drag path
+    /// computes indices from a layout that can momentarily lag a tab close,
+    /// so this must never panic. `active` is remapped so the focused
+    /// *session* stays focused.
+    pub fn move_tab(&mut self, from: usize, to: usize) {
+        let len = self.tabs.len();
+        if from >= len || to >= len || from == to {
+            return;
+        }
+        let session = self.tabs.remove(from);
+        self.tabs.insert(to, session);
+        self.active = remap_active_after_move(self.active, from, to);
+    }
+
     /// Snapshot of all sessions (for read-only inspection — Stage 4+ tab-bar
     /// renderer uses this to draw indicator stripes).
     #[must_use]
@@ -458,6 +473,22 @@ impl App {
 impl Default for App {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pure active-index remap for a `from → to` tab move: `remove(from)` shifts
+/// everything after `from` left; `insert(to)` shifts everything at/after `to`
+/// right. Extracted from `App::move_tab` so the index math is testable
+/// without spawning PTYs.
+fn remap_active_after_move(active: usize, from: usize, to: usize) -> usize {
+    if active == from {
+        to
+    } else if from < active && active <= to {
+        active - 1
+    } else if to <= active && active < from {
+        active + 1
+    } else {
+        active
     }
 }
 
@@ -1070,5 +1101,82 @@ mod tests {
             ..Ui::default()
         };
         assert!(!app.close_others_needs_confirmation(0, &ui));
+    }
+
+    // ===== #9: move_tab =====
+
+    fn spawn_named(app: &mut App, name: &str) {
+        use crate::session::TabLabel;
+        let idx = app.new_tab(&["/bin/sh", "-c", "sleep 5"]).unwrap();
+        app.tabs_mut()[idx].set_label(TabLabel {
+            title: name.to_string(),
+            subtitle: String::new(),
+        });
+    }
+
+    fn titles(app: &App) -> Vec<String> {
+        app.tabs().iter().map(|s| s.label().title.clone()).collect()
+    }
+
+    #[test]
+    fn move_tab_reorders_and_active_follows_the_moved_tab() {
+        let mut app = App::new();
+        spawn_named(&mut app, "a");
+        spawn_named(&mut app, "b");
+        spawn_named(&mut app, "c");
+        app.set_active(0);
+        app.move_tab(0, 2);
+        assert_eq!(titles(&app), vec!["b", "c", "a"]);
+        assert_eq!(app.active(), 2, "focused session must stay focused");
+    }
+
+    #[test]
+    fn move_tab_right_across_active_shifts_active_left() {
+        let mut app = App::new();
+        spawn_named(&mut app, "a");
+        spawn_named(&mut app, "b");
+        spawn_named(&mut app, "c");
+        app.set_active(1);
+        app.move_tab(0, 2); // "a" hops over "b"
+        assert_eq!(titles(&app), vec!["b", "c", "a"]);
+        assert_eq!(app.active(), 0, "\"b\" moved down one slot");
+    }
+
+    #[test]
+    fn move_tab_left_across_active_shifts_active_right() {
+        let mut app = App::new();
+        spawn_named(&mut app, "a");
+        spawn_named(&mut app, "b");
+        spawn_named(&mut app, "c");
+        app.set_active(1);
+        app.move_tab(2, 0); // "c" hops over "b"
+        assert_eq!(titles(&app), vec!["c", "a", "b"]);
+        assert_eq!(app.active(), 2, "\"b\" moved up one slot");
+    }
+
+    #[test]
+    fn move_tab_same_index_and_out_of_bounds_are_no_ops() {
+        let mut app = App::new();
+        spawn_named(&mut app, "a");
+        spawn_named(&mut app, "b");
+        app.set_active(1);
+        app.move_tab(1, 1);
+        app.move_tab(0, 5);
+        app.move_tab(5, 0);
+        assert_eq!(titles(&app), vec!["a", "b"]);
+        assert_eq!(app.active(), 1);
+    }
+
+    #[test]
+    fn remap_active_after_move_full_matrix() {
+        // (active, from, to) -> expected. Bystanders outside the shifted
+        // range must not move.
+        assert_eq!(remap_active_after_move(0, 0, 2), 2); // active is dragged
+        assert_eq!(remap_active_after_move(2, 2, 0), 0);
+        assert_eq!(remap_active_after_move(1, 0, 2), 0); // right-move over active
+        assert_eq!(remap_active_after_move(2, 0, 1), 2); // shift range excludes it
+        assert_eq!(remap_active_after_move(1, 2, 0), 2); // left-move over active
+        assert_eq!(remap_active_after_move(0, 2, 1), 0); // untouched bystander
+        assert_eq!(remap_active_after_move(3, 1, 2), 3); // untouched bystander
     }
 }
