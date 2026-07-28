@@ -666,12 +666,14 @@ const BG_INACTIVE: [f32; 4] = [
     1.0,
 ];
 
-/// #9: dragged-tab background — one step lighter than `BG_ACTIVE` so the
-/// grabbed tab reads as "lifted" while it snaps between slots.
+/// #9: dragged-tab background — clearly lighter than `BG_ACTIVE` so the
+/// grabbed tab reads as "lifted" while it snaps between slots. Deliberately
+/// bright: a subtler step (originally 0x24242e) was invisible over VNC's
+/// lossy encode, and the highlight only shows during an active drag.
 const BG_DRAGGED: [f32; 4] = [
-    0x24 as f32 / 255.0,
-    0x24 as f32 / 255.0,
-    0x2e as f32 / 255.0,
+    0x3a as f32 / 255.0,
+    0x3a as f32 / 255.0,
+    0x4a as f32 / 255.0,
     1.0,
 ];
 
