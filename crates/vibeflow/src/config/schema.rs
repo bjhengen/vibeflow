@@ -37,6 +37,8 @@ pub struct ShortcutsSection {
     pub copy: Option<Vec<String>>,
     pub paste: Option<Vec<String>>,
     pub rename_tab: Option<Vec<String>>,
+    pub move_tab_left: Option<Vec<String>>,
+    pub move_tab_right: Option<Vec<String>>,
     /// Unknown action keys land here so `mod.rs::load` can warn about them.
     #[serde(flatten)]
     pub extra: HashMap<String, toml::Value>,

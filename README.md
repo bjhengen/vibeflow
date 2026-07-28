@@ -34,6 +34,7 @@ Three tiers, in priority order:
 
 - GPU rendering (wgpu) — fast, smooth scrollback.
 - Multiple tabs with per-tab AI-state indicator + title.
+- Drag tabs to reorder (live snap); `Ctrl+Shift+PgUp`/`PgDn` moves the active tab.
 - Full iTerm2 color-scheme import (`vibeflow --import-colors <path>`).
 - Truecolor, italics, color emoji.
 - Configurable bell (`visual` / `audible` / `both` / `silent`, debounced).
@@ -154,6 +155,8 @@ Keybindings (default; configurable):
 | Close tab | `Ctrl+Shift+W` |
 | Next tab | `Ctrl+Tab` |
 | Previous tab | `Ctrl+Shift+Tab` |
+| Move tab left | `Ctrl+Shift+PgUp` |
+| Move tab right | `Ctrl+Shift+PgDn` |
 | Copy | `Ctrl+Shift+C` |
 | Paste | `Ctrl+Shift+V` |
 | Scrollback up/down | `Shift+PgUp` / `Shift+PgDn` |

@@ -155,7 +155,7 @@ impl TabBarLayout {
         }
     }
 
-    /// Hit-test a click at (px, py). Order: close button > tab body > new-tab > none.
+    /// Hit-test a click at (px, py). Order: new-tab > close button > tab body > none.
     #[must_use]
     pub fn hit_test(&self, px: u32, py: u32) -> TabBarHit {
         if py >= self.bar_height_px {
@@ -173,6 +173,23 @@ impl TabBarLayout {
             }
         }
         TabBarHit::None
+    }
+
+    /// #9: which tab slot the horizontal position `px` falls in, for drag
+    /// targeting. Unlike `hit_test`, the close-button region counts as its
+    /// tab's slot and the y coordinate is ignored — a drag tracks x only,
+    /// wherever the cursor is vertically. `None` in the right gutter and the
+    /// `+`-button region (mirrors `hit_test`'s new-tab-first priority for
+    /// the many-tabs overflow case, where min-width tabs can underlap it).
+    #[must_use]
+    pub fn slot_at_x(&self, px: u32) -> Option<usize> {
+        if self.new_tab_button.contains(px, 0) {
+            return None;
+        }
+        self.tabs
+            .iter()
+            .find(|t| px >= t.body.x && px < t.body.x + t.body.w)
+            .map(|t| t.idx)
     }
 }
 
@@ -254,6 +271,44 @@ mod tests {
         let layout = TabBarLayout::compute(960, 22, 4);
         // 4 tabs, 928 / 4 = 232 px each (< MAX 250). x=232 is the start of tab 1.
         assert_eq!(layout.hit_test(232, 10), TabBarHit::TabBody(1));
+    }
+
+    #[test]
+    fn slot_at_x_maps_each_tab_span_to_its_slot() {
+        let layout = TabBarLayout::compute(960, 16, 3);
+        assert_eq!(layout.slot_at_x(0), Some(0));
+        assert_eq!(layout.slot_at_x(249), Some(0));
+        assert_eq!(layout.slot_at_x(250), Some(1));
+        assert_eq!(layout.slot_at_x(500), Some(2));
+        assert_eq!(layout.slot_at_x(749), Some(2));
+    }
+
+    #[test]
+    fn slot_at_x_close_button_region_counts_as_its_tab() {
+        let layout = TabBarLayout::compute(960, 16, 3);
+        // hit_test at the close button reports TabClose, but for drag
+        // targeting that x still belongs to slot 0.
+        let close_x = layout.tabs[0].close_button.x + 1;
+        assert_eq!(
+            layout.hit_test(close_x, layout.tabs[0].close_button.y + 1),
+            TabBarHit::TabClose(0)
+        );
+        assert_eq!(layout.slot_at_x(close_x), Some(0));
+    }
+
+    #[test]
+    fn slot_at_x_gutter_and_new_tab_button_are_none() {
+        let layout = TabBarLayout::compute(960, 16, 3);
+        assert_eq!(layout.slot_at_x(750), None); // gutter after last tab
+        assert_eq!(layout.slot_at_x(930), None); // + button region
+        assert_eq!(layout.slot_at_x(10_000), None); // far off-window
+    }
+
+    #[test]
+    fn slot_at_x_single_tab() {
+        let layout = TabBarLayout::compute(960, 16, 1);
+        assert_eq!(layout.slot_at_x(10), Some(0));
+        assert_eq!(layout.slot_at_x(251), None);
     }
 
     #[test]
@@ -343,6 +398,16 @@ mod tests {
         let fallback = [0.5, 0.6, 0.7, 1.0];
         let c = subtitle_color(TabState::Active, fallback, &palette);
         assert_eq!(c, fallback);
+    }
+
+    #[test]
+    fn tab_bg_dragged_beats_active_beats_inactive() {
+        // #9: the grabbed tab must read as "lifted" even while it is also
+        // the active tab; all three states must be pairwise distinct.
+        assert_ne!(tab_bg(false, true), tab_bg(true, false));
+        assert_ne!(tab_bg(true, false), tab_bg(false, false));
+        assert_ne!(tab_bg(false, true), tab_bg(false, false));
+        assert_eq!(tab_bg(true, true), tab_bg(false, true), "dragged wins");
     }
 }
 
@@ -601,6 +666,30 @@ const BG_INACTIVE: [f32; 4] = [
     1.0,
 ];
 
+/// #9: dragged-tab background — clearly lighter than `BG_ACTIVE` so the
+/// grabbed tab reads as "lifted" while it snaps between slots. Deliberately
+/// bright: a subtler step (originally 0x24242e) was invisible over VNC's
+/// lossy encode, and the highlight only shows during an active drag.
+const BG_DRAGGED: [f32; 4] = [
+    0x3a as f32 / 255.0,
+    0x3a as f32 / 255.0,
+    0x4a as f32 / 255.0,
+    1.0,
+];
+
+/// Background for a tab. Pure so the drag/active precedence is testable
+/// without GPU or App scaffolding.
+#[must_use]
+pub fn tab_bg(is_active: bool, is_dragged: bool) -> [f32; 4] {
+    if is_dragged {
+        BG_DRAGGED
+    } else if is_active {
+        BG_ACTIVE
+    } else {
+        BG_INACTIVE
+    }
+}
+
 /// Title text color (slightly muted on inactive tabs).
 const FG_ACTIVE: [f32; 4] = [
     0xe5 as f32 / 255.0,
@@ -644,6 +733,7 @@ impl TabBarRenderer {
         cursor_blink: &crate::render::cursor::CursorBlink,
         now: Instant,
         pulse_enabled: bool,
+        drag_idx: Option<usize>,
     ) -> Vec<RectInstance> {
         let mut rects = Vec::new();
         let bar_height = layout.bar_height_px as f32;
@@ -656,7 +746,7 @@ impl TabBarRenderer {
         // Tab backgrounds first (so stripes draw on top).
         for tab in &layout.tabs {
             let is_active = tab.idx == active_idx && tab.idx < app.tabs().len();
-            let bg = if is_active { BG_ACTIVE } else { BG_INACTIVE };
+            let bg = tab_bg(is_active, drag_idx == Some(tab.idx));
             rects.push(RectInstance::new(
                 tab.body.x as f32,
                 tab.body.y as f32,

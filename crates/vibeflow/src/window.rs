@@ -18,6 +18,84 @@ use crate::render::tabs::RenameInputState;
 use crate::render::Renderer;
 use crate::session::SessionEvent;
 
+/// #9: horizontal travel from the press point before a tab drag engages.
+/// Below this, press+release is a plain click (Stage 6 contract untouched).
+const TAB_DRAG_THRESHOLD_PX: u32 = 4;
+
+/// #9: an in-progress tab drag. Armed by a left press on a tab body; the
+/// drag itself only engages after `TAB_DRAG_THRESHOLD_PX` of horizontal
+/// travel. Live-snap: every slot change is applied to `App` immediately,
+/// so `tab_idx` always names the dragged tab's REAL current slot.
+#[derive(Debug, Clone, Copy)]
+struct TabDragState {
+    /// Current slot of the dragged tab — updated after every applied move.
+    tab_idx: usize,
+    /// Cursor x at mouse-down; threshold reference.
+    press_x: u32,
+    /// True once the threshold has been crossed.
+    started: bool,
+    /// Tab count at arm time. Keyboard chords still fire mid-drag
+    /// (Ctrl+Shift+W closes an idle tab with NO confirm dialog,
+    /// Ctrl+Shift+T opens one) and can shift indices under the drag —
+    /// any count change abandons it (see `invalidated_by`).
+    tabs_len: usize,
+}
+
+/// #9: what one cursor-x update means for the drag. The winit handler applies
+/// the side effects (cancel rename, `App::move_tab`, cursor icon, redraw);
+/// keeping the decision pure makes the transitions testable headless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DragStep {
+    /// The threshold was crossed on THIS update.
+    started_now: bool,
+    /// A reorder to apply: `(from, to)` for `App::move_tab`.
+    moved: Option<(usize, usize)>,
+}
+
+impl TabDragState {
+    fn new(tab_idx: usize, press_x: u32, tabs_len: usize) -> Self {
+        Self {
+            tab_idx,
+            press_x,
+            started: false,
+            tabs_len,
+        }
+    }
+
+    /// True when the tab list changed under the drag — the caller abandons
+    /// it. Count comparison, not just a bounds check: a close at a lower
+    /// index shifts every later slot while leaving `tab_idx` in range, so a
+    /// bounds check alone would silently drag the wrong neighbor. (A dead
+    /// shell does NOT remove its tab — only user actions change the count.)
+    fn invalidated_by(&self, current_len: usize) -> bool {
+        self.tab_idx >= current_len || current_len != self.tabs_len
+    }
+
+    /// Advance for a cursor at `px`, where `slot` is
+    /// `TabBarLayout::slot_at_x(px)` computed by the caller. A single event
+    /// can both start the drag and move a slot (coalesced fast flick).
+    fn on_cursor_x(&mut self, px: u32, slot: Option<usize>) -> DragStep {
+        let mut step = DragStep {
+            started_now: false,
+            moved: None,
+        };
+        if !self.started {
+            if px.abs_diff(self.press_x) < TAB_DRAG_THRESHOLD_PX {
+                return step;
+            }
+            self.started = true;
+            step.started_now = true;
+        }
+        if let Some(to) = slot {
+            if to != self.tab_idx {
+                step.moved = Some((self.tab_idx, to));
+                self.tab_idx = to;
+            }
+        }
+        step
+    }
+}
+
 /// Compute terminal grid dimensions (rows, cols) from a window's physical
 /// pixel size and per-cell pixel size. Floor-divides; clamps to at least 1×1
 /// so degenerate (0, 0) surfaces still produce a usable grid for the child.
@@ -248,6 +326,9 @@ pub struct WindowApp {
     config_path: std::path::PathBuf,
     /// Stage 9: in-progress inline rename of a tab title. None when not renaming.
     rename_state: Option<RenameInputState>,
+    /// #9: in-progress tab drag (armed by left-press on a tab body). None
+    /// when the last press wasn't on a tab body or the drag ended.
+    tab_drag: Option<TabDragState>,
     /// Stage 10: open right-click context menu, if any. At most one open.
     context_menu: Option<crate::render::context_menu::ContextMenuState>,
     /// Stage 12: how many lines a single wheel detent scrolls. Mirrors
@@ -402,6 +483,8 @@ impl WindowApp {
                 // before calling us), so we only need to clear the rename
                 // overlay for completeness. Existing rename logic is
                 // unchanged otherwise.
+                // #9: a modal owns the mouse next — abandon any tab drag.
+                self.abandon_tab_drag();
                 self.about_open = true;
                 self.rename_state = None;
             }
@@ -520,6 +603,8 @@ impl WindowApp {
             tab_index = idx,
             "single-tab close requested; showing confirm dialog"
         );
+        // #9: a modal owns the mouse next — abandon any tab drag.
+        self.abandon_tab_drag();
         self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::with_scope(
             busy,
             1,
@@ -553,6 +638,8 @@ impl WindowApp {
             busy_count = busy.len(),
             "close-other-tabs requested; showing confirm dialog"
         );
+        // #9: a modal owns the mouse next — abandon any tab drag.
+        self.abandon_tab_drag();
         self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::with_scope(
             busy,
             tab_count,
@@ -807,6 +894,7 @@ impl WindowApp {
             error_banner,
             config_path,
             rename_state: None,
+            tab_drag: None,
             context_menu: None,
             wheel_lines_per_detent: 3,
             last_grid_size_lines: 24,
@@ -1061,6 +1149,8 @@ impl WindowApp {
             }
             Shortcut::NextTab => self.app.cycle_active(1),
             Shortcut::PrevTab => self.app.cycle_active(-1),
+            Shortcut::MoveTabLeft => self.move_active_tab(-1),
+            Shortcut::MoveTabRight => self.move_active_tab(1),
             Shortcut::RestartTab => {
                 if let Err(e) = self.app.restart_active() {
                     tracing::warn!("restart failed: {e}");
@@ -1092,6 +1182,29 @@ impl WindowApp {
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
+            }
+        }
+    }
+
+    /// #9: move the active tab one slot in `direction` (clamped at the
+    /// strip ends, no wrap). A reorder invalidates an open context menu's
+    /// stored tab index (menu dismissed) and any armed mouse drag (abandoned
+    /// via `abandon_tab_drag`, which also restores the cursor — its
+    /// `tabs_len` snapshot can't see order changes).
+    fn move_active_tab(&mut self, direction: i32) {
+        self.abandon_tab_drag();
+        let active = self.app.active();
+        let len = self.app.tabs().len();
+        let target = if direction < 0 {
+            active.saturating_sub(1)
+        } else {
+            (active + 1).min(len.saturating_sub(1))
+        };
+        if target != active {
+            self.app.move_tab(active, target);
+            self.context_menu = None;
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
             }
         }
     }
@@ -1306,6 +1419,24 @@ impl WindowApp {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+
+    /// #9: tear down an in-progress tab drag, restoring the Grabbing cursor
+    /// if the drag had started. Every teardown path routes through here —
+    /// modal opens, invalidation, and the end-of-drag release — so the
+    /// cursor can never be stranded. Returns true when a STARTED drag was
+    /// torn down (the invalidation path uses this to consume the event).
+    fn abandon_tab_drag(&mut self) -> bool {
+        let Some(drag) = self.tab_drag.take() else {
+            return false;
+        };
+        if drag.started {
+            if let Some(window) = self.window.as_ref() {
+                window.set_cursor(winit::window::CursorIcon::Default);
+                window.request_redraw();
+            }
+        }
+        drag.started
     }
 
     /// Open a context menu anchored at (px_x, px_y). `target_idx` is `Some` for
@@ -1541,6 +1672,8 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     busy_count = busy.len(),
                     "close requested; showing confirm dialog"
                 );
+                // #9: a modal owns the mouse next — abandon any tab drag.
+                self.abandon_tab_drag();
                 self.confirm_close = Some(crate::render::confirm_close::ConfirmCloseState::new(
                     busy, tab_count,
                 ));
@@ -1586,6 +1719,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     &self.app,
                     &self.error_banner,
                     self.rename_state.as_ref(),
+                    self.tab_drag.and_then(|d| d.started.then_some(d.tab_idx)),
                     self.context_menu.as_ref(),
                     self.about_open,
                     self.confirm_close.as_ref(),
@@ -1866,6 +2000,59 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 let (px, py) = (position.x as u32, position.y as u32);
                 self.cursor_pos = Some((px, py));
 
+                // #9: an armed/active tab drag tracks x only, wherever the
+                // cursor is vertically (grab semantics) — so this runs before
+                // the bar/grid split. Once started it consumes the move.
+                if let Some(mut drag) = self.tab_drag {
+                    if drag.invalidated_by(self.app.tabs().len()) {
+                        // The tab list changed under the drag (keyboard-only:
+                        // Ctrl+Shift+W idle-close has no dialog, Ctrl+Shift+T
+                        // opens a tab; a dead shell does NOT remove its tab).
+                        // Indices may have shifted — abandon rather than drag
+                        // the wrong neighbor.
+                        if self.abandon_tab_drag() {
+                            return;
+                        }
+                    } else {
+                        let slot = {
+                            let Some(renderer) = self.renderer.as_ref() else {
+                                return;
+                            };
+                            let (_, cell_h) = renderer.cell_pitch();
+                            let (window_w, _) = renderer.surface_size();
+                            crate::render::tabs::TabBarLayout::compute(
+                                window_w,
+                                cell_h,
+                                self.app.tabs().len(),
+                            )
+                            .slot_at_x(px)
+                        };
+                        let step = drag.on_cursor_x(px, slot);
+                        if step.started_now {
+                            self.cancel_rename();
+                            if let Some(window) = self.window.as_ref() {
+                                window.set_cursor(winit::window::CursorIcon::Grabbing);
+                            }
+                        }
+                        if let Some((from, to)) = step.moved {
+                            self.app.move_tab(from, to);
+                            // The menu's stored tab index is stale after any
+                            // reorder (it can be open here via a mid-arm
+                            // right-click, before the threshold engaged).
+                            self.context_menu = None;
+                        }
+                        self.tab_drag = Some(drag);
+                        if step.started_now || step.moved.is_some() {
+                            if let Some(window) = self.window.as_ref() {
+                                window.request_redraw();
+                            }
+                        }
+                        if drag.started {
+                            return;
+                        }
+                    }
+                }
+
                 // Stage 10: update hover focus when a context menu is open.
                 if let Some(menu) = self.context_menu.as_mut() {
                     let cursor = (position.x as f32, position.y as f32);
@@ -1966,6 +2153,22 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     return;
                 };
 
+                // #9: an in-flight drag owns the mouse. Only the ending
+                // Released-Left does anything; every other button event mid-
+                // drag (middle-click paste, right-click menu) is swallowed —
+                // it would route to grid/menu branches with the drag live.
+                if self.tab_drag.is_some_and(|d| d.started) {
+                    if button == MouseButton::Left && state == ElementState::Released {
+                        self.abandon_tab_drag();
+                    }
+                    return;
+                }
+                if button == MouseButton::Left && state == ElementState::Released {
+                    // An armed press that never crossed the threshold is a
+                    // plain click — clear it and let normal routing handle it.
+                    self.abandon_tab_drag();
+                }
+
                 // v0.1.3 confirm-close overlay: runs BEFORE About.
                 if self.try_consume_confirm_close_mouse(button, state) {
                     if let Some(window) = self.window.as_ref() {
@@ -2044,6 +2247,24 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                 // in the tab bar and any non-Left buttons in the tab bar are
                 // ignored (no-op).
                 if py < bar_h {
+                    // #9: left-press on a tab body arms a potential drag.
+                    // Invisible on its own — the Stage 6 click contract (act
+                    // on release) is unchanged unless the cursor then travels
+                    // TAB_DRAG_THRESHOLD_PX horizontally.
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        let (window_w, _) = renderer.surface_size();
+                        let layout = crate::render::tabs::TabBarLayout::compute(
+                            window_w,
+                            cell_h,
+                            self.app.tabs().len(),
+                        );
+                        if let crate::render::tabs::TabBarHit::TabBody(idx) =
+                            layout.hit_test(px, py)
+                        {
+                            self.tab_drag = Some(TabDragState::new(idx, px, self.app.tabs().len()));
+                        }
+                        return;
+                    }
                     // Stage 10: right-click anywhere in the tab bar opens a context menu.
                     // Hit-test determines whether to show a tab menu (click on a tab body)
                     // or a grid menu (click in the gutters / empty area of the tab bar).
@@ -2214,8 +2435,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
             // Stage 10: losing focus dismisses the context menu to avoid a
             // stale overlay. The Focused arm didn't exist before Stage 10 so
             // this is a new arm (not a modification of an existing handler).
-            WindowEvent::Focused(false) if self.context_menu.is_some() => {
+            WindowEvent::Focused(false)
+                if self.context_menu.is_some() || self.tab_drag.is_some() =>
+            {
                 self.context_menu = None;
+                // #9: focus loss mid-drag (grab broken by the compositor or a focus
+                // steal) would otherwise leave the drag live with a stuck grab cursor.
+                self.abandon_tab_drag();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -3297,5 +3523,76 @@ mod tests {
         );
         let _ = app.try_handle_confirm_close_keypress_for_test(&Key::Named(NamedKey::Tab));
         assert_eq!(app.confirm_close().unwrap().focus, FocusedButton::Cancel);
+    }
+
+    // ===== #9: TabDragState =====
+
+    #[test]
+    fn drag_below_threshold_does_nothing() {
+        let mut d = TabDragState::new(1, 100, 3);
+        let step = d.on_cursor_x(103, Some(1));
+        assert!(!step.started_now && step.moved.is_none());
+        assert!(!d.started);
+        // ...in either direction.
+        let step = d.on_cursor_x(97, Some(0));
+        assert!(
+            !step.started_now && step.moved.is_none(),
+            "slot change must not apply pre-threshold"
+        );
+    }
+
+    #[test]
+    fn drag_starts_at_threshold_without_slot_change() {
+        let mut d = TabDragState::new(1, 100, 3);
+        let step = d.on_cursor_x(104, Some(1));
+        assert!(step.started_now);
+        assert!(step.moved.is_none());
+        assert!(d.started);
+    }
+
+    #[test]
+    fn fast_flick_starts_and_moves_in_one_event() {
+        // Coalesced CursorMoved can jump a whole slot in one event.
+        let mut d = TabDragState::new(0, 100, 2);
+        let step = d.on_cursor_x(400, Some(1));
+        assert!(step.started_now);
+        assert_eq!(step.moved, Some((0, 1)));
+        assert_eq!(d.tab_idx, 1);
+    }
+
+    #[test]
+    fn started_drag_moves_on_each_new_slot_and_is_stable_within_one() {
+        let mut d = TabDragState::new(0, 100, 2);
+        d.on_cursor_x(200, Some(0)); // start, same slot
+        let step = d.on_cursor_x(300, Some(1));
+        assert!(!step.started_now, "started_now fires only once");
+        assert_eq!(step.moved, Some((0, 1)));
+        // Wiggle within slot 1: no further moves.
+        let step = d.on_cursor_x(310, Some(1));
+        assert_eq!(step.moved, None);
+        // Drag back home.
+        let step = d.on_cursor_x(120, Some(0));
+        assert_eq!(step.moved, Some((1, 0)));
+        assert_eq!(d.tab_idx, 0);
+    }
+
+    #[test]
+    fn none_slot_keeps_current_position() {
+        // Gutter / + button / past window edge: target stays put.
+        let mut d = TabDragState::new(2, 100, 3);
+        d.on_cursor_x(200, Some(2)); // start
+        let step = d.on_cursor_x(900, None);
+        assert!(step.moved.is_none());
+        assert_eq!(d.tab_idx, 2);
+    }
+
+    #[test]
+    fn drag_invalidated_by_tab_count_change() {
+        // Ctrl+Shift+W (idle close, no dialog) or Ctrl+Shift+T can fire
+        // mid-drag; any count change may shift indices under the drag.
+        let d = TabDragState::new(1, 100, 3);
+        assert!(!d.invalidated_by(3));
+        assert!(d.invalidated_by(2), "tab closed mid-drag");
+        assert!(d.invalidated_by(4), "tab opened mid-drag");
     }
 }
