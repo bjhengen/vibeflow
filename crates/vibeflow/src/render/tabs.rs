@@ -183,7 +183,11 @@ impl TabBarLayout {
     /// the many-tabs overflow case, where min-width tabs can underlap it).
     #[must_use]
     pub fn slot_at_x(&self, px: u32) -> Option<usize> {
-        if self.new_tab_button.contains(px, 0) {
+        // X-span check, not Rect::contains — y is ignored by this method's
+        // contract, and a contains(px, 0) probe would silently stop
+        // short-circuiting if the button ever gained a y offset.
+        let btn = &self.new_tab_button;
+        if px >= btn.x && px < btn.x + btn.w {
             return None;
         }
         self.tabs
@@ -309,6 +313,21 @@ mod tests {
         let layout = TabBarLayout::compute(960, 16, 1);
         assert_eq!(layout.slot_at_x(10), Some(0));
         assert_eq!(layout.slot_at_x(251), None);
+    }
+
+    #[test]
+    fn slot_at_x_overflow_min_width_tabs_underlap_new_tab_button() {
+        // 10 tabs in a 300px window: avail = 268, raw = 26 → clamped to
+        // MIN_TAB_WIDTH_PX (80), so tab spans run 0..800, far past the
+        // window, and the `+` button [268, 300) is underlapped by tab 3's
+        // body [240, 320). Button priority must win inside its span — this
+        // is the scenario the priority check exists for.
+        let layout = TabBarLayout::compute(300, 16, 10);
+        assert_eq!(layout.slot_at_x(239), Some(2));
+        assert_eq!(layout.slot_at_x(270), None, "+ button wins over tab 3");
+        assert_eq!(layout.slot_at_x(299), None);
+        // Past the button, the (visually clipped but laid-out) spans resume.
+        assert_eq!(layout.slot_at_x(300), Some(3));
     }
 
     #[test]

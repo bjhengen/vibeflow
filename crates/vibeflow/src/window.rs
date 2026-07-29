@@ -44,7 +44,7 @@ struct TabDragState {
 /// #9: what one cursor-x update means for the drag. The winit handler applies
 /// the side effects (cancel rename, `App::move_tab`, cursor icon, redraw);
 /// keeping the decision pure makes the transitions testable headless.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 struct DragStep {
     /// The threshold was crossed on THIS update.
     started_now: bool,
@@ -1038,22 +1038,35 @@ impl WindowApp {
         }
     }
 
+    /// Recompute the tab-bar layout for the current surface and tab count —
+    /// the same inputs the renderer draws from, so hit-tests match what is
+    /// on screen. `None` until the renderer exists. Always derived fresh
+    /// (never cached): callers must not act on stale geometry after a
+    /// resize or a tab-count change.
+    fn tab_bar_layout(&self) -> Option<crate::render::tabs::TabBarLayout> {
+        let renderer = self.renderer.as_ref()?;
+        let (_, cell_h) = renderer.cell_pitch();
+        let (window_w, _) = renderer.surface_size();
+        Some(crate::render::tabs::TabBarLayout::compute(
+            window_w,
+            cell_h,
+            self.app.tabs().len(),
+        ))
+    }
+
     /// Hit-test the latest cursor position against the tab bar and dispatch
     /// the corresponding action.
     fn handle_left_click_release(&mut self) {
-        use crate::render::tabs::{TabBarHit, TabBarLayout};
+        use crate::render::tabs::TabBarHit;
 
         let Some((px, py)) = self.cursor_pos else {
             return;
         };
-        // We need the same layout the renderer used. Since cell pitch + window
-        // width are the inputs, recompute it here from the renderer's atlas.
-        let Some(renderer) = self.renderer.as_ref() else {
+        // We need the same layout the renderer draws from; tab_bar_layout()
+        // recomputes it from the renderer's atlas + surface.
+        let Some(layout) = self.tab_bar_layout() else {
             return;
         };
-        let (_cell_w, cell_h) = renderer.cell_pitch();
-        let (window_w, _window_h) = renderer.surface_size();
-        let layout = TabBarLayout::compute(window_w, cell_h, self.app.tabs().len());
 
         match layout.hit_test(px, py) {
             TabBarHit::NewTab => {
@@ -2014,32 +2027,25 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                             return;
                         }
                     } else {
-                        let slot = {
-                            let Some(renderer) = self.renderer.as_ref() else {
-                                return;
-                            };
-                            let (_, cell_h) = renderer.cell_pitch();
-                            let (window_w, _) = renderer.surface_size();
-                            crate::render::tabs::TabBarLayout::compute(
-                                window_w,
-                                cell_h,
-                                self.app.tabs().len(),
-                            )
-                            .slot_at_x(px)
+                        let Some(slot) = self.tab_bar_layout().map(|l| l.slot_at_x(px)) else {
+                            return;
                         };
                         let step = drag.on_cursor_x(px, slot);
                         if step.started_now {
                             self.cancel_rename();
+                            // The drag owns the mouse from here on. A context
+                            // menu opened by a mid-arm right-click both goes
+                            // stale (its tab index) and stops hover-tracking,
+                            // so dismiss it as the drag engages — once
+                            // started, no new menu can open (all other
+                            // buttons are consumed).
+                            self.context_menu = None;
                             if let Some(window) = self.window.as_ref() {
                                 window.set_cursor(winit::window::CursorIcon::Grabbing);
                             }
                         }
                         if let Some((from, to)) = step.moved {
                             self.app.move_tab(from, to);
-                            // The menu's stored tab index is stale after any
-                            // reorder (it can be open here via a mid-arm
-                            // right-click, before the threshold engaged).
-                            self.context_menu = None;
                         }
                         self.tab_drag = Some(drag);
                         if step.started_now || step.moved.is_some() {
@@ -2252,16 +2258,13 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     // on release) is unchanged unless the cursor then travels
                     // TAB_DRAG_THRESHOLD_PX horizontally.
                     if state == ElementState::Pressed && button == MouseButton::Left {
-                        let (window_w, _) = renderer.surface_size();
-                        let layout = crate::render::tabs::TabBarLayout::compute(
-                            window_w,
-                            cell_h,
-                            self.app.tabs().len(),
-                        );
-                        if let crate::render::tabs::TabBarHit::TabBody(idx) =
-                            layout.hit_test(px, py)
-                        {
-                            self.tab_drag = Some(TabDragState::new(idx, px, self.app.tabs().len()));
+                        if let Some(layout) = self.tab_bar_layout() {
+                            if let crate::render::tabs::TabBarHit::TabBody(idx) =
+                                layout.hit_test(px, py)
+                            {
+                                self.tab_drag =
+                                    Some(TabDragState::new(idx, px, self.app.tabs().len()));
+                            }
                         }
                         return;
                     }
@@ -2270,14 +2273,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                     // or a grid menu (click in the gutters / empty area of the tab bar).
                     if state == ElementState::Released && button == MouseButton::Right {
                         let anchor = (px as f32, py as f32);
-                        let tab_idx = if let Some(r) = self.renderer.as_ref() {
-                            let (window_w, _) = r.surface_size();
-                            let (_, cell_h) = r.cell_pitch();
-                            let layout = crate::render::tabs::TabBarLayout::compute(
-                                window_w,
-                                cell_h,
-                                self.app.tabs().len(),
-                            );
+                        let tab_idx = self.tab_bar_layout().and_then(|layout| {
                             // Stage 9 used TabBarHit::TabBody; we mirror that pattern
                             // but only care about the index, not the hit variant.
                             if let crate::render::tabs::TabBarHit::TabBody(idx) =
@@ -2287,9 +2283,7 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                             } else {
                                 None
                             }
-                        } else {
-                            None
-                        };
+                        });
                         match tab_idx {
                             Some(idx) => self.open_context_menu(anchor, Some(idx)),
                             None => {
