@@ -900,12 +900,19 @@ mod tests {
         app.tabs_mut()[0]
             .send_input(b"sleep 30\n")
             .expect("send sleep");
+        // Wait for the FINAL state (label == "sleep"), not merely "some busy
+        // tab": right after the shell forks, the foreground comm can still
+        // read as the shell (`bash`/`sh`) until exec flips it to `sleep`, and
+        // the fresh busy_tabs() call below could catch that transition — the
+        // one observed flake mode for this test.
         assert!(
             wait_until(Duration::from_secs(5), || {
                 let _ = app.tabs_mut()[0].poll(Instant::now());
-                !app.busy_tabs().is_empty()
+                app.busy_tabs()
+                    .first()
+                    .is_some_and(|b| b.display_label == "sleep")
             }),
-            "bash running `sleep 30` should surface a busy tab within 5s"
+            "bash running `sleep 30` should surface a busy `sleep` tab within 5s"
         );
         let busy = app.busy_tabs();
         assert_eq!(busy.len(), 1, "exactly one busy tab expected");
