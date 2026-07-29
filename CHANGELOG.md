@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Internal
+
+- Post-0.2.0 cleanups (#28): a context menu left open by a mid-drag right-click is now dismissed the moment the drag engages (was: on the first applied move); the tab-bar layout recompute idiom is collapsed into one `tab_bar_layout()` accessor; `slot_at_x`'s new-tab-button priority uses an explicit x-span check plus an overflow/underlap regression test; the `busy_tabs` foreground-subprocess test no longer races the shell's fork→exec transition.
+
 ## [0.2.0] - 2026-07-28
 
 First feature release after the public launch. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 wire format is unchanged).
