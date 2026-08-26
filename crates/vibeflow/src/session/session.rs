@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
@@ -39,6 +39,16 @@ const MAX_POLL_BYTES: usize = 64 * 1024;
 /// in the full-read worst case; typical interactive output (short reads) buffers
 /// far less before backpressure fires, so steady-state throughput is unchanged.
 const READER_CHANNEL_CAPACITY: usize = 512;
+
+/// #30: how long `Drop` waits for the reader thread before detaching it. The
+/// wait ends the instant the thread exits — it owns the matching `Sender<()>`,
+/// so the channel disconnects — which means this budget is only ever spent on a
+/// reader parked in a `read()` that will never return. A pty master's `read()`
+/// returns EIO only when the LAST slave fd closes, and a process that inherited
+/// the slave (a detached GUI app, a `nohup`'d daemon) can hold it open
+/// indefinitely; killing our own child is not enough. Joining unconditionally
+/// froze the entire window.
+const READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Viewport size handed to `Term::new` / `Term::resize` (both are generic
 /// over [`Dimensions`]). `total_lines == screen_lines`: scrollback history is
@@ -155,8 +165,13 @@ pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty + Send>,
     /// Child process handle — used for liveness checks and explicit kill.
     child: Box<dyn Child + Send + Sync>,
-    /// Reader thread handle. Owned by the session; joined when `Drop` runs.
+    /// Reader thread handle. Owned by the session; joined when `Drop` runs —
+    /// but only once [`Self::reader_done`] says the thread has finished (#30).
     reader_thread: Option<JoinHandle<()>>,
+    /// #30: disconnects when the reader thread exits, because that thread owns
+    /// the matching `Sender<()>` and nothing else does. `Drop` waits on this
+    /// with `READER_JOIN_TIMEOUT` instead of joining unconditionally.
+    reader_done: Receiver<()>,
     /// Per-session OSC parser.
     pub(crate) dispatcher: OscDispatcher,
     /// Per-session VT/ANSI parser. Drives `term` when fed via `Processor::advance`.
@@ -259,10 +274,14 @@ impl PtySession {
             master,
         } = spawn_pty(argv)?;
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(READER_CHANNEL_CAPACITY);
+        let (done_tx, reader_done) = mpsc::channel::<()>();
         let mut reader = reader;
         let reader_thread = thread::Builder::new()
             .name("vibeflow-pty-reader".into())
             .spawn(move || {
+                // #30: owned solely so that it drops when this thread exits,
+                // disconnecting `reader_done`. Never sent on.
+                let _done = done_tx;
                 let mut buf = [0u8; 4096];
                 loop {
                     match reader.read(&mut buf) {
@@ -293,6 +312,7 @@ impl PtySession {
             master,
             child,
             reader_thread: Some(reader_thread),
+            reader_done,
             dispatcher: OscDispatcher::new(),
             parser: Processor::new(),
             term,
@@ -840,6 +860,7 @@ impl PtySession {
 
 impl Drop for PtySession {
     fn drop(&mut self) {
+        let pid = self.child_pid();
         let _ = self.child.kill();
         // #17: drop the receiver BEFORE join. A reader blocked on a full
         // sync_channel send() only wakes when the receiver is gone (send →
@@ -847,7 +868,25 @@ impl Drop for PtySession {
         // mid-firehose deadlocks here on join().
         self.rx = None;
         if let Some(handle) = self.reader_thread.take() {
-            let _ = handle.join();
+            // #30: never join unconditionally. The reader may instead be parked
+            // in a read() on the master, which returns only once the last slave
+            // fd closes — and a process outside this tab can hold that open
+            // forever. Disconnected means the thread has already finished, so
+            // the join below costs microseconds; a timeout means detach and
+            // move on rather than freeze every tab in the window.
+            match self.reader_done.recv_timeout(READER_JOIN_TIMEOUT) {
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = handle.join();
+                }
+                _ => {
+                    tracing::warn!(
+                        pid = ?pid,
+                        "pty reader still parked in read(); detaching instead of joining. \
+                         A process outside this tab is holding the pty slave open; the \
+                         thread exits on its own as soon as that read returns."
+                    );
+                }
+            }
         }
     }
 }
@@ -2214,6 +2253,48 @@ mod tests {
             finished,
             "PtySession::drop() hung — a reader blocked on a full channel was \
              not unblocked at teardown (#17 regression)"
+        );
+        dropper.join().unwrap();
+    }
+
+    /// Hold this session's pty slave open from the test process, the way a
+    /// process that inherited it from the tab's shell does. `readlink` on the
+    /// master only ever says `/dev/ptmx`, but `/proc/self/fdinfo/<master>`
+    /// carries `tty-index`, which is the `/dev/pts/N` number.
+    fn hold_slave_open(s: &PtySession) -> std::fs::File {
+        let master_fd = s.master.as_raw_fd().expect("master should expose its fd");
+        let info =
+            std::fs::read_to_string(format!("/proc/self/fdinfo/{master_fd}")).expect("read fdinfo");
+        let index = info
+            .lines()
+            .find_map(|line| line.strip_prefix("tty-index:"))
+            .expect("fdinfo should carry tty-index")
+            .trim()
+            .parse::<u32>()
+            .expect("tty-index should parse");
+        std::fs::File::open(format!("/dev/pts/{index}")).expect("open the pty slave")
+    }
+
+    #[test]
+    fn drop_does_not_hang_when_reader_parked_in_read() {
+        // #30: the read-side sibling of the test above. A pty master's read()
+        // returns EIO only when the LAST slave fd closes, so killing the tab's
+        // own child cannot unblock a reader parked in read() — anything else
+        // holding the slave keeps it parked forever. On 2026-08-26 that was a
+        // LibreOffice launched from the tab four days earlier, still holding
+        // the stdout/stderr it had inherited. The test holds the slave itself:
+        // the same condition, without depending on which orphans survive the
+        // SIGHUP the kernel sends when a session leader exits (a plain
+        // backgrounded job does not, which is why it makes a useless repro).
+        let s = PtySession::spawn(&["/bin/sh"], TrackerConfig::default(), 10000).unwrap();
+        let _slave = hold_slave_open(&s);
+
+        let dropper = std::thread::spawn(move || drop(s));
+        let finished = wait_until(Duration::from_secs(5), || dropper.is_finished());
+        assert!(
+            finished,
+            "PtySession::drop() hung — a reader parked in read() on the pty \
+             master was joined instead of detached (#30 regression)"
         );
         dropper.join().unwrap();
     }
