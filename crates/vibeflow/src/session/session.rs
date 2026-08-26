@@ -2444,7 +2444,17 @@ mod tests {
         // the same condition, without depending on which orphans survive the
         // SIGHUP the kernel sends when a session leader exits (a plain
         // backgrounded job does not, which is why it makes a useless repro).
-        let s = PtySession::spawn(&["/bin/sh"], TrackerConfig::default(), 10000).unwrap();
+        // `wedged_session` puts the pty in raw mode with echo OFF, which this
+        // test depends on. With echo on, teardown wakes the reader by accident:
+        // dropping the writer makes portable-pty's UnixMasterWriter emit a
+        // trailing newline + EOF, the line discipline echoes it back, and the
+        // parked read() returns with data. That is a real (and welcome) escape
+        // hatch, but it hides the deadlock — and it does not exist for the AI
+        // CLIs that actually froze the window, which all run raw with -echo.
+        // Verified in the GUI on 2026-08-26: echo on, the reader exits and no
+        // detach is logged; echo off, the detach warning fires and this code
+        // path is the only thing keeping the window alive.
+        let s = wedged_session();
         let _slave = hold_slave_open(&s);
 
         let dropper = std::thread::spawn(move || drop(s));
