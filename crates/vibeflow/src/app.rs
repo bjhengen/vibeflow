@@ -65,9 +65,23 @@ fn busy_info_for(sess: &PtySession, idx_0based: usize) -> Option<BusyTabInfo> {
 
 /// Single-threaded central authority for the terminal app: owns every tab,
 /// dispatches polls and ticks across them, tracks the focused tab.
+/// Result of [`App::paste_into`] — whether the text reached a tab.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PasteOutcome {
+    /// Queued for the named tab.
+    Delivered,
+    /// The tab closed while the clipboard read was in flight; text dropped.
+    /// Never re-routed to another tab: a paste can carry a password, and
+    /// putting it in a tab the user did not aim at would be worse than losing it.
+    TabGone,
+}
+
 pub struct App {
     tabs: Vec<PtySession>,
     active: usize,
+    /// #33: source of [`TabId`]s. Monotonic; ids are never reused within a run,
+    /// so a stale delivery can never be mistaken for a live tab.
+    next_tab_id: u64,
     tracker_config: TrackerConfig,
     /// Mirror of `Config.tabs.respect_osc_title`. Applied to every new
     /// `PtySession` at spawn time so freshly-opened tabs honor the current
@@ -105,6 +119,7 @@ impl App {
         Self {
             tabs: Vec::new(),
             active: 0,
+            next_tab_id: 1,
             tracker_config: default_tracker_config(),
             default_respect_osc_title: true,
             default_allow_osc52_write: true,
@@ -188,6 +203,8 @@ impl App {
             .scrollbar_fade
             .set_fade_ms(self.default_scrollbar_fade_ms);
         session.theme = self.default_theme.clone();
+        session.set_id(crate::session::TabId(self.next_tab_id));
+        self.next_tab_id += 1;
         self.tabs.push(session);
         let idx = self.tabs.len() - 1;
         self.active = idx;
@@ -289,6 +306,33 @@ impl App {
             ));
         };
         tab.send_input(bytes)
+    }
+
+    /// #33: deliver clipboard text to the tab that asked for it, by id.
+    ///
+    /// Applies the same treatment the synchronous paste path used to: strip any
+    /// embedded bracketed-paste end marker, and wrap in the bracketed-paste
+    /// markers when the target tab has that mode on. Returns
+    /// [`PasteOutcome::TabGone`] if the tab closed while the read was in
+    /// flight; the text is dropped rather than delivered somewhere else.
+    pub fn paste_into(&mut self, id: crate::session::TabId, text: &str) -> PasteOutcome {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id() == id) else {
+            tracing::debug!("clipboard text arrived for a tab that has closed; dropping it");
+            return PasteOutcome::TabGone;
+        };
+        let bracketed = tab
+            .term()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        let sanitised = crate::clipboard::sanitise_paste(text);
+        if bracketed {
+            let _ = tab.send_input(b"\x1b[200~");
+            let _ = tab.send_input(sanitised.as_bytes());
+            let _ = tab.send_input(b"\x1b[201~");
+        } else {
+            let _ = tab.send_input(sanitised.as_bytes());
+        }
+        PasteOutcome::Delivered
     }
 
     /// Resize every tab's PTY to `rows × cols`. Called from `WindowApp` on
@@ -496,6 +540,78 @@ fn remap_active_after_move(active: usize, from: usize, to: usize) -> usize {
 mod tests {
     use super::*;
     use crate::session::tracker::TabState;
+    use crate::session::TabId;
+
+    /// A tab that never reads its stdin, so bytes written to it stay queued
+    /// and `queued_input_bytes()` is a deterministic delivery probe.
+    fn deaf_tab(app: &mut App) -> TabId {
+        let idx = app
+            .new_tab(&["/bin/sh", "-c", "exec sleep 30"])
+            .expect("spawn");
+        app.tabs()[idx].id()
+    }
+
+    #[test]
+    fn new_tab_assigns_unique_tab_ids() {
+        let mut app = App::new();
+        let a = deaf_tab(&mut app);
+        let b = deaf_tab(&mut app);
+        assert_ne!(a, b, "every tab needs its own identity");
+    }
+
+    #[test]
+    fn tab_id_survives_restart() {
+        // #33: restart() replaces the session wholesale (`*self = new_session`),
+        // so the id has to be carried across like respect_osc_title is —
+        // otherwise an in-flight clipboard read would deliver into a tab it no
+        // longer recognises, or nowhere at all.
+        let mut app = App::new();
+        let id = deaf_tab(&mut app);
+        app.tabs_mut()[0].restart().expect("restart");
+        assert_eq!(app.tabs()[0].id(), id, "restart must preserve tab identity");
+    }
+
+    #[test]
+    fn paste_into_routes_by_id_after_a_reorder() {
+        // #33: a clipboard read can take up to ~4s (arboard's LONG_TIMEOUT_DUR),
+        // and tabs can be dragged in the meantime (#9). Delivery must follow the
+        // tab the paste was requested from, not whatever index it used to hold.
+        let mut app = App::new();
+        let first = deaf_tab(&mut app);
+        let second = deaf_tab(&mut app);
+        app.move_tab(0, 1);
+        assert_eq!(app.tabs()[1].id(), first, "reorder should have moved it");
+
+        // 64 KiB is past what the kernel buffers for a pty nobody is reading,
+        // so the bytes stay queued and this is not a race.
+        let payload = "x".repeat(64 * 1024);
+        assert_eq!(app.paste_into(first, &payload), PasteOutcome::Delivered);
+
+        let target = app.tabs().iter().find(|t| t.id() == first).unwrap();
+        let other = app.tabs().iter().find(|t| t.id() == second).unwrap();
+        assert!(
+            target.queued_input_bytes() > 0,
+            "the paste should have reached the originating tab"
+        );
+        assert_eq!(
+            other.queued_input_bytes(),
+            0,
+            "no bytes should have leaked into the other tab"
+        );
+    }
+
+    #[test]
+    fn paste_into_reports_tab_gone_when_the_tab_closed_mid_read() {
+        let mut app = App::new();
+        let doomed = deaf_tab(&mut app);
+        deaf_tab(&mut app);
+        app.close_tab(0);
+        assert_eq!(
+            app.paste_into(doomed, "hello"),
+            PasteOutcome::TabGone,
+            "text for a closed tab is dropped, not delivered elsewhere"
+        );
+    }
 
     #[test]
     fn new_app_has_no_tabs() {

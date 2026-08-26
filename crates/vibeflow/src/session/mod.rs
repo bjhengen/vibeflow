@@ -7,4 +7,4 @@ pub mod pty;
 pub mod session;
 pub mod tracker;
 
-pub use session::{PtySession, SessionEvent, TabLabel};
+pub use session::{PtySession, SessionEvent, TabId, TabLabel};

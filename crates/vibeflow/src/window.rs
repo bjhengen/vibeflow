@@ -315,6 +315,9 @@ pub struct WindowApp {
     /// System clipboard handle for Ctrl+Shift+C / Ctrl+Shift+V. `None` on
     /// systems without a display server (CI, headless containers).
     clipboard: Option<crate::clipboard::Clipboard>,
+    /// #33: performs clipboard *reads* off the UI thread. Writes still go
+    /// through `clipboard` on this thread — they do not block.
+    clipboard_reader: Option<crate::clipboard::ClipboardReader>,
     /// Proxy for the file-watcher thread to ship `AppUserEvent` back to the
     /// main thread. Cloned and handed to the watcher in `resumed`.
     proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>,
@@ -862,6 +865,13 @@ impl WindowApp {
                 None
             }
         };
+        let clipboard_reader = match crate::clipboard::ClipboardReader::spawn(proxy.clone()) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!("could not start the clipboard reader thread: {e}");
+                None
+            }
+        };
         let config_path = crate::config::default_path()
             .unwrap_or_else(|| std::path::PathBuf::from("./vibeflow-config.toml"));
         let (initial_config, initial_errors) = crate::config::Config::load(&config_path);
@@ -890,6 +900,7 @@ impl WindowApp {
             cursor_pos: None,
             clipboard,
             proxy,
+            clipboard_reader,
             shortcut_table,
             error_banner,
             config_path,
@@ -1341,53 +1352,42 @@ impl WindowApp {
     }
 
     fn handle_paste(&mut self) {
-        let Some(clipboard) = self.clipboard.as_mut() else {
-            return;
-        };
-        let Some(text) = clipboard.paste() else {
+        self.request_paste(crate::clipboard::Selection::Clipboard);
+    }
+
+    /// #33: ask the reader thread for a selection's text. Returns immediately;
+    /// the text comes back as `AppUserEvent::ClipboardText` and is delivered by
+    /// `App::paste_into`, which routes by [`crate::session::TabId`] because the
+    /// read can outlive the tab's current position (or the tab itself).
+    fn request_paste(&mut self, selection: crate::clipboard::Selection) {
+        let Some(reader) = self.clipboard_reader.as_ref() else {
             return;
         };
         let active = self.app.active();
-        let Some(s) = self.app.tabs_mut().get_mut(active) else {
+        let Some(tab) = self
+            .app
+            .tabs()
+            .get(active)
+            .map(crate::session::PtySession::id)
+        else {
             return;
         };
-        let bracketed = s
-            .term()
-            .mode()
-            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
-        let sanitised = crate::clipboard::sanitise_paste(&text);
-        if bracketed {
-            let _ = s.send_input(b"\x1b[200~");
-            let _ = s.send_input(sanitised.as_bytes());
-            let _ = s.send_input(b"\x1b[201~");
-        } else {
-            let _ = s.send_input(sanitised.as_bytes());
-        }
+        reader.request(tab, selection);
     }
 
     /// Paste the PRIMARY selection (X11 middle-click clipboard) into the active tab.
     /// Called by both the `MouseButton::Middle` arm and `MenuAction::PastePrimary`.
     fn handle_paste_primary(&mut self) {
-        let active = self.app.active();
-        let Some(s) = self.app.tabs_mut().get_mut(active) else {
+        // The PRIMARY gate stays on this thread: it is a config read, not I/O,
+        // and it keeps the reader thread free of config mirroring.
+        if !self
+            .clipboard
+            .as_ref()
+            .is_some_and(crate::clipboard::Clipboard::primary_enabled)
+        {
             return;
-        };
-        let bracketed = s
-            .term()
-            .mode()
-            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
-        if let Some(clipboard) = self.clipboard.as_mut() {
-            if let Some(text) = clipboard.paste_primary() {
-                let sanitised = crate::clipboard::sanitise_paste(&text);
-                if bracketed {
-                    let _ = s.send_input(b"\x1b[200~");
-                    let _ = s.send_input(sanitised.as_bytes());
-                    let _ = s.send_input(b"\x1b[201~");
-                } else {
-                    let _ = s.send_input(sanitised.as_bytes());
-                }
-            }
         }
+        self.request_paste(crate::clipboard::Selection::Primary);
     }
 
     fn start_rename(&mut self, tab_idx: usize) {
@@ -2614,6 +2614,16 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
         event: crate::config::AppUserEvent,
     ) {
         match event {
+            crate::config::AppUserEvent::ClipboardText { tab, text } => {
+                // #33: clipboard text read off the UI thread. Routed by TabId —
+                // the read can take seconds, during which tabs may have been
+                // reordered or closed.
+                if self.app.paste_into(tab, &text) == crate::app::PasteOutcome::Delivered {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
             crate::config::AppUserEvent::ConfigReloaded { config, errors } => {
                 tracing::info!(error_count = errors.len(), "config reloaded");
                 self.apply_config(&config);
