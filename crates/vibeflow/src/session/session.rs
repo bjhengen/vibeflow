@@ -2559,4 +2559,34 @@ mod tests {
             s.queued_input_bytes()
         );
     }
+
+    fn open_fd_count() -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .map(std::iter::Iterator::count)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn fd_count_returns_to_baseline_after_sessions_close() {
+        // A session owns three fds on the pty master — the master itself, the
+        // reader's dup and the writer's dup — which is why triage of the
+        // 2026-08-26 freeze saw 27 ptmx fds against 10 tabs and wondered about
+        // a leak. It is three per tab by construction, not a leak; this pins
+        // that. Spawning many sessions makes a real per-session leak (~150 fds
+        // here) unmistakable against the handful of fds other tests may open
+        // concurrently under the parallel harness, which is why the slack is
+        // deliberately loose rather than precise.
+        drop(PtySession::spawn(&["/bin/cat"], TrackerConfig::default(), 100).unwrap());
+
+        let baseline = open_fd_count();
+        for _ in 0..50 {
+            let s = PtySession::spawn(&["/bin/cat"], TrackerConfig::default(), 100).unwrap();
+            drop(s);
+        }
+        let after = open_fd_count();
+        assert!(
+            after <= baseline + 25,
+            "fds leaked across 50 spawn/drop cycles: baseline {baseline}, after {after}"
+        );
+    }
 }
