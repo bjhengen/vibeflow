@@ -3,7 +3,9 @@
 //! via a single-producer single-consumer channel.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -49,6 +51,19 @@ const READER_CHANNEL_CAPACITY: usize = 512;
 /// indefinitely; killing our own child is not enough. Joining unconditionally
 /// froze the entire window.
 const READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// #31: bytes of unwritten input past which mouse-motion reports are dropped
+/// instead of queued. In healthy operation the writer thread drains within
+/// microseconds and the queue sits at zero, so this only fires against a tab
+/// whose app has stopped reading its stdin — where a stale cursor position is
+/// worthless anyway. Sized at one pty input buffer.
+const MOTION_QUEUE_WATERMARK: usize = 4 * 1024;
+
+/// #31: hard ceiling on unwritten input. Keystrokes and pastes queue up to here
+/// and are then refused with `WouldBlock` rather than growing the queue without
+/// bound. Real typing never approaches 1 MiB; reaching it means the tab's app
+/// stopped reading long ago.
+const MAX_QUEUED_INPUT_BYTES: usize = 1024 * 1024;
 
 /// Viewport size handed to `Term::new` / `Term::resize` (both are generic
 /// over [`Dimensions`]). `total_lines == screen_lines`: scrollback history is
@@ -157,8 +172,21 @@ pub struct PtySession {
     /// thread — a reader blocked on a full `sync_channel` send only wakes when
     /// the receiver goes away (#17).
     rx: Option<Receiver<Vec<u8>>>,
-    /// Used by [`Self::send_input`] to write keystrokes to the PTY master.
-    writer: Box<dyn Write + Send>,
+    /// #31: sends to the writer thread, which owns the pty master's write half.
+    /// The UI thread must never write to a pty itself: a tab whose app has
+    /// stopped reading its stdin fills the kernel input buffer, and the next
+    /// write parks forever, freezing every tab in the window. `None` once
+    /// `Drop` has started, so the writer thread can finish and exit.
+    write_tx: Option<mpsc::Sender<Vec<u8>>>,
+    /// #31: bytes handed to the writer thread and not yet written. Shared with
+    /// that thread, which subtracts each chunk as it completes.
+    queued_bytes: Arc<AtomicUsize>,
+    /// #31: set by the writer thread when a write fails, so the next
+    /// `send_input` can report it. The failing call cannot report it itself,
+    /// because it no longer performs the write.
+    writer_failed: Arc<AtomicBool>,
+    /// #31: how many mouse-motion reports this session has discarded.
+    dropped_motion: u64,
     /// The PTY master. Kept alive on the main thread; the reader thread holds a
     /// cloned `Box<dyn Read + Send>` whose lifetime is independent of this
     /// field. `MasterPty::resize` is called through this handle.
@@ -256,6 +284,19 @@ pub struct PtySession {
     custom_subtitle: bool,
 }
 
+/// #31: how [`PtySession::enqueue`] behaves when the tab's app has stopped
+/// draining its stdin and the outbound queue is backing up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InputPriority {
+    /// Something a person did — a keystroke, a paste, a mouse button or wheel
+    /// event. Queued up to `MAX_QUEUED_INPUT_BYTES`. Dropping a button press
+    /// would desynchronize the app's own mouse state machine.
+    Interactive,
+    /// A mouse-motion report: a resampled position, not an event. Dropped once
+    /// the queue passes `MOTION_QUEUE_WATERMARK`.
+    Droppable,
+}
+
 impl PtySession {
     /// Spawn a child via the given `argv` on a fresh pseudoterminal and start
     /// the reader thread.
@@ -297,6 +338,37 @@ impl PtySession {
                 }
             })?;
 
+        // #31: the writer half moves onto its own thread. Blocking there is
+        // harmless; blocking on the UI thread freezes the whole window.
+        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+        let queued_bytes = Arc::new(AtomicUsize::new(0));
+        let writer_failed = Arc::new(AtomicBool::new(false));
+        {
+            let queued_bytes = Arc::clone(&queued_bytes);
+            let writer_failed = Arc::clone(&writer_failed);
+            let mut writer = writer;
+            // The JoinHandle is deliberately dropped: this thread is never
+            // joined, because it can be parked in a write that only the tab's
+            // app can unblock — the deadlock this whole change prevents. It
+            // exits when the channel closes or the write fails.
+            thread::Builder::new()
+                .name("vibeflow-pty-writer".into())
+                .spawn(move || {
+                    for chunk in write_rx {
+                        let mut result = writer.write_all(&chunk);
+                        if result.is_ok() {
+                            result = writer.flush();
+                        }
+                        queued_bytes.fetch_sub(chunk.len(), Ordering::Relaxed);
+                        if let Err(e) = result {
+                            writer_failed.store(true, Ordering::Relaxed);
+                            tracing::warn!(error = %e, "pty write failed; writer thread exiting");
+                            break;
+                        }
+                    }
+                })?;
+        }
+
         let term_size = GridSize::new(DEFAULT_COLS as usize, DEFAULT_ROWS as usize);
         let term_config = TermConfig {
             scrolling_history: history_lines.max(1),
@@ -308,7 +380,10 @@ impl PtySession {
 
         Ok(Self {
             rx: Some(rx),
-            writer,
+            write_tx: Some(write_tx),
+            queued_bytes,
+            writer_failed,
+            dropped_motion: 0,
             master,
             child,
             reader_thread: Some(reader_thread),
@@ -514,13 +589,92 @@ impl PtySession {
         events
     }
 
-    /// Write keystroke bytes to the PTY master.
+    /// #31: hand `bytes` to the writer thread. Never blocks — the UI thread
+    /// must not touch a pty, because a tab whose app has stopped reading its
+    /// stdin fills the kernel input buffer and parks the writer forever.
+    fn enqueue(&mut self, bytes: &[u8], priority: InputPriority) -> std::io::Result<()> {
+        if self.writer_failed.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "pty writer thread has exited",
+            ));
+        }
+        let queued = self.queued_bytes.load(Ordering::Relaxed);
+        if priority == InputPriority::Droppable && queued > MOTION_QUEUE_WATERMARK {
+            self.dropped_motion += 1;
+            if self.dropped_motion % 500 == 0 {
+                tracing::debug!(
+                    dropped = self.dropped_motion,
+                    "dropping mouse-motion reports; this tab's app is not reading its stdin"
+                );
+            }
+            return Ok(());
+        }
+        if queued.saturating_add(bytes.len()) > MAX_QUEUED_INPUT_BYTES {
+            tracing::warn!(
+                queued,
+                len = bytes.len(),
+                "pty input queue is full; dropping input (the tab's app is not reading stdin)"
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "pty input queue is full",
+            ));
+        }
+        let Some(tx) = self.write_tx.as_ref() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "session is shutting down",
+            ));
+        };
+        self.queued_bytes.fetch_add(bytes.len(), Ordering::Relaxed);
+        if tx.send(bytes.to_vec()).is_err() {
+            self.queued_bytes.fetch_sub(bytes.len(), Ordering::Relaxed);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "pty writer thread has exited",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Queue keystroke bytes for the pty master. Returns as soon as the bytes
+    /// are queued; the writer thread performs the write.
     ///
     /// # Errors
-    /// Propagates any underlying `io::Error` from the writer.
+    /// `WouldBlock` if the tab's app has stopped reading its stdin and the
+    /// queue has reached its cap; `BrokenPipe` if the writer thread has exited.
+    /// A failed write surfaces on the *following* call, since this one no
+    /// longer performs it.
     pub fn send_input(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+        self.enqueue(bytes, InputPriority::Interactive)
+    }
+
+    /// Queue a mouse-motion report, which is discarded rather than queued when
+    /// the tab's app has stopped reading its stdin. Use [`Self::send_input`]
+    /// for everything else, including mouse button and wheel events: dropping
+    /// one of those desynchronizes the app's own mouse state machine.
+    ///
+    /// # Errors
+    /// `BrokenPipe` if the writer thread has exited. A dropped report is not an
+    /// error — it returns `Ok(())`.
+    pub fn send_input_droppable(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.enqueue(bytes, InputPriority::Droppable)
+    }
+
+    /// #31: bytes queued for the writer thread and not yet written
+    /// (test-only instrumentation, like `last_poll_bytes`).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn queued_input_bytes(&self) -> usize {
+        self.queued_bytes.load(Ordering::Relaxed)
+    }
+
+    /// #31: mouse-motion reports discarded so far (test-only).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn dropped_motion_count(&self) -> u64 {
+        self.dropped_motion
     }
 
     /// Run the tracker's timeout checks at `now`. Returns a [`SessionEvent`]
@@ -867,6 +1021,10 @@ impl Drop for PtySession {
         // Err); kill() alone can't unblock it. Without this, closing a tab
         // mid-firehose deadlocks here on join().
         self.rx = None;
+        // #31: closing the channel lets the writer thread drain and exit. It is
+        // never joined — it can be parked in a write only the tab's app can
+        // unblock, which is the deadlock this whole change exists to prevent.
+        self.write_tx = None;
         if let Some(handle) = self.reader_thread.take() {
             // #30: never join unconditionally. The reader may instead be parked
             // in a read() on the master, which returns only once the last slave
@@ -2297,5 +2455,108 @@ mod tests {
              master was joined instead of detached (#30 regression)"
         );
         dropper.join().unwrap();
+    }
+
+    /// A tab whose app never reads its stdin, with the pty in raw mode and echo
+    /// off — how the AI CLIs that triggered #31 configure theirs. Returns only
+    /// once the shell has reported READY, so a caller cannot write before
+    /// `stty` has run, and `-echo` keeps a large filler write from echoing
+    /// straight back through the reader channel.
+    ///
+    /// (Measured on this kernel: a write to the master parks after ~13.8 KiB
+    /// raw and ~11.8 KiB canonical — canonical stalls too, because echo fills
+    /// the output queue first. Raw is used for fidelity to the real incident.)
+    fn wedged_session() -> PtySession {
+        let s = PtySession::spawn(
+            &[
+                "/bin/sh",
+                "-c",
+                "stty raw -echo; printf READY; exec sleep 30",
+            ],
+            TrackerConfig::default(),
+            1000,
+        )
+        .unwrap();
+        let mut seen = Vec::new();
+        let ready = wait_until(Duration::from_secs(10), || {
+            while let Ok(chunk) = s.rx.as_ref().unwrap().try_recv() {
+                seen.extend_from_slice(&chunk);
+            }
+            seen.windows(5).any(|w| w == b"READY")
+        });
+        assert!(ready, "wedged session never reported READY; got {seen:?}");
+        s
+    }
+
+    #[test]
+    fn send_input_does_not_block_when_pty_input_buffer_is_full() {
+        // #31: on 2026-08-26 a 12-byte mouse-motion report parked the UI thread
+        // in write() against a full pty input buffer and froze every tab in the
+        // window. Writes now go to a writer thread, so the caller never blocks.
+        let mut s = wedged_session();
+        let chunk = vec![b'x'; 4096];
+        let started = Instant::now();
+        // 16 x 4 KiB is well past what the kernel will accept and well under
+        // the 1 MiB queue cap, so every one of these must be accepted.
+        for _ in 0..16 {
+            s.send_input(&chunk)
+                .expect("input should be queued, not refused");
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "send_input blocked for {:?} — this is #31",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn motion_is_dropped_while_typed_input_is_queued() {
+        // #31 policy: against a tab that has stopped reading, a stale cursor
+        // position is worthless and a keystroke is not.
+        let mut s = wedged_session();
+
+        let filler = vec![b'x'; 64 * 1024];
+        s.send_input(&filler).expect("queued");
+        assert!(
+            s.queued_input_bytes() > MOTION_QUEUE_WATERMARK,
+            "test setup: the queue should be backed up, was {}",
+            s.queued_input_bytes()
+        );
+
+        // The writer thread is parked on a full buffer, so it can only ever
+        // decrease queued_bytes — hence "did not grow" rather than equality.
+        let before = s.queued_input_bytes();
+        for _ in 0..200 {
+            s.send_input_droppable(b"\x1b[<35;10;10M")
+                .expect("a dropped motion report is not an error");
+        }
+        assert!(
+            s.queued_input_bytes() <= before,
+            "motion reports were queued instead of dropped: {} -> {}",
+            before,
+            s.queued_input_bytes()
+        );
+        assert!(
+            s.dropped_motion_count() >= 200,
+            "expected the drops to be counted, got {}",
+            s.dropped_motion_count()
+        );
+
+        // Typed input keeps queueing until the cap, then is refused rather than
+        // growing the queue without bound.
+        let mut refused = None;
+        for _ in 0..32 {
+            if let Err(e) = s.send_input(&filler) {
+                refused = Some(e);
+                break;
+            }
+        }
+        let err = refused.expect("interactive input must be refused past the cap");
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(
+            s.queued_input_bytes() <= MAX_QUEUED_INPUT_BYTES,
+            "queue exceeded its cap: {}",
+            s.queued_input_bytes()
+        );
     }
 }

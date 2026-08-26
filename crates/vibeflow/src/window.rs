@@ -2147,7 +2147,12 @@ impl ApplicationHandler<crate::config::AppUserEvent> for WindowApp {
                         point,
                         sgr,
                     );
-                    let _ = s.send_input(&bytes);
+                    // #31: a motion report is a resampled position, not an
+                    // event. If the tab's app has stopped reading its stdin,
+                    // drop it rather than queue it — 1722 of these were backed
+                    // up behind a blocked write when the window froze on
+                    // 2026-08-26. Button and wheel events still use send_input.
+                    let _ = s.send_input_droppable(&bytes);
                 } else if s.selection.is_dragging() {
                     let (sel, term) = s.split_borrow_mouse();
                     sel.mouse_drag(point, term);
