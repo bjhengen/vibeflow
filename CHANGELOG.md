@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-26
+
+Three fixes from daily-driver use, all of them the same defect: a blocking I/O call on the UI thread. Two of them froze the entire window permanently. App-only — `vibeflow-protocol` stays `0.1.3` (the OSC 1338 wire format is unchanged).
+
 ### Fixed
 
 - **Closing a tab can no longer freeze the window** (#30). The tab's PTY reader thread was joined unconditionally on close, but a reader parked in `read()` on the PTY master only returns once the *last* slave fd closes — and a process that inherited the slave from the tab's shell (a detached GUI app, a `nohup`'d daemon) can hold it open indefinitely, long after that shell has exited. Killing the tab's own child is not enough. Closing such a tab deadlocked the UI thread inside the click handler, which stopped the event loop, which stopped every other tab from rendering or draining its own PTY — an unrecoverable freeze of the whole window. Teardown now waits on a completion signal with a short deadline and detaches the reader if it is still blocked; a detached reader exits by itself as soon as its read returns.
@@ -220,7 +224,8 @@ Initial public release of the vibeflow terminal — a from-scratch GPU-accelerat
 
 - Splits/panes; in-buffer search; macOS/Windows builds; image protocols (kitty/sixel); plugin layer; telemetry; Python binding; headless GPU snapshot tests; binary signing/notarization; `.deb`/Homebrew/AUR packaging.
 
-[Unreleased]: https://github.com/bjhengen/vibeflow/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/bjhengen/vibeflow/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/bjhengen/vibeflow/releases/tag/v0.2.1
 [0.2.0]: https://github.com/bjhengen/vibeflow/releases/tag/v0.2.0
 [0.1.7]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.7
 [0.1.6]: https://github.com/bjhengen/vibeflow/releases/tag/v0.1.6
