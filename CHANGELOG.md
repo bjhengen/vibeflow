@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- **Closing a tab can no longer freeze the window** (#30). The tab's PTY reader thread was joined unconditionally on close, but a reader parked in `read()` on the PTY master only returns once the *last* slave fd closes — and a process that inherited the slave from the tab's shell (a detached GUI app, a `nohup`'d daemon) can hold it open indefinitely, long after that shell has exited. Killing the tab's own child is not enough. Closing such a tab deadlocked the UI thread inside the click handler, which stopped the event loop, which stopped every other tab from rendering or draining its own PTY — an unrecoverable freeze of the whole window. Teardown now waits on a completion signal with a short deadline and detaches the reader if it is still blocked; a detached reader exits by itself as soon as its read returns.
+- **Input to a tab whose app has stopped reading can no longer freeze the window** (#31). Every write to a PTY — keystrokes, pastes, the Ctrl+L redraw and mouse reports — was a blocking `write_all` on the UI thread. If the tab's app had mouse reporting on and had stopped draining its stdin, the 4 KiB kernel input buffer filled and the next write parked forever, taking the window with it; dragging the mouse across the window was enough to trigger it, and so was a large paste. Writes now go to a per-tab writer thread through a bounded queue, so the UI thread never blocks on a PTY. When that queue backs up, mouse-motion reports are dropped — a stale cursor position is worthless — while typed input keeps queueing.
+
 ### Internal
 
 - Post-0.2.0 cleanups (#28): a context menu left open by a mid-drag right-click is now dismissed the moment the drag engages (was: on the first applied move); the tab-bar layout recompute idiom is collapsed into one `tab_bar_layout()` accessor; `slot_at_x`'s new-tab-button priority uses an explicit x-span check plus an overflow/underlap regression test; the `busy_tabs` foreground-subprocess test no longer races the shell's fork→exec transition.

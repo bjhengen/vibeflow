@@ -8,8 +8,10 @@ use std::io::{Read, Write};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 /// Handles returned from [`spawn_pty`]. After Stage 4, ownership in
-/// `PtySession` is: the reader is moved into the reader thread, the writer
-/// stays on the main thread for [`crate::session::PtySession::send_input`],
+/// `PtySession` is: the reader is moved into the reader thread, the writer is
+/// moved onto a writer thread (`PtySession` keeps only a channel sender — #31:
+/// the main thread must never write to a pty, or a tab that has stopped
+/// reading its stdin parks the whole UI),
 /// the child is owned by `PtySession` for liveness checks and explicit kill,
 /// and the master is owned by `PtySession` on the main thread so
 /// [`crate::session::PtySession::resize`] can call `MasterPty::resize`. The
