@@ -771,6 +771,13 @@ pub enum AppUserEvent {
         config: Box<Config>,
         errors: Vec<ConfigError>,
     },
+    /// #33: clipboard text read off the UI thread, addressed to the tab that
+    /// asked for it. Carries a [`crate::session::TabId`] rather than an index
+    /// because tabs can be reordered or closed during the read.
+    ClipboardText {
+        tab: crate::session::TabId,
+        text: String,
+    },
     /// One-off error not tied to a successful reload (file removed at
     /// runtime, IO error). Banner shows it; current `Config` is retained.
     ConfigError(ConfigError),

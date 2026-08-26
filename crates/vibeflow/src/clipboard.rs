@@ -121,6 +121,93 @@ impl Clipboard {
     }
 }
 
+/// Which selection an async read should target.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Selection {
+    /// The CLIPBOARD selector (Ctrl+Shift+V).
+    Clipboard,
+    /// The X11 PRIMARY selector (middle-click).
+    Primary,
+}
+
+/// #33: performs clipboard *reads* on a worker thread and posts the text back
+/// to the event loop.
+///
+/// A read is an X11 selection round-trip with whichever application owns the
+/// clipboard, and `arboard` bounds it at 4 s (`LONG_TIMEOUT_DUR`). Run from the
+/// winit handler that is where the whole window stops rendering and stops
+/// draining every tab's PTY for those seconds — the bounded cousin of #31.
+///
+/// Requests are served FIFO by one thread, so two quick pastes arrive in the
+/// order they were made. Writes stay on the UI thread deliberately: `arboard`'s
+/// write path only takes a short lock to store the data and assert selection
+/// ownership (its own `serve_requests` thread does the serving), so it does not
+/// block and does not contend with a read in flight.
+pub struct ClipboardReader {
+    tx: std::sync::mpsc::Sender<(crate::session::TabId, Selection)>,
+}
+
+impl ClipboardReader {
+    /// Spawn the reader thread. `proxy` delivers
+    /// [`crate::config::AppUserEvent::ClipboardText`] back to the event loop.
+    ///
+    /// # Errors
+    /// Propagates thread-spawn failures.
+    pub fn spawn(
+        proxy: winit::event_loop::EventLoopProxy<crate::config::AppUserEvent>,
+    ) -> std::io::Result<Self> {
+        let (tx, rx) = std::sync::mpsc::channel::<(crate::session::TabId, Selection)>();
+        std::thread::Builder::new()
+            .name("vibeflow-clipboard".into())
+            .spawn(move || {
+                // Created on the worker, lazily: arboard hands out handles onto
+                // a process-global context, so this is cheap, and a machine with
+                // no display server never pays for it.
+                let mut clipboard: Option<Clipboard> = None;
+                for (tab, selection) in rx {
+                    if clipboard.is_none() {
+                        match Clipboard::new() {
+                            Ok(mut c) => {
+                                // Always permitted here; the caller decides
+                                // whether a PRIMARY read may be requested at
+                                // all, from the live config.
+                                c.set_primary_enabled(true);
+                                clipboard = Some(c);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "no system clipboard; paste ignored");
+                                continue;
+                            }
+                        }
+                    }
+                    let Some(c) = clipboard.as_mut() else {
+                        continue;
+                    };
+                    let text = match selection {
+                        Selection::Clipboard => c.paste(),
+                        Selection::Primary => c.paste_primary(),
+                    };
+                    let Some(text) = text else { continue };
+                    if proxy
+                        .send_event(crate::config::AppUserEvent::ClipboardText { tab, text })
+                        .is_err()
+                    {
+                        break; // event loop is gone
+                    }
+                }
+            })?;
+        Ok(Self { tx })
+    }
+
+    /// Ask for `selection`'s text, to be delivered to `tab`. Returns
+    /// immediately; the text arrives later as an `AppUserEvent`.
+    pub fn request(&self, tab: crate::session::TabId, selection: Selection) {
+        if self.tx.send((tab, selection)).is_err() {
+            tracing::warn!("clipboard reader thread is gone; paste ignored");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

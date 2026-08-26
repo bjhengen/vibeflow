@@ -165,8 +165,21 @@ pub enum SessionEvent {
     },
 }
 
+/// Stable identity for one tab, assigned by [`crate::app::App::new_tab`] and
+/// preserved across [`PtySession::restart`].
+///
+/// Tab *indices* move: tabs can be dragged to reorder (#9) and closed at any
+/// time. Anything that outlives a single event-loop turn must therefore name a
+/// tab by id, never by index — #33's clipboard read can take up to ~4 s, and a
+/// delivery that trusted an index could land in the wrong tab.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct TabId(pub u64);
+
 /// One terminal tab's per-session machinery.
 pub struct PtySession {
+    /// Stable identity for this tab. `TabId::default()` until
+    /// [`crate::app::App::new_tab`] assigns one.
+    id: TabId,
     /// Drains here when the reader thread sends bytes from the PTY master.
     /// `Option` so `Drop` can drop the receiver before joining the reader
     /// thread — a reader blocked on a full `sync_channel` send only wakes when
@@ -379,6 +392,7 @@ impl PtySession {
         let label = TabLabel::default_for(argv[0], TabState::default());
 
         Ok(Self {
+            id: TabId::default(),
             rx: Some(rx),
             write_tx: Some(write_tx),
             queued_bytes,
@@ -742,6 +756,18 @@ impl PtySession {
         self.tracker.set_heuristic_active(active)
     }
 
+    /// This tab's stable identity. See [`TabId`].
+    #[must_use]
+    pub fn id(&self) -> TabId {
+        self.id
+    }
+
+    /// Assign this tab's identity. Called once by
+    /// [`crate::app::App::new_tab`]; ids are never reused within a run.
+    pub(crate) fn set_id(&mut self, id: TabId) {
+        self.id = id;
+    }
+
     /// Stage 11: PID of the spawned child, for `/proc/<pid>/…` reads. Returns
     /// None if the child has been reaped or never spawned cleanly.
     pub(crate) fn child_pid(&self) -> Option<i32> {
@@ -995,6 +1021,10 @@ impl PtySession {
         // Preserve the OSC-title policy across restart (a deliberate config
         // override shouldn't be wiped just because the user hit Ctrl+Shift+R).
         // user_renamed is intentionally NOT preserved — the new shell is fresh.
+        // #33: identity is the one thing that must survive a restart — an
+        // in-flight clipboard read names its target by id, and the tab the user
+        // is looking at is the same tab as far as they are concerned.
+        new_session.id = self.id;
         new_session.respect_osc_title = self.respect_osc_title;
         new_session.allow_osc52_write = self.allow_osc52_write;
         new_session.title_strip_prefix = std::mem::take(&mut self.title_strip_prefix);
